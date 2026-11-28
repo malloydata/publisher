@@ -63,7 +63,7 @@ The flag is per-file and required: without it the parameter list is a parse erro
 
 Two traps worth knowing before you build several of these:
 
-- **A persisted rollup is still read through a wrapper.** Extending or wrapping a persisted source keeps the persist annotation and still reads the built table, so a parameterised detail source over a rollup does not silently recompute it. The pattern is safe, and a slow drill is almost never the wrapper: look first at a missing filter or a grain that is not actually aggregated.
+- **A materialized rollup is still read through a wrapper.** Extending or wrapping a `#(materialize)` source reads its built table through the served copy, so a parameterised detail source over a rollup does not silently recompute it. The pattern is safe, and a slow drill is almost never the wrapper: look first at a missing filter or a grain that is not actually aggregated.
 - **An inherited view can be meaningless under a parameter.** A source scoped to one entity inherits views that only make sense across many: a sentiment split on a single-sentiment theme collapses to 0% or 100%, a share-of-total becomes 100%. Declare purpose-built views on the detail source for those, and say in the source's doc comment which inherited views not to use.
 
 ### When you cannot change the model

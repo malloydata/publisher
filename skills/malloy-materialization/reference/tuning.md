@@ -5,24 +5,24 @@ SPDX-License-Identifier: MIT
 
 # Tuning materializations for cost and performance
 
-This skill turns the signals the open-source Publisher already records (the materialization history, per-run and per-source timings, which sources were built vs reused, and for the storage tier how queries were routed) into concrete, **recommendations-only** advice: which sources to persist, which to stop persisting, which to chain, and how to schedule them. The Publisher has the raw signals, and you read them with the `malloy-pub` CLI.
+This skill turns the signals the open-source Publisher already records (the materialization history, per-run and per-source timings, which sources were built vs reused, and for the storage tier how queries were routed) into concrete, **recommendations-only** advice: which sources to materialize, which to stop materializing, which to chain, and how to schedule them. The Publisher has the raw signals, and you read them with the `malloy-pub` CLI.
 
-> **Recommendations only. Never change a model, schedule, or scope without the user's explicit go-ahead.** Present the findings and the proposed edits, then apply them only when asked. Persisting the wrong source wastes storage and rebuild time; unpersisting a hot one makes queries slow. Let the user decide.
+> **Recommendations only. Never change a model, schedule, or scope without the user's explicit go-ahead.** Present the findings and the proposed edits, then apply them only when asked. Materializing the wrong source wastes storage and rebuild time; dropping a hot one makes queries slow. Let the user decide.
 
 Assumes the `malloy-pub` CLI is on PATH and points at the server (`--url` or `MALLOY_PUBLISHER_URL`). Substitute the real environment and package for `<env>` / `<pkg>`.
 
 ## Step 1: Take inventory
 
-Establish what the package persists today and how it is governed.
+Establish what the package materializes today and how it is governed.
 
-- **Persist sources:** the sources annotated `#@ persist name="..."` in the package's `.malloy` files, with their tier (`storage=` or not) and `refresh=`. Read the models (or `get_context` the package) to list them, and read `GET …/packages/{pkg}/build-plan` for what a run will build and what it will refuse.
+- **Materialized sources:** the sources annotated `#(materialize)` in the package's `.malloy` files (and any rollups, `#(rollup)`, and persisted views or queries, `#@ persist`), with their tier (`storage=` or not) and `refresh=`. Read the models (or `get_context` the package) to list them, and read `GET …/packages/{pkg}/build-plan` for what a run will build and what it will refuse.
 - **Schedule + scope:**
 
   ```bash
   malloy-pub schedule view --environment <env> --package <pkg>
   ```
 
-  This prints the cron (or `none`, meaning on-demand only), the persist **scope** (`package` = artifacts reused across versions; `version` = per published version), and whether a freshness policy is set. It also says when a control plane manages the package (`manifestLocation` set): leave that package's cadence alone, the control plane refreshes it. And remember the standalone scheduler only runs with `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` set; a cron on a server without it is inert.
+  This prints the cron (or `none`, meaning on-demand only), the materialization **scope** (`package` = artifacts reused across versions; `version` = per published version), and whether a freshness policy is set. It also says when a control plane manages the package (`manifestLocation` set): leave that package's cadence alone, the control plane refreshes it. And remember the standalone scheduler only runs with `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` set; a cron on a server without it is inert.
 
 ## Step 2: Read the materialization history
 
@@ -57,10 +57,10 @@ Look across several runs, not one: the pattern over the recent history (how ofte
 
 Weigh rebuild cost against query benefit. Common findings:
 
-- **Persist candidate:** an expensive, frequently-queried source that is _not_ persisted (recomputed on every query). Recommend adding `#@ persist name="..."`. Strongest when the source is a heavy aggregate/join reused by many queries and its inputs change slowly. If the source carries a `#(access_filter)` gate, check which case it is first. A gate reached only through a `join_*`, or not classifying as a row filter, means the database persist is **refused** - the build skips it and it serves live - so do not recommend persisting it at all. Where the gate is the source's own row filter the persist is admitted, and then only recommend it alongside a freshness window (`freshness.fallback="live"`): the gating column freezes at build time, so without one a revoked row can be served under its old access decision indefinitely (see `access-filter.md`).
-- **Removal candidate:** a persisted source that is cheap to compute, rarely queried, or rebuilt far more often than it is read. Recommend dropping the `#@ persist` annotation (and its table): the storage + rebuild cost is not buying anything.
-- **Chain candidate:** a `storage=` rollup whose intermediates re-read the warehouse on every build while a stored root already holds the rows. Rewire the intermediates onto the stored root (declaration order, a distinct `-> { select: * }` intermediate, joins onto stored siblings - `chaining.md`), and read `upstreamReuse` on the next run to confirm the chain holds. Keep a self-join or a wide hash aggregate over a large fact **in the warehouse**: chained, it builds in the destination's engine under its memory bound.
-- **Denominator candidate:** a ratio whose numerator is a rollup and whose denominator counts the fact table per query. Persist the denominator at its own grain.
+- **Materialize candidate:** an expensive, frequently-queried source that is _not_ materialized (recomputed on every query). Recommend adding `#(materialize)`. Strongest when the source is a heavy aggregate/join reused by many queries and its inputs change slowly. If the source carries a `#(access_filter)` gate, check which case it is first. A gate reached only through a `join_*`, or not classifying as a row filter, means the materialization is **refused** - the build skips it and it serves live - so do not recommend materializing it at all. Where the gate is the source's own row filter it is admitted, and then only recommend it alongside a freshness window (`freshness.fallback="live"`): the gating column freezes at build time, so without one a revoked row can be served under its old access decision indefinitely (see `access-filter.md`).
+- **Removal candidate:** a materialized source that is cheap to compute, rarely queried, or rebuilt far more often than it is read. Recommend dropping the `#(materialize)` annotation (and its table): the storage + rebuild cost is not buying anything.
+- **Chain candidate:** a `storage=` rollup whose intermediates re-read the warehouse on every build while a stored root already holds the rows. Rewire the intermediates onto the stored root (declaration order, an extension with its own `#(materialize)`, joins onto stored siblings - `chaining.md`), and read `upstreamReuse` on the next run to confirm the chain holds. Keep a self-join or a wide hash aggregate over a large fact **in the warehouse**: chained, it builds in the destination's engine under its memory bound.
+- **Denominator candidate:** a ratio whose numerator is a rollup and whose denominator counts the fact table per query. Materialize the denominator at its own grain, or `#(rollup)` it.
 - **Cadence mismatch:** a scheduler cadence out of step with how fast the data changes or how long a build takes. If the build's `durationMs` approaches the interval, the cadence is too aggressive. If queries routinely read stale data, tighten it. For an incremental source, `refresh: delta` with small `buildDurationMs` per fire is the cheap steady state; `refresh: full` every fire means the boundary is being lost (read the reason).
 - **Scope mismatch:** `scope: version` re-materializes per published version (right when versions must be isolated, e.g. a schedule); `scope: package` reuses one lineage across versions (cheaper when versions can share). A schedule _requires_ `version`. If a package carries a schedule it does not need, clearing it is step one; the scope itself is edited in `publisher.json` (the CLI does not move it back).
 
@@ -68,7 +68,7 @@ Frame each recommendation with the evidence from Step 2 (the run IDs, timings, b
 
 ## Step 4: Apply (only once approved)
 
-- **Add a persist source:** add the `#@ persist` annotation in the `.malloy` file (use the modeling workflow to validate and reload), then rebuild so it is materialized:
+- **Add a materialized source:** add the `#(materialize)` annotation in the `.malloy` file (use the modeling workflow to validate and reload), then rebuild so it is materialized:
 
   ```bash
   malloy-pub materialize --environment <env> --package <pkg> --wait --timeout 900
@@ -76,7 +76,7 @@ Frame each recommendation with the evidence from Step 2 (the run IDs, timings, b
 
   (`--wait` gives up after 120 s by default and exits non-zero while the build continues; raise `--timeout` for a real build.)
 
-- **Remove a persist source:** delete the `#@ persist` annotation, rebuild, delete the old runs, then drop the old table yourself:
+- **Remove a materialized source:** delete the `#(materialize)` annotation, rebuild, delete the old runs, then drop the old table yourself:
 
   ```bash
   malloy-pub materialize --environment <env> --package <pkg> --wait
