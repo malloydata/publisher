@@ -15,7 +15,7 @@ const WHAT_IT_MEANS: Record<Scope, string> = {
 };
 
 /**
- * The package's persist scope, as one button.
+ * The package's materialization scope, as one button.
  *
  * It is a menu rather than a pair of toggles because the two values are a
  * choice, not a filter, and because the choice is usually made once and then

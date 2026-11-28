@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Tutorial: materialize a source into DuckLake and serve it back
 
-Malloy Publisher can materialize a `#@ persist` source into a **store you choose**
+Malloy Publisher can materialize a `#(materialize)` source into a **store you choose**
 — a registered DuckLake storage destination — instead of the source's own
 warehouse, and then serve queries against that source **straight from the
 materialized table**, cross-dialect, with no changes to your model. The query
@@ -17,9 +17,10 @@ source and a DuckLake you create, materialize a rollup into it, and query it —
 watching each step through the server's status and logs. It also shows the
 `PERSIST_STORAGE_MODE` deployment switch and the safety behaviors (fallback,
 eligibility refusals) so you can see exactly what the feature does and doesn't
-do. Every step here was run against a real server; the outputs shown are real.
+do. Every step here was run against a real server; the outputs shown are real,
+though message wording and some identifiers can differ between releases.
 
-> **Terminology.** `storage=` is the authoring keyword on the persist
+> **Terminology.** `storage=` is the authoring keyword on the `#(materialize)`
 > annotation. The default (no `storage=`) is a **database** materialization: the
 > source materializes into and serves from its own warehouse, unchanged. This
 > tutorial is about **external** materialization — materialize into a _separate_
@@ -44,7 +45,7 @@ do. Every step here was run against a real server; the outputs shown are real.
   inlining on materialization writes, so data always lands as Parquet in the
   data directory, not inside the catalog database.)
 - A tiny package with a rollup source `daily_orders` annotated
-  `#@ persist name="daily_orders" storage=lake`.
+  `#(materialize) name="daily_orders" storage="lake"`.
 
 One Postgres container does double duty: it holds the source `orders` table
 **and** the DuckLake catalog (two separate databases).
@@ -180,13 +181,11 @@ cat > "$ENVDIR/persist-tutorial/publisher.json" <<'JSON'
 JSON
 
 cat > "$ENVDIR/persist-tutorial/orders.malloy" <<'MALLOY'
-##! experimental.persistence
-
 source: orders is orders_pg.table('public.orders')
 
 // A daily rollup, materialized into the `lake` DuckLake and served from there.
 // `name=` is the logical table name; `storage=` picks the destination.
-#@ persist name="daily_orders" storage=lake
+#(materialize) name="daily_orders" storage="lake"
 source: daily_orders is orders -> {
   group_by: order_date
   aggregate:
@@ -244,7 +243,7 @@ package persist across the restart.
 PERSIST_STORAGE_MODE=write-only bun run start
 ```
 
-Trigger an auto-run build (the publisher plans and builds every persist source):
+Trigger an auto-run build (the publisher plans and builds every materialized source):
 
 ```bash
 curl -s -X POST http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial/materializations \
@@ -525,7 +524,7 @@ extension's own fields are computed over the stored rows. Annotate the extension
 with `#@ -persist` to force it live instead:
 
 ```malloy
-#@ persist name="daily_orders" storage=lake
+#(materialize) name="daily_orders" storage="lake"
 source: daily_orders is orders -> {
   group_by: order_date
   aggregate: total_amount is amount.sum()
@@ -556,8 +555,8 @@ stored table.
 
 ### Joining and chaining sources
 
-**Joining non-persisted sources is the simple case.** A persist source whose
-query joins plain (non-persist) sources materializes the _joined result_ — the
+**Joining non-persisted sources is the simple case.** A materialized source whose
+query joins plain (non-materialized) sources materializes the _joined result_ — the
 join runs once, at build time, in the source warehouse, and only the result
 lands in storage. You do **not** persist the joined-in sources:
 
@@ -568,7 +567,7 @@ source: customers is orders_pg.table('public.customers') // NOT persisted
 source: orders_with_region is orders extend {
   join_one: c is customers on customer_id = c.customer_id
 }
-#@ persist name="orders_by_region" storage=lake   // only this is persisted
+#(materialize) name="orders_by_region" storage="lake"   // only this is materialized
 source: orders_by_region is orders_with_region -> {
   group_by: region is c.region
   aggregate: total_amount is amount.sum()
@@ -580,14 +579,14 @@ from storage; `orders`/`customers` are just its build-time inputs. (This assumes
 the joined sources share one connection — Malloy can't join across two warehouses
 in a single query, with or without `storage=`.)
 
-**Chaining persist sources works too.** A persist source can read _another_
-persist source:
+**Chaining materialized sources works too.** A materialized source can read _another_
+materialized source:
 
 ```malloy
-#@ persist name="daily_orders" storage=lake
+#(materialize) name="daily_orders" storage="lake"
 source: daily_orders is orders -> { group_by: order_date; aggregate: total_amount is amount.sum() }
 
-#@ persist name="monthly_orders" storage=lake
+#(materialize) name="monthly_orders" storage="lake"
 source: monthly_orders is daily_orders -> { group_by: order_month is order_date.month; aggregate: monthly_total is total_amount.sum() }
 ```
 
@@ -649,11 +648,10 @@ Add the refused form and materialize it:
 
 ```bash
 cat > "$ENVDIR/persist-tutorial/givens.malloy" <<'MALLOY'
-##! experimental.persistence
 ##! experimental.givens
 given: region_filter :: string is 'US'
 source: orders_g is orders_pg.table('public.orders')
-#@ persist name="secret_rollup" storage=lake
+#(materialize) name="secret_rollup" storage="lake"
 source: secret_rollup is orders_g -> {
   where: region = $region_filter
   aggregate: total is amount.sum()
@@ -696,10 +694,9 @@ parameter is a template with no single relation to freeze. Naming it in
 
 ```bash
 cat > "$ENVDIR/persist-tutorial/paramtest.malloy" <<'MALLOY'
-##! experimental.persistence
 ##! experimental.parameters
 source: orders_p is orders_pg.table('public.orders')
-#@ persist name="param_rollup" storage=lake
+#(materialize) name="param_rollup" storage="lake"
 source: param_rollup(threshold::number) is orders_p -> { aggregate: total is amount.sum() }
 MALLOY
 curl -s "http://localhost:4000/api/v0/environments/examples/packages/persist-tutorial?reload=true" >/dev/null
@@ -781,7 +778,7 @@ Everything you need is on the package status and the logs:
 - `GET …/packages/{pkg}` → `warnings`: a `{model, subject, message}` entry for
   any `storage=` source not served from storage — mode `off` (ignored) or
   `write-only` (built, served live). Empty when everything routes.
-- `GET …/packages/{pkg}/build-plan` → the persist sources the load planned.
+- `GET …/packages/{pkg}/build-plan` → the materialized sources the load planned.
 - `GET …/materializations/{id}` → run status and, on success, the manifest entry
   with `storageDestinationName` and the captured `schema`.
 - Server logs → `info` when a query serves from storage, and `info` when it
@@ -801,7 +798,7 @@ Everything you need is on the package status and the logs:
     reading it failed, so the caller still got a correct answer, from the
     warehouse, while the table is broken. `live` counts `used` whenever live
     answered a query that had a candidate. A query with no applicable leg
-    counts nothing, and a database `#@ persist` table that Malloy substitutes
+    counts nothing, and a database table that Malloy substitutes
     into a live run is not a routing decision, so it is not counted here (read
     `servedFrom: "database"` on the result, or the attribute below).
   - `publisher_storage_chained_build_total{outcome=parent_reuse|strict_refused|infra_failure}`

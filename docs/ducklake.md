@@ -144,7 +144,7 @@ writes catalog metadata. The lakehouse's own client owns writes. The one excepti
 configured with `ducklakeConnection.readOnly: false`, which attaches read-write and runs everything on
 it read-write, user SQL included; set it only where something else decides who may run SQL there.
 
-**Read-write only to build, and only for the build.** A `#@ persist storage=<destination>` source
+**Read-write only to build, and only for the build.** A `#(materialize) storage="<destination>"` source
 materializes into the catalog, which needs a read-write attach. That attach is confined to a
 transient build-scoped session and is dropped with it, so the serving path stays read-only.
 A `storage=` target is declared in `storageDestinations`, not in `connections` — see
@@ -429,7 +429,7 @@ the serve binding reads it from there. A table PUT may write people's own tables
 there); a load may not, so loads, and the tables a load will later merge into, go in a schema you create with
 `PUT /catalogs/{catalog}/schemas/{schema}`. A destination that shares its catalog with a managed read-only
 connection must set `destinationSchema`, since every managed connection reads `main`, and a build without one
-writes there. A `#@ persist name=` that already names a schema keeps
+writes there. A `#(materialize) name=` that already names a schema keeps
 it. No build creates the schema: the catalog's owner does, and a build into a destination whose
 `destinationSchema` the catalog lacks is refused with a message naming both.
 
@@ -472,7 +472,7 @@ unqualified name otherwise. `ducklakeConnection.readOnly` stays `true` (the defa
 decided who may write through the connection. Its storage secret reaches only the `main`
 schema's files; see [What the storage credential reaches](#what-the-storage-credential-reaches).
 
-**Persist from the catalog into itself.** A `#@ persist storage=<dest>` source on that connection reads
+**Persist from the catalog into itself.** A `#(materialize) storage="<dest>"` source on that connection reads
 the catalog it is built into. When the connection and the destination are the same catalog — the same
 catalog database (given as `host`, `port` and `databaseName`; a `connectionString` config is never
 matched) and metadata schema (and the same data path, when both state one), never decided by name — the
@@ -499,7 +499,7 @@ unchanged. That check and the query run in separate transactions: a query whose 
 catalog write that breaks the rule committed, and whose own read begins after it, reads what the write
 made, once. Every query in flight across each such write can, and only a writer with catalog write access
 (the host or orchestrator) can make one. Any query checked after the commit answers live. On a connection configured `managed` the same holds with no `storage=` too: a
-managed catalog's tables are built inside it, so a `#@ persist`, `#(materialize)` or rollup over author
+managed catalog's tables are built inside it, so a `#(materialize)` source or a rollup over author
 SQL there is refused at load whatever it declares. A chained build (a
 downstream stacked on its stored parents in the destination) runs on the same kind of session and follows
 the same rule: a downstream carrying author SQL is recomputed from raw instead of stacked on its parents.

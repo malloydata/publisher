@@ -876,24 +876,25 @@ the given, which is what the `absolute` regions already list.
 
 ## Persistence
 
-`#@ persist` materializes a source so queries read a table. On a source that reads a given,
-**Publisher refuses it at planning**. Tested by adding `##! experimental.persistence` and
-`#@ persist name="compounding_tbl"` to
-`source: persisted_compounding is compounding -> { select: * }`, where `compounding` is the
-recursion in `translate-formulas.md` (it reads its givens through `%{ }`). The package's
-build plan listed it under `refusedSources` with `reason: reads_given` and the
-message that a given in a persisted query "is substituted at BUILD time, so the table
-would hold the default's rows and serve them to every caller". The same shape of
-recursion with its numbers written as literals was accepted into the build plan. Only
-planning was checked; no build was run.
+`#(materialize)` materializes a source so queries read a table. On a source whose build
+reads a given, **Publisher refuses it at planning** (`reads_given`). This was tested with
+the legacy v1 spelling, `##! experimental.persistence` and `#@ persist name="compounding_tbl"`
+on `source: persisted_compounding is compounding -> { select: * }`, where `compounding` is the
+recursion in `translate-formulas.md` (it reads its givens through `%{ }`); `#(materialize)`
+refuses a build that reads a given for the same reason. The package's build plan listed it
+under `refusedSources` with `reason: reads_given` and the message that a given in a
+persisted query "is substituted at BUILD time, so the table would hold the default's rows
+and serve them to every caller". The same shape of recursion with its numbers written as
+literals was accepted into the build plan. Only planning was checked; no build was run.
 
 So a scenario source is either **live** (reads givens; computed on every query; fine at
-forecast scale) or **persisted with fixed inputs** (a snapshot of one scenario, with the
-other inputs at their cell values). A grid ([SC8](#sc8)) can be persisted with every
-candidate row, and the row chosen at read time by an `extend { where: abs(growth -
-$SCENARIO_GROWTH) < 1e-9 }` on the persisted query, which `docs/materialization.md`
-describes as a read-time predicate; a literal-input grid with that `extend` was accepted
-into the build plan (not built).
+forecast scale) or **materialized with fixed inputs** (a snapshot of one scenario, with the
+other inputs at their cell values). A grid ([SC8](#sc8)) can be materialized with every
+candidate row, and the row chosen at read time by a `where: abs(growth -
+$SCENARIO_GROWTH) < 1e-9` on the materialized source itself, which `docs/materialization.md`
+describes as a read-time predicate (a given-reading `where:` of the materialized source's
+own is left out of the build and applied per caller); a literal-input grid with that
+filter was accepted into the build plan (not built), tested with the v1 spelling.
 
 <a id="stays-in-excel"></a>
 

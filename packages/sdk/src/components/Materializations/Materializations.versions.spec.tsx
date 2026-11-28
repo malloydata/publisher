@@ -176,7 +176,7 @@ it("fetches the build plan only when a run is opened, for the pinned version", a
       "v2",
    ]);
    expect(
-      await screen.findByText("This package has no persist sources."),
+      await screen.findByText("This package has no materialized sources."),
    ).toBeTruthy();
 });
 
@@ -218,7 +218,7 @@ it("falls back to the package's inline plan on a server without the route", asyn
 
    expect(await screen.findByText("inline_source")).toBeTruthy();
    expect(
-      screen.queryByText("This package has no persist sources."),
+      screen.queryByText("This package has no materialized sources."),
    ).toBeNull();
 });
 
@@ -238,6 +238,6 @@ it("says the plan is unavailable, not empty, when the server cannot produce it",
       await screen.findByText("The build plan is unavailable."),
    ).toBeTruthy();
    expect(
-      screen.queryByText("This package has no persist sources."),
+      screen.queryByText("This package has no materialized sources."),
    ).toBeNull();
 });

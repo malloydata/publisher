@@ -40,7 +40,7 @@ export interface ExplorerField {
    /** True when the dimension carries `#(index)` / `#(index_values)` —
     *  its values can be fetched from the dimensional index. */
    indexed?: boolean;
-   /** True when the measure carries `#@ preaggregate` — it is DECLARED to roll
+   /** True when the measure carries `#(rollup)` — it is DECLARED to roll
     *  up into a table at some grain. Says nothing about whether one has been
     *  built; that is the measure's binding. */
    preaggregate?: boolean;
@@ -81,7 +81,7 @@ export interface ExplorerSource {
    /** Each doc annotation, in order, inherited ones first (see `ownSourceDoc`). */
    docParts?: string[];
    accent: AccentName;
-   /** The source carries a `#@ persist` tag — served from a materialized
+   /** The source carries `#(materialize)` — served from a materialized
     *  table rather than computed live. */
    persist?: boolean;
    dimensions: ExplorerField[];

@@ -26,7 +26,7 @@
  * Under `scope: package` the tables are shared by every version, so only the
  * package's `latest` may auto-run; the older version's run is refused with
  * VERSION_NOT_LATEST, which the summary reports. Under `scope: version` each
- * version builds its own tables, named with a `__v<version>_<hash>` suffix.
+ * version builds its own tables, named with a `__v<version>__p<hash>` suffix.
  */
 
 import fs from "node:fs";
@@ -79,11 +79,9 @@ C-1,denver,75
 C-2,denver,8
 `;
 
-const SALES_V1 = `##! experimental.persistence
+const SALES_V1 = `source: raw_orders is duckdb.table('data/orders.csv')
 
-source: raw_orders is duckdb.table('data/orders.csv')
-
-#@ persist name="order_summary"
+#(materialize) name="order_summary"
 source: order_summary is raw_orders -> {
   group_by: category
   aggregate:
@@ -93,7 +91,7 @@ source: order_summary is raw_orders -> {
 `;
 
 const SALES_V2 = `${SALES_V1}
-#@ persist name="region_summary"
+#(materialize) name="region_summary"
 source: region_summary is raw_orders -> {
   group_by: region
   aggregate:
@@ -102,11 +100,9 @@ source: region_summary is raw_orders -> {
 }
 `;
 
-const INVENTORY_V1 = `##! experimental.persistence
+const INVENTORY_V1 = `source: stock is duckdb.table('data/stock.csv')
 
-source: stock is duckdb.table('data/stock.csv')
-
-#@ persist name="stock_by_warehouse"
+#(materialize) name="stock_by_warehouse"
 source: stock_by_warehouse is stock -> {
   group_by: warehouse
   aggregate:
@@ -116,7 +112,7 @@ source: stock_by_warehouse is stock -> {
 `;
 
 const INVENTORY_V2 = `${INVENTORY_V1}
-#@ persist name="low_stock"
+#(materialize) name="low_stock"
 source: low_stock is stock -> {
   where: qty < 10
   select: sku, warehouse, qty

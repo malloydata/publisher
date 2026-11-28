@@ -36,8 +36,9 @@ DuckDB warehouse: built, served with `via: "served_copy"`, and compared to live.
 
 ## What is deprecated, and when
 
-Moving to `#(materialize)` is optional. `#@ persist` itself is not deprecated: a v1 package keeps its
-meaning, and `#@ persist` on a view stays the way to persist a view. `#@ -persist` is not deprecated
+**Write new work in v2:** `#(materialize)` on a source, `#(rollup)` on a measure, and `#@ persist`
+only on a view or a named query. Moving existing v1 code is optional: a v1 `#@ persist` on a source
+keeps its meaning, and `#@ persist` on a view stays the way to persist a view. `#@ -persist` is not deprecated
 either: it is Malloy core's own opt-out, which Malloy's persistence documentation teaches, and
 Publisher keeps honouring it under `#(materialize)` too ([below](#persist-opt-out)). One v1 form has
 no future in v2:
@@ -45,7 +46,7 @@ no future in v2:
 | v1 form           | Why                                           | v2 form                            |
 | ----------------- | --------------------------------------------- | ---------------------------------- |
 | `#@ preaggregate` | Renamed onto the `#(…)` routes Publisher owns | [`#(rollup)`](#preaggregate) |
-| `#(rollup)` | `#(rollup)`'s former name, read the same for one release with a `deprecated-preaggregate-annotation` warning; both on one measure fail the load (`rollup-invalid`) | [`#(rollup)`](#preaggregate) |
+| `#(preaggregate)` | `#(rollup)`'s former name, read the same for one release with a `deprecated-preaggregate-annotation` warning; both on one measure fail the load (`rollup-invalid`) | [`#(rollup)`](#preaggregate) |
 
 It follows the Publisher v1 plan's rule for a deprecated form: a package warning through 0.x,
 refused at 1.0.0, and the reader removed in 1.1. Its warning, `deprecated-preaggregate-annotation`,

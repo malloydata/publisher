@@ -67,8 +67,8 @@ Query the model once for each measure and dimension you plan to use, and look at
 
 A data app over a warehouse table, or a file over about 100,000 rows, is materialized: its source stored as a table
 and the figures it adds up kept as rollups, so blocks answer from them. Read `skill:malloy-materialization` first:
-it says which spelling the server reads (`#(materialize)` and `#(rollup)`, or `#@ persist` and `#@ preaggregate`
-where the server's materialization switch is off and the newer tags would be ignored), and that a source with a row
+it says how to write `#(materialize)` and `#(rollup)` (and that a server with its materialization switch off
+ignores them), and that a source with a row
 gate (`#(authorize)`, `#(access_filter)`) is built past its gate and must not be stored where every caller reads it.
 A small file in the package needs neither. What the kit adds to that skill:
 

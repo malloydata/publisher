@@ -21,7 +21,7 @@ SPDX-License-Identifier: MIT
 
 ## `scope`
 
-`package` (default) or `version`. It is a package-level contract about whether a persisted table may be shared across published versions: under `package` an unchanged source's table is reused by every version that computes the same SQL; under `version` each published version owns its own tables. There is no per-source scope and no per-source schedule; both are declared once for the package.
+`package` (default) or `version`. It is a package-level contract about whether a materialized table may be shared across published versions: under `package` an unchanged source's table is reused by every version that computes the same SQL; under `version` each published version owns its own tables. There is no per-source scope and no per-source schedule; both are declared once for the package.
 
 Two things to know about it on a standalone server:
 
@@ -49,4 +49,4 @@ The scope / schedule / freshness coherence rules - a single package-level scope,
 | package load | warned; the package still serves |
 | the scheduler | an offending package is skipped |
 
-Only those coherence rules are gates. `queryMetadata` findings, the deprecated homes, and an unrecognized `#@ persist` key are advisory. An invalid `refresh="incremental"` declaration is the other way round: it **fails the load** outright (`reference/refresh.md`). The `malloy-pub schedule` commands share the publish gate, so a rejection from them means the change was unsafe - and `schedule set` replaces the whole `materialization` block, dropping a freshness policy it finds there.
+Only those coherence rules are gates. `queryMetadata` findings, the deprecated homes, and a `materialize-*` warning are advisory (an unknown key on `#(materialize)` itself fails the load). An invalid `refresh="incremental"` declaration is the other way round: it **fails the load** outright (`reference/refresh.md`). The `malloy-pub schedule` commands share the publish gate, so a rejection from them means the change was unsafe - and `schedule set` replaces the whole `materialization` block, dropping a freshness policy it finds there.

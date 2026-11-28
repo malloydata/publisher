@@ -37,7 +37,7 @@ import {
 /**
  * The package's current build plan (GET …/build-plan), shown for context. It
  * is a property of the package version, not the historical run. A ready plan
- * is null for a package with no persist sources, which is why the section
+ * is null for a package with no materialized sources, which is why the section
  * renders an empty state rather than disappearing; a plan the server could not
  * produce is `unavailable`, which must not read as that empty state.
  */
@@ -250,7 +250,7 @@ export default function MaterializationDetailDialog({
                            color="text.secondary"
                            sx={{ fontStyle: "italic" }}
                         >
-                           This package has no persist sources.
+                           This package has no materialized sources.
                         </Typography>
                      ) : (
                         <Table size="small">

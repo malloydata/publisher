@@ -65,7 +65,7 @@ server that cannot be reached as unreachable (502, `CONNECTION_FAILED`). Two lim
 
 The dialect is **experimental** upstream. Publisher accepts it on the author's behalf, so a model
 needs no `##! experimental.dialect.sqlserver` pragma. The connection is **read-only**: a database
-`#@ persist` on a SQL Server source is refused at load with reason `connection_cannot_hold_table` and the
+`#(materialize)` on a SQL Server source is refused at load with reason `connection_cannot_hold_table` and the
 source serves live. The connector's README lists what the dialect does not translate yet (`nest:`,
 a boolean used as a condition, `all()`/`exclude()`, regular expressions before SQL Server 2025).
 
@@ -183,7 +183,7 @@ The script runs whenever the connection is opened, and again after it has been i
 
 A `ducklake` connection attaches a [DuckLake](https://ducklake.select) lakehouse — a Postgres catalog plus an object-storage (S3/GCS) data path. Publisher attaches it lazily (on first use, never on the startup path), guarantees a derived catalog-format compatibility range, and can run fully offline. See **[ducklake.md](ducklake.md)** for the connection shape, the compatibility contract, and the DuckDB extension-provisioning / air-gapped story.
 
-The same shape also describes a storage **destination** — where a `#@ persist storage=<name>` source is built and served from — but a destination is **not** a connection and is declared in its own list. See [Storage destinations](#storage-destinations) below and [persist-storage-tutorial.md](persist-storage-tutorial.md).
+The same shape also describes a storage **destination** — where a `#(materialize) storage="<name>"` source is built and served from — but a destination is **not** a connection and is declared in its own list. See [Storage destinations](#storage-destinations) below and [persist-storage-tutorial.md](persist-storage-tutorial.md).
 
 A `ducklake` connection pairs a **catalog** — a metadata database, typically Postgres — with **storage** — a `bucketUrl` for the Parquet data (an `s3://`/`gs://` URL in the cloud, or a local directory for dev):
 
@@ -212,7 +212,7 @@ The storage credential reaches only the catalog's data path. Publisher scopes th
 
 ## Storage destinations
 
-A `#@ persist storage=<name>` source is built into, and served from, a
+A `#(materialize) storage="<name>"` source is built into, and served from, a
 **storage destination**. Destinations are declared in
 `storageDestinations`, a sibling of `connections`:
 
@@ -458,7 +458,7 @@ applies `statementTimeoutMilliseconds`, the same way; its `sslmode` is described
   already in them is replaced by this field, with a warning logged. A connection pooler in
   transaction mode may not carry a session setting from one statement to the next. The timeout
   bounds every statement on the connection, including persisted-source builds: a database
-  `#@ persist` build and a federated `storage=` build run on sessions that carry it, so size it
+  materialization build and a federated `storage=` build run on sessions that carry it, so size it
   for the longest build, not only for interactive queries.
 
 A DuckLake catalog connection given as fields applies `sslmode` (when unset, the deployment

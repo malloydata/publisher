@@ -1071,15 +1071,15 @@
     },
     {
       "name": "malloy-materialization",
-      "description": "Add, confirm and debug Malloy Persistence materializations in a package - persist an expensive source so queries read a pre-built table, in the source's own warehouse or in a storage destination. Read this whenever the user wants to materialize a source, add a persist annotation, speed up a slow source, build one stored rollup over another, tune what to persist, or asks why a persist source isn't building or isn't being read."
+      "description": "Add, confirm and debug materializations in a Malloy package - `#(materialize)` an expensive source so queries read a pre-built table, in the source's own warehouse or in a storage destination, and `#(rollup)` a measure to a coarse grain. Read this whenever the user wants to materialize a source, speed up a slow source, roll up a measure, build one stored source over another, persist a view or named query, tune what to materialize, or asks why a materialized source isn't building or isn't being read."
     },
     {
       "name": "malloy-materialization/access-filter",
-      "description": "Persisting a `#(access_filter)`-gated source. Reference detail for the malloy-materialization skill."
+      "description": "Materializing an `#(access_filter)`-gated source. Reference detail for the malloy-materialization skill."
     },
     {
       "name": "malloy-materialization/annotation",
-      "description": "The `#@ persist` annotation. Reference detail for the malloy-materialization skill."
+      "description": "The `#(materialize)` annotation. Reference detail for the malloy-materialization skill."
     },
     {
       "name": "malloy-materialization/chaining",

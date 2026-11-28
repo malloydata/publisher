@@ -143,20 +143,23 @@ export function tagNames(tagLines: string[]): string[] {
 }
 
 /**
- * Whether a source's annotations carry a Malloy Persistence `persist` tag
- * (`#@ persist …`) — the marker that this source is served from a
- * materialized table rather than computed live.
+ * Whether a source's annotations declare it materialized — `#(materialize) …`,
+ * or the legacy v1 `#@ persist …` — the marker that this source is served
+ * from a materialized table rather than computed live.
  */
 export function hasPersistTag(
    annotations: Malloy.Annotation[] | undefined,
 ): boolean {
-   return hasPersistenceTag(annotations, "persist");
+   return (
+      hasRouteTag(annotations, "materialize") ||
+      hasPersistenceTag(annotations, "persist")
+   );
 }
 
 /**
- * Whether a measure's annotations carry a Malloy Persistence `preaggregate` tag
- * (`#@ preaggregate grain="…"`) — the marker that this measure is rolled up
- * into a table grouped at that grain.
+ * Whether a measure's annotations declare a rollup — `#(rollup) grain=[…]`,
+ * or the legacy v1 spelling — the marker that this measure is rolled up into
+ * a table grouped at that grain.
  *
  * <p>The measure-level counterpart to {@link hasPersistTag}. Like it, this
  * reports what the model DECLARES, which is true whether or not a rollup has
@@ -166,10 +169,22 @@ export function hasPersistTag(
 export function hasPreaggregateTag(
    annotations: Malloy.Annotation[] | undefined,
 ): boolean {
-   return hasPersistenceTag(annotations, "preaggregate");
+   return (
+      hasRouteTag(annotations, "rollup") ||
+      hasPersistenceTag(annotations, "preaggregate")
+   );
 }
 
-/** Shared matcher for the `#@ <verb>` persistence annotations. */
+/** Shared matcher for the `#(<route>)` materialization annotations. */
+function hasRouteTag(
+   annotations: Malloy.Annotation[] | undefined,
+   route: string,
+): boolean {
+   const re = new RegExp(`^#\\(${route}\\)(?=\\s|\\{|$)`);
+   return (annotations ?? []).some((a) => re.test(a.value?.trim() ?? ""));
+}
+
+/** Shared matcher for the legacy `#@ <verb>` persistence annotations. */
 function hasPersistenceTag(
    annotations: Malloy.Annotation[] | undefined,
    verb: string,
@@ -222,8 +237,9 @@ export function recordFieldsTip(
 
 /**
  * A field's author-facing tags (`# label="Revenue"`, `# currency`, `# percent`,
- * `# number="0.0%"`) as `getTagLines` reads them, less the persistence
- * tags (`#@ preaggregate …`), which the row states as its own pill.
+ * `# number="0.0%"`) as `getTagLines` reads them, less the `#@` persistence
+ * tags, which the row states as its own pill (`#(rollup)`, like every
+ * namespaced tag, `getTagLines` already leaves out).
  */
 export function getFieldTagLines(
    annotations: Malloy.Annotation[] | undefined,
