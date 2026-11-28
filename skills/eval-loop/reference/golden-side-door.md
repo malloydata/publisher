@@ -46,6 +46,19 @@ the pinned version and the source the attempt used.
 clear. Read it before repairing more than one key, and before touching a set
 you did not author.
 
+**Dismissing a doubt takes the same replay as accepting one.** The commonest
+`suspect` on a `verified` key is the judge reasoning from the model: the
+answer's figure re-executes cleanly, the golden sits a steady few percent away,
+and the judge guesses the golden carries a filter the question never stated.
+Two queries settle it. Re-run the case's `canonicalQuery` on the truth server,
+then compute the model's figure from the raw tables by the definition the
+model actually uses. If the second reproduces the answer to the cent, the
+golden is right and the gap belongs to the model; dismiss the doubt and record
+both figures in the report. Do not dismiss it on the pattern alone: measured
+2026-10-27, one measure defect produced three such doubts in a single arm, and
+"a steady gap across cases sharing a measure" is a reason to look, not the
+look.
+
 1. **Replay, yourself.** Take the stored `final_query` (or a query you can
    justify from the model) and run it with `execute_query`. Write the
    rows to a gold artifact under `evals/<set>/` (never under the served
