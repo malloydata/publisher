@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Release Notes
 
-Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and `@malloy-publisher/server` (versioned in lockstep).
+Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, `@malloy-publisher/server`, and `@malloy-publisher/cli` (versioned in lockstep).
 
 ## How this file is used
 
@@ -24,6 +24,10 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 ## [Unreleased] — a dataset-scoped BigQuery account's stored tables serve queries that compare strings
 
 **[fix] On BigQuery, a stored table now serves a query that groups, orders or filters by a string when the connection's account can read only its datasets.** 0.18.6 (#2049) taught a `storage=` build to read each dataset's own `INFORMATION_SCHEMA`, so a chain of `storage=` sources over a `.table()` source builds on an account granted only its dataset (dataset READER and jobUser, no project-level `bigquery.tables.list`). The serve side still read the project-wide region views, which such an account is denied, so it could not prove the source compares strings byte-exact: every query that grouped, ordered or filtered by a string answered live, with the served copy's decline "the result groups or compares a string a stored table does not compare as its source does: a query that reads a string under a collation". Each bind now reads the project-wide views first and, when they are refused the caller, each dataset's own catalog instead, provided every table the model's `.table()` sources read is known and they span at most 20 datasets. A `storage=` build now uses the same order, so an account that can read project-wide runs the same two queries per project and region as before. An `.sql()` source and a view are still proved only by the project-wide reads. A read that is denied or incomplete still answers live, and now logs one warning naming the connection, project, location (when the connection sets one), dataset and a bounded reason (`dataset_unread`, `project_unread`, …), never a driver's text. **Who is affected:** BigQuery connections whose account is scoped to datasets: their stored tables now answer the queries above, at one extra catalog query per dataset at each bind and build. **What to do:** nothing.
+
+## [Unreleased] — the `malloy-pub` CLI publishes to npm as `@malloy-publisher/cli`
+
+**[new] The Publisher CLI, `malloy-pub`, is now on npm as `@malloy-publisher/cli`, released in lockstep with the server.** Until now it was buildable only from a clone, under a package name (`@malloydata/publisher-cli`) that was never published, so the commands the materialization docs and skills show (`malloy-pub materialize`, `malloy-pub schedule set`, `malloy-pub list materialization` and the rest) had no install path outside the repo. Run it with `npx @malloy-publisher/cli@latest <command>`, or install the binary with `npm i -g @malloy-publisher/cli`. It needs Node.js 20 or newer and no Bun. Each release publishes it at the same version as `@malloy-publisher/server`, with its API client generated from that release's `api-doc.yaml`, so match the two when you pin; `malloy-pub --version` now reports that version rather than a fixed `0.0.50`. The commands themselves are unchanged. Nothing on npm ever carried the old name, so there is nothing to migrate from.
 
 ## [0.18.6] — a file kept from before a failed recompile no longer serves stale tables when its upstream read fails
 

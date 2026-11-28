@@ -1449,7 +1449,7 @@ A build ignores the package's [published surface](discovery-and-access.md). It b
 
 Each run records a **trigger** in its metadata: `on_demand` (a manual/API build) or `scheduler` (a scheduled fire), the words `RunContext.trigger` uses. Runs recorded before 0.15 say `ON_DEMAND` and `SCHEDULER`. The API and the CLI accept both; since 0.16.1 the scheduler reads only `scheduler`, so a scheduled fire a release before 0.15 recorded is not read when it anchors a schedule. Only one materialization can be active per (environment, package) at a time — a second concurrent build is rejected with HTTP 409, and the scheduler coalesces (skips) rather than stacking a second build. A package with published versions builds per version, under the rules in [package-versions.md](package-versions.md#materializations): a run under `scope: "version"`, or one with `buildInstructions`, holds its own version's slot instead.
 
-On demand, via the CLI:
+On demand, via the CLI ([installing it](#manage-it-with-the-cli)):
 
 ```bash
 malloy-pub materialize --environment <env> --package <pkg> --wait
@@ -1633,6 +1633,12 @@ A package or version bound to a host manifest (one with a `manifestLocation`) re
 > **Never set `PUBLISHER_LOCAL_MATERIALIZATION_SCHEDULER` on a control-plane-driven (orchestrated) worker.** A version the control plane has bound or built is skipped even while it serves live, but an unversioned package serving live under a control plane, or a version it has neither bound nor built yet, has no `manifestLocation` and no host mark, so the per-package skip does not cover it — the flag being off is the primary guard against the standalone scheduler double-driving refresh the control plane already owns.
 
 ## Manage it with the CLI
+
+The CLI is `malloy-pub`, published to npm as `@malloy-publisher/cli` and released in lockstep with
+the server. It needs Node.js 20 or newer. Run it with `npx @malloy-publisher/cli@latest <command>`,
+or install it once with `npm i -g @malloy-publisher/cli`; the examples below assume the global
+install. It talks to `http://localhost:4000` unless `--url` or `MALLOY_PUBLISHER_URL` says otherwise.
+[`packages/cli/README.md`](../packages/cli/README.md) lists every command.
 
 ```bash
 # View / set / clear a package's schedule (set also sets scope: version). set and clear apply
