@@ -143,6 +143,12 @@ of its own, is answered as before. One case still answers live: a table **is** b
 served copy declines it for this query (a time zone it was not built in, past its freshness
 window, a column it left out), or a stored run fails and falls back to live.
 
+This is a cost guard on the run target's **own** declaration, not a guarantee for every spelling
+of the same data. An import rename (`import { pub is orders } from "…"`) keeps the source's
+identity and is refused like the source itself. These still run live, built or not: a rename in a
+model file (`source: renamed is orders`), an inline extension in the query
+(`run: orders extend { … } -> { index: * }`), and a `compose(…)` that resolves to a stored member.
+
 Starting a materialization (`POST …/packages/{pkg}/materializations`) answers, beside the version
 reasons:
 

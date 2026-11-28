@@ -2478,6 +2478,9 @@ paths:
         `reason` INDEX_SOURCE_UNBUILT and an `unbuiltReason`, and is never run live against the
         warehouse. The 404s and 403s of the published surface and the source's gates decide first.
         Any other class, and a source with no declaration of its own, is answered as before.
+        This is a cost guard on the run target's own declaration, not a guarantee for every
+        spelling: an import rename is refused like the source, but a rename in a model file, an
+        inline `extend` in the query, and a `compose(…)` resolving to a stored member run live.
       parameters:
         - name: environmentName
           in: path

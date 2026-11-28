@@ -81,15 +81,21 @@ source: org_kinds is org_rows -> { group_by: id, kind }
 `,
    "index.malloy": `##! experimental.givens
 import "m.malloy"
-export { mm, mm_ext, plain, p, locked, scoped, org_kinds }
+import { pub is secret } from "m.malloy"
+export { mm, mm_ext, plain, p, locked, scoped, org_kinds, pub }
 `,
 };
 
 type Run = { servedBy: string; rows: string } | { error: Error };
 
+/** The rows as a sorted list of JSON lines: an index query's rows come in no order. */
 function rowsOf(rows: unknown): string {
-   return JSON.stringify(rows, (_k, v: unknown) =>
-      typeof v === "bigint" ? Number(v) : v,
+   const line = (row: unknown) =>
+      JSON.stringify(row, (_k, v: unknown) =>
+         typeof v === "bigint" ? Number(v) : v,
+      );
+   return JSON.stringify(
+      (Array.isArray(rows) ? rows : [rows]).map(line).sort(),
    );
 }
 
@@ -212,6 +218,22 @@ describe("index queries on a source that declares a stored table", () => {
             const answer = await run("run: mm -> { index: * }", queryClass);
             expect(answer).toMatchObject({ servedBy: "live" });
          }
+      });
+
+      it("names an import rename as the caller queried it, never the off-surface source it renames", async () => {
+         // `pub` renames `secret`, which is stored and off the surface, and
+         // keeps its sourceID: the refusal must say `pub`.
+         expect(await run("run: pub -> { group_by: kind }")).toMatchObject({
+            servedBy: "live",
+         });
+         const answer = await run("run: pub -> { index: * }", "index");
+         expect(http(answer)).toMatchObject({
+            status: 409,
+            json: { reason: "INDEX_SOURCE_UNBUILT", unbuiltReason: "unbuilt" },
+         });
+         const message = "error" in answer ? answer.error.message : "";
+         expect(message).toContain('Source "pub"');
+         expect(message).not.toContain("secret");
       });
 
       it("governance first: an off-surface source answers its 404, not the 409", async () => {

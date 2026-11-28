@@ -1339,6 +1339,12 @@ build retries once the table is built. A bound table the served copy declines fo
 (another time zone, past its freshness window, a column left out) is still answered live, as is a
 stored run that fails and falls back. See [the API overview](api-overview.md).
 
+This is a cost guard on the run target's **own** declaration, not a guarantee for every spelling
+of the same data. An import rename (`import { pub is orders } from "…"`) keeps the source's
+identity and is refused like the source itself. These still run live, built or not: a rename in a
+model file (`source: renamed is orders`), an inline extension in the query
+(`run: orders extend { … } -> { index: * }`), and a `compose(…)` that resolves to a stored member.
+
 ## Freshness: a window and a fallback
 
 A stored table can say how old its data may be before a query stops reading it:

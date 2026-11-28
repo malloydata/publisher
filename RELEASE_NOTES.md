@@ -46,6 +46,8 @@ Two consequences worth knowing. A section merged to `main` ships in the **next**
 
 The published surface's 404s, the gates' 403s and the inherited-filter check all decide first, so a caller who may not query the source gets exactly the answer an `interactive` query gets. One case is unchanged on purpose: a table is bound, but the served copy declines it for that query (a time zone it was not built in, past its freshness window, a column it left out), or a stored run fails and falls back. Those index queries are still answered live.
 
+This is a cost guard on the queried source's own declaration, not a guarantee for every spelling of the same data. An import rename (`import { pub is orders } from "…"`) is refused like the source itself. A rename in a model file (`source: renamed is orders`), an inline extension in the query (`run: orders extend { … } -> { index: * }`) and a `compose(…)` that resolves to a stored member still run live, built or not.
+
 **Who is affected:** clients that send `queryClass: index`. **What to do:** treat `INDEX_SOURCE_UNBUILT` as deferred and retry once the source's table is built. Nothing changes for other clients.
 
 ## [Unreleased] — an inherited `where:` that cannot be verified says so

@@ -16,6 +16,13 @@
  * only after governance has admitted the caller (`model_serving.ts`), so the
  * refusal never reveals a source the caller may not query.
  *
+ * A cost guard on the run target's own declaration, not a guarantee for
+ * every spelling of the same data: an import rename keeps the sourceID and
+ * is refused (under the name the caller used), but a model-file rename
+ * (`source: r is s`, a new sourceID), an inline `extend` in the query (which
+ * carries no sourceID) and a `compose(…)` resolving to a stored member are
+ * answered live.
+ *
  * Pure: reads the compiled query, the model's definition, the query's pin
  * and the plan's refusals, and changes nothing.
  */
@@ -82,25 +89,57 @@ function declaresStoredTable(
 }
 
 /**
- * The run target's declaration in the model, with the name the model
- * declares it under: the `contents` entry carrying its `sourceID` (the very
- * object {@link declaredNotes} compares identities against), else the
- * compiled struct itself under its alias.
+ * The run target's declaration in the model, under the name the caller's
+ * query used for it. An import rename (`import { pub is secret }`) keeps the
+ * original `sourceID`, so several `contents` entries can carry one: the
+ * name is the one the query referenced (a `structRef` string, else the
+ * struct's `as`), never another entry's, which may be off the surface. The
+ * def is that entry (the very object {@link declaredNotes} compares
+ * identities against), else the only entry carrying the `sourceID`, else
+ * the compiled struct itself. Undefined when no name the caller used can be
+ * told, so nothing is refused under a name the caller could not query.
  */
 function declarationOf(
+   structRef: unknown,
    struct: { sourceID?: unknown; as?: unknown } | undefined,
    modelDef: ModelDef,
 ): { name: string; def: NotedSourceDef; sourceID: string } | undefined {
    const sourceID = struct?.sourceID;
    if (typeof sourceID !== "string") return undefined;
-   for (const [name, entry] of Object.entries(modelDef.contents ?? {})) {
-      if ((entry as { sourceID?: unknown }).sourceID === sourceID) {
-         return { name, def: entry as NotedSourceDef, sourceID };
-      }
-   }
+   const contents = modelDef.contents ?? {};
+   const carries = (entry: unknown) =>
+      (entry as { sourceID?: unknown } | undefined)?.sourceID === sourceID;
    // Never the struct's `name`: on a table source it is the physical table.
-   const name = typeof struct?.as === "string" ? struct.as : undefined;
-   return name ? { name, def: struct as NotedSourceDef, sourceID } : undefined;
+   const referenced =
+      typeof structRef === "string"
+         ? structRef
+         : typeof struct?.as === "string"
+           ? struct.as
+           : undefined;
+   if (referenced !== undefined && carries(contents[referenced])) {
+      return {
+         name: referenced,
+         def: contents[referenced] as NotedSourceDef,
+         sourceID,
+      };
+   }
+   const matches = Object.entries(contents).filter(([, entry]) =>
+      carries(entry),
+   );
+   if (referenced === undefined) {
+      return matches.length === 1
+         ? {
+              name: matches[0][0],
+              def: matches[0][1] as NotedSourceDef,
+              sourceID,
+           }
+         : undefined;
+   }
+   return {
+      name: referenced,
+      def: (matches.length === 1 ? matches[0][1] : struct) as NotedSourceDef,
+      sourceID,
+   };
 }
 
 /**
@@ -157,7 +196,7 @@ export async function unbuiltIndexSource(args: {
       prepared.structRef,
       prepared.modelDef ?? modelDef,
    );
-   const declaration = declarationOf(struct, modelDef);
+   const declaration = declarationOf(prepared.structRef, struct, modelDef);
    if (!declaration) return undefined;
    const { name, def, sourceID } = declaration;
    if (
