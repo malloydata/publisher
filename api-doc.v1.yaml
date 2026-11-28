@@ -2553,9 +2553,10 @@ paths:
           description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`."
         "409":
           $ref: "#/components/responses/Conflict"
-          description: "The version declares a `default` skill set that could not be read when it loaded (a folder the server could
-            not list), so the skills are refused, bundled names included, because a `default` skill can replace a bundled one;
-            the message names the cause. `reason`: `SKILL_SETS_UNAVAILABLE`."
+          description: "The version declares a `default` skill set, and the load could not read the version's skill sets (a set's
+            folder or a workflow's instructions file the server could not read, or a walk that threw), so the skills are refused,
+            bundled names included, because a `default` skill can replace a bundled one; the message names the cause. `reason`:
+            `SKILL_SETS_UNAVAILABLE`."
         "410":
           $ref: "#/components/responses/Gone"
         "424":
@@ -2638,9 +2639,10 @@ paths:
           description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`."
         "409":
           $ref: "#/components/responses/Conflict"
-          description: "The version declares a `default` skill set that could not be read when it loaded (a folder the server could
-            not list), so the skills are refused, bundled names included, because a `default` skill can replace a bundled one;
-            the message names the cause. `reason`: `SKILL_SETS_UNAVAILABLE`."
+          description: "The version declares a `default` skill set, and the load could not read the version's skill sets (a set's
+            folder or a workflow's instructions file the server could not read, or a walk that threw), so the skills are refused,
+            bundled names included, because a `default` skill can replace a bundled one; the message names the cause. `reason`:
+            `SKILL_SETS_UNAVAILABLE`."
         "410":
           $ref: "#/components/responses/Gone"
         "424":

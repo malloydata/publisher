@@ -2787,11 +2787,12 @@ paths:
         other files are read through the `get_skill` MCP tool.
 
         409 `SKILL_SETS_UNAVAILABLE` when the package declares a `default` set
-        and the load could not read it. Its own skills come from there and one
-        can replace a bundled skill, so the listing is refused whole: the
-        message carries the reason and it lasts until the package reloads. A
-        package with no `default` has no skills of its own, so it lists the
-        bundled ones as usual.
+        and the load could not read the package's skill sets (any set's folder
+        or any workflow's instructions file, or a walk that threw). Its own
+        skills come from `default` and one can replace a bundled skill, so the
+        listing is refused whole: the message carries the reason and it lasts
+        until the package reloads. A package with no `default` has no skills of
+        its own, so it lists the bundled ones as usual.
 
         The REST half of the `get_skill` MCP tool, for callers running
         unattended.
@@ -2854,8 +2855,8 @@ paths:
         other files are read through the `get_skill` MCP tool.
 
         404 when no skill of that name is in force. 409 `SKILL_SETS_UNAVAILABLE`
-        when the package declares a `default` set that could not be read at
-        load, as for the listing.
+        when the package declares a `default` set and the load could not read
+        the package's skill sets, as for the listing.
       parameters:
         - name: environmentName
           in: path
@@ -6050,7 +6051,8 @@ components:
             (unreadable or linked-out `SKILL.md`, a frontmatter `name` that is
             not its directory name, a directory name that breaks the name rule
             or differs from another's only by case, an `assets/` that breaks a
-            rule, a `publisher.json` search past the set's entry budget, a
+            rule, a skill with more entries under `assets/` than the
+            `publisher.json` search will read, a
             `SKILL.md` past the set's inline budget), a skill served with a
             gap (no `description`, frontmatter that is not valid YAML), a set
             that holds no skills, a set past its skill cap, a skill named like a
