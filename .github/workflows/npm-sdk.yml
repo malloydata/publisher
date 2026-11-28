@@ -75,6 +75,65 @@ jobs:
           cd packages/app
           NODE_ENV=production bun run build
 
+      # The CLI (`malloy-pub`) is on the same lockstep version as sdk/app/server:
+      # `release.yml`'s `prepare` sets packages/cli/package.json with the other
+      # three, whether or not it publishes. Everything that can go wrong with it
+      # short of `npm publish` itself happens HERE, before anything ships: the
+      # registry checks and the build (`prebuild` fetches the API generator and
+      # generates the client from api-doc.yaml). A failure in this step fails the
+      # job with nothing published; only the final "Publish CLI package" step
+      # runs after sdk/app/server are on npm.
+      #
+      # `cli_action` decides that last step:
+      #  - `skip_missing`: npm has no @malloy-publisher/cli at all (E404). npm
+      #    takes a trusted-publisher entry only for an existing package, so an
+      #    OIDC publish cannot succeed until the first version is published by
+      #    hand. Warn with the setup and stay green rather than fail publish-npm
+      #    after three packages shipped, which would skip gh-release and
+      #    publish-packages.
+      #  - `skip_published`: this exact version is already on npm, i.e. a
+      #    re-run of a release whose CLI publish landed. Notice and stay green.
+      #  - `publish`: the package exists and this version does not.
+      # Any other `npm view` failure (registry down, auth) cannot tell those
+      # apart, so it fails the step, still before anything is published.
+      - name: Check and build CLI package
+        id: cli_step
+        env:
+          CLI_VERSION: ${{ steps.version_step.outputs.current_version }}
+        run: |
+          set -euo pipefail
+          # Prefixed so a line of npm's output starting with `::` is not read as
+          # a workflow command.
+          registry_error() {
+            sed 's/^/[npm view] /' "$VIEW_LOG"
+            echo "::error title=CLI publish::could not ask npm about $1 (logged above). Nothing has been published; re-run once the registry answers."
+            exit 1
+          }
+          VIEW_LOG="$(mktemp)"
+
+          if ! npm view @malloy-publisher/cli version >/dev/null 2>"$VIEW_LOG"; then
+            grep -q 'E404' "$VIEW_LOG" || registry_error "@malloy-publisher/cli"
+            echo "::warning title=CLI not published::@malloy-publisher/cli does not exist on npm yet, so ${CLI_VERSION} will NOT be published (sdk, app and server will). One-time setup: publish the first version by hand (cd packages/cli && bun run build && npm publish --access public), then register its npm trusted publisher naming repository malloydata/publisher and workflow release.yml. See .github/workflows/CONTEXT.md, 'The CLI rides the lockstep train'."
+            echo "cli_action=skip_missing" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          # A version the package lacks is an E404 on current npm and an empty
+          # answer on older npm; both mean "publish".
+          if PUBLISHED="$(npm view "@malloy-publisher/cli@${CLI_VERSION}" version 2>"$VIEW_LOG")"; then
+            if [ "$PUBLISHED" = "$CLI_VERSION" ]; then
+              echo "::notice title=CLI already published::@malloy-publisher/cli@${CLI_VERSION} is already on npm (a re-run of this release); skipping its publish."
+              echo "cli_action=skip_published" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          else
+            grep -q 'E404' "$VIEW_LOG" || registry_error "@malloy-publisher/cli@${CLI_VERSION}"
+          fi
+
+          cd packages/cli
+          NODE_ENV=production bun run build
+          echo "cli_action=publish" >> "$GITHUB_OUTPUT"
+
       - name: Publish to NPM
         env:
           NODE_AUTH_TOKEN: ""
@@ -91,4 +150,15 @@ jobs:
         run: |
           cd packages/server
           NODE_ENV=production bun run build
+          npm publish --access public --tag ${{ steps.version_step.outputs.npm_tag }}
+
+      # The one CLI step after sdk/app/server have shipped: built and checked
+      # above, so only the publish itself can fail here, and a failure of it is
+      # real (a missing or mis-named trusted publisher, a registry outage).
+      - name: Publish CLI package
+        if: steps.cli_step.outputs.cli_action == 'publish'
+        env:
+          NODE_AUTH_TOKEN: ""
+        run: |
+          cd packages/cli
           npm publish --access public --tag ${{ steps.version_step.outputs.npm_tag }}
