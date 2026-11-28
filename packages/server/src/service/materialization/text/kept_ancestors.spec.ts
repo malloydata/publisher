@@ -154,9 +154,57 @@ describe("carrying an ancestor's blocks from another file", () => {
       expect(confirmed(baseText("lookup"), backtickedChild)).toEqual([]);
    });
 
-   it("not through a selective import", () => {
+   it("through a selective import, importing each name the blocks read that the file does not bind", () => {
       const child = `import { lk } from "base.malloy"\n${childDecl}\n`;
-      expect(confirmed(baseText("lookup"), child)).toEqual([]);
+      const kept = confirmed(baseText("lookup"), child);
+      expect(kept).toHaveLength(1);
+      expect(kept[0].imports).toEqual(['import { lookup } from "base.malloy"']);
+   });
+
+   it("not when a selective import binds a name the blocks read to another declaration", () => {
+      const OTHER = "file:///pkg/other.malloy";
+      const child = `import { lk } from "base.malloy"\nimport { lookup } from "other.malloy"\n${childDecl}\n`;
+      expect(
+         confirmed(baseText("lookup"), child, {
+            [OTHER]: "source: lookup is duckdb.table('evil')\n",
+         }),
+      ).toEqual([]);
+      const renamed = `import { lk, lookup is trips } from "base.malloy"\n${childDecl}\n`;
+      expect(confirmed(baseText("lookup"), renamed)).toEqual([]);
+   });
+
+   it("not when the blocks embed Malloy in a SQL string (%{ }), whose names no check here can read", () => {
+      const EMBED_DECL =
+         'source: lk is trips extend { join_one: L is duckdb.sql("""select * from %{ lookup -> { select: * } }""") on cat = L.cat }';
+      const base = `source: trips is duckdb.table('t')\nsource: lookup is duckdb.table('c')\n${EMBED_DECL}\n`;
+      const decl = (b: string) =>
+         confirmedAncestors(
+            (url) => (url === BASE ? b : url === CHILD ? childText : undefined),
+            CHILD,
+            rangeOf(childText, childDecl),
+            [
+               {
+                  sourceID: `lk@${BASE}`,
+                  url: BASE,
+                  range: rangeOf(b, EMBED_DECL),
+               },
+            ] as never,
+         );
+      let childText = `import { lk } from "base.malloy"\nsource: lookup is duckdb.table('evil')\n${childDecl}\n`;
+      expect(decl(base)).toEqual([]);
+      childText = `import { lk } from "base.malloy"
+${childDecl}
+`;
+      expect(decl(base)).toEqual([]);
+      childText = `import "base.malloy"
+${childDecl}
+`;
+      expect(decl(base)).toEqual([]);
+   });
+
+   it("imports nothing through a whole import, which binds every name the file declares", () => {
+      const child = `import "base.malloy"\n${childDecl}\n`;
+      expect(confirmed(baseText("lookup"), child)[0].imports).toBeUndefined();
    });
 
    describe("when the ancestor's file imports another file", () => {
@@ -182,18 +230,51 @@ describe("carrying an ancestor's blocks from another file", () => {
          ).toHaveLength(1);
       });
 
-      it("not when the blocks read a name it imports, whole, selectively or through the imported file's own import", () => {
+      it("imports a name the blocks read that it imports, which the importing file does not see (Malloy imports are not transitive)", () => {
          // `lookup`, which the blocks read, is now raw.malloy's, which the child
          // does not see through its whole import of base.malloy.
          const base = `import "raw.malloy"\nsource: trips is duckdb.table('t')\n${baseDecl("lookup")}\n`;
          const raw = "source: lookup is duckdb.table('c')\n";
-         expect(confirmed(base, child, { [RAW]: raw })).toEqual([]);
+         expect(confirmed(base, child, { [RAW]: raw })[0].imports).toEqual([
+            'import { lookup } from "raw.malloy"',
+         ]);
          const selective = `import { lookup } from "raw.malloy"\nsource: trips is duckdb.table('t')\n${baseDecl("lookup")}\n`;
-         expect(confirmed(selective, child, { [RAW]: raw })).toEqual([]);
+         expect(confirmed(selective, child, { [RAW]: raw })[0].imports).toEqual(
+            ['import { lookup } from "raw.malloy"'],
+         );
+         const renamed = `import { lookup is cats } from "raw.malloy"\nsource: trips is duckdb.table('t')\n${baseDecl("lookup")}\n`;
          expect(
-            confirmed(base, child, {
-               [RAW]: `import "deep.malloy"\n`,
-               [DEEP]: raw,
+            confirmed(renamed, child, {
+               [RAW]: "source: cats is duckdb.table('c')\n",
+            })[0].imports,
+         ).toEqual(['import { lookup is cats } from "raw.malloy"']);
+      });
+
+      it("imports nothing when the importing file binds that name to the same declaration", () => {
+         const base = `import "raw.malloy"\nsource: trips is duckdb.table('t')\n${baseDecl("lookup")}\n`;
+         const raw = "source: lookup is duckdb.table('c')\n";
+         const both = `import "base.malloy"\nimport "raw.malloy"\n${childDecl}\n`;
+         const kept = confirmed(base, both, { [RAW]: raw });
+         expect(kept).toHaveLength(1);
+         expect(kept[0].imports).toBeUndefined();
+      });
+
+      it("not when the importing file binds that name to another declaration", () => {
+         const base = `import "raw.malloy"\nsource: trips is duckdb.table('t')\n${baseDecl("lookup")}\n`;
+         const raw = "source: lookup is duckdb.table('c')\n";
+         const own = `import "base.malloy"\nsource: lookup is duckdb.table('evil')\n${childDecl}\n`;
+         expect(confirmed(base, own, { [RAW]: raw })).toEqual([]);
+         const viaDeep = `import "base.malloy"\nimport "deep.malloy"\n${childDecl}\n`;
+         expect(confirmed(base, viaDeep, { [RAW]: raw, [DEEP]: raw })).toEqual(
+            [],
+         );
+      });
+
+      it("not when the importing file declares a name the blocks read as a field", () => {
+         const own = `import "base.malloy"\nsource: cat is duckdb.table('evil')\n${childDecl}\n`;
+         expect(
+            confirmed(importing(`import "raw.malloy"`), own, {
+               [RAW]: "source: stations is duckdb.table('s')\n",
             }),
          ).toEqual([]);
       });
