@@ -1,6 +1,8 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import * as fs from "node:fs";
+import * as path from "node:path";
 import { parseDocument } from "yaml";
 
 function unquote(value: string): string {
@@ -93,4 +95,39 @@ export function readFrontmatter(
             ? description.trim()
             : lineRead.description,
    };
+}
+
+/** A skill's frontmatter, plus where its files live. */
+export interface Skill {
+   name: string;
+   description: string;
+   /** Absolute path to the skill's directory: SKILL.md and any reference/. */
+   dir: string;
+}
+
+/**
+ * Every skill under `root`, parsed on demand rather than baked into a generated
+ * manifest, so there is no second copy of this metadata to drift. `listSkills`
+ * reads the shipped files; the parity spec points `root` at skills it wrote,
+ * which is why this is not on the package's entry point.
+ */
+export function readSkills(root: string): Skill[] {
+   const skills: Skill[] = [];
+   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+      if (!entry.isDirectory()) continue;
+      const dir = path.join(root, entry.name);
+      const skillFile = path.join(dir, "SKILL.md");
+      if (!fs.existsSync(skillFile)) continue;
+      const markdown = fs
+         .readFileSync(skillFile, "utf8")
+         .replace(/^\uFEFF/, "")
+         .replace(/\r\n/g, "\n");
+      const frontmatter = markdown.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
+      skills.push({ ...readFrontmatter(frontmatter, entry.name), dir });
+   }
+   // Codepoint order, not localeCompare: the result is compared across
+   // platforms and must not depend on the runtime's locale.
+   return skills.sort((a, b) =>
+      a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
+   );
 }

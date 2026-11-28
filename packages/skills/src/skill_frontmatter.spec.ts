@@ -6,8 +6,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { parseFrontmatter } from "../../server/src/service/skills/frontmatter";
-import { listSkills } from "./index";
-import { readFrontmatter } from "./skill_frontmatter";
+import { readFrontmatter, readSkills } from "./skill_frontmatter";
 
 describe("readFrontmatter", () => {
    it("reads a plain name and description", () => {
@@ -221,11 +220,11 @@ describe("the server's and the package's frontmatter readers", () => {
    it.each(PARITY)(
       "agree on %s",
       (_label, markdown, dir, name, description) => {
-         // The package reads a file through listSkills, BOM and CRLF included.
+         // The package reads a file through its directory reader, BOM and CRLF included.
          fs.mkdirSync(path.join(root, dir));
          fs.writeFileSync(path.join(root, dir, "SKILL.md"), markdown);
          expect(
-            listSkills(root).map((s) => ({
+            readSkills(root).map((s) => ({
                name: s.name,
                description: s.description,
             })),

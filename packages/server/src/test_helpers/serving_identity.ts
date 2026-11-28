@@ -8,11 +8,11 @@ import type { LoadPackageOutcome } from "../package_load/package_load_pool";
 import {
    boundedDeclaration,
    computeSourceContentSha,
-   shasOf,
    UNREADABLE_SHA,
 } from "../service/package_revision";
 import {
    readPackageWorkflows,
+   servedContentShas,
    workflowsToWire,
 } from "../service/skills/package_workflows";
 
@@ -59,7 +59,7 @@ export function servingIdentityOutcome(
          modelType: "model" as const,
       })),
       sourceContentSha: computeSourceContentSha(
-         new Map([...shasOf(modelPaths, modelShas), ...walk.contentShas]),
+         new Map([...modelShas, ...servedContentShas(walk)]),
          declaration.sha,
       ),
    } as unknown as LoadPackageOutcome;
