@@ -1838,7 +1838,7 @@ export class ServedCopyServe {
       reroot: Reroot & { sourceID: string },
       map: SourceMap,
       fileText: (url: string) => string | undefined,
-   ): string | undefined {
+   ): { blocks: string; imports: string[] } | undefined {
       const plan = this.materializePlans[reroot.sourceID];
       if (!plan) return undefined;
       // Across files: an extension in a file that imports its base's file
@@ -1869,10 +1869,13 @@ export class ServedCopyServe {
             ),
          );
       if (!needed) return undefined;
-      return confirmed
-         .flatMap((a) => (a.runText ? [a.runText] : []))
-         .reverse()
-         .join(" ");
+      return {
+         blocks: confirmed
+            .flatMap((a) => (a.runText ? [a.runText] : []))
+            .reverse()
+            .join(" "),
+         imports: [...new Set(confirmed.flatMap((a) => a.imports ?? []))],
+      };
    }
 
    /**
@@ -2267,7 +2270,16 @@ export class ServedCopyServe {
          );
          const reads = readsRerootedBase(c);
          if (kept === undefined) return reads ? [] : [c];
-         const extension = { ...c, reroot: { ...c.reroot, keptBlocks: kept } };
+         const extension = {
+            ...c,
+            reroot: {
+               ...c.reroot,
+               keptBlocks: kept.blocks,
+               ...(kept.imports.length > 0
+                  ? { keptImports: kept.imports }
+                  : {}),
+            },
+         };
          withoutKept.set(extension, reads ? undefined : c);
          return [extension];
       });
@@ -3016,32 +3028,7 @@ export class ServedCopyServe {
             optOutIDs.add(node.sourceID);
          }
       }
-      // The sources stored at all: a binding the copy was compiled over.
-      const storedNames = new Set(over.map((b) => b.sourceName));
-      for (const l of leftOut) {
-         if (!l.crossConnection) continue;
-         const sourceName = l.declaration ?? l.name;
-         // The stored side is this source unless the whole source is left
-         // out for its join, whose advice is about the joined source.
-         const sourceID =
-            l.join === undefined
-               ? candidates.find(
-                    (c) =>
-                       c.reroot.sourceName === sourceName &&
-                       c.reroot.url === l.url,
-                 )?.reroot.sourceID
-               : undefined;
-         problems.push({
-            ...(sourceID !== undefined ? { storedSourceID: sourceID } : {}),
-            sourceName,
-            reason: "cross_connection_join",
-            join: l.join ?? l.name,
-            ...(l.join !== undefined ? { leftOutWhole: true as const } : {}),
-            ...(storedNames.has(sourceName)
-               ? {}
-               : { declarerNotStored: true as const }),
-         });
-      }
+      problems.push(...crossConnectionProblems(leftOut, candidates, over));
       const unsafeIDs = classificationCeiling(
          this.host.modelPath(),
          modelDef,
@@ -5697,4 +5684,44 @@ function zonedTruncations(
       leftOut: truncated,
       restated: [],
    };
+}
+
+/**
+ * The `cross_connection_join` problems for the joins the served compile left
+ * out across connections: one per join, its stored side named when it is a
+ * candidate's.
+ */
+function crossConnectionProblems(
+   leftOut: readonly LeftOutDefinition[],
+   candidates: CopyPassState["candidates"],
+   over: readonly Binding[],
+): ServedCopyProblem[] {
+   const problems: ServedCopyProblem[] = [];
+   // The sources stored at all: a binding the copy was compiled over.
+   const storedNames = new Set(over.map((b) => b.sourceName));
+   for (const l of leftOut) {
+      if (!l.crossConnection) continue;
+      const sourceName = l.declaration ?? l.name;
+      // The stored side is this source unless the whole source is left
+      // out for its join, whose advice is about the joined source.
+      const sourceID =
+         l.join === undefined
+            ? candidates.find(
+                 (c) =>
+                    c.reroot.sourceName === sourceName &&
+                    c.reroot.url === l.url,
+              )?.reroot.sourceID
+            : undefined;
+      problems.push({
+         ...(sourceID !== undefined ? { storedSourceID: sourceID } : {}),
+         sourceName,
+         reason: "cross_connection_join",
+         join: l.join ?? l.name,
+         ...(l.join !== undefined ? { leftOutWhole: true as const } : {}),
+         ...(storedNames.has(sourceName)
+            ? {}
+            : { declarerNotStored: true as const }),
+      });
+   }
+   return problems;
 }
