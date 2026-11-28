@@ -1244,6 +1244,13 @@ describe("readPackageWorkflows", () => {
             declaredSets: [],
          });
          expect(result.workflows.size).toBe(0);
+         expect(result.warnings).toHaveLength(1);
+         expectWarning(
+            result.warnings,
+            SKILL_SETS_UNAVAILABLE,
+            undefined,
+            "injected walk failure",
+         );
       });
 
       it.skipIf(isWindows || isRoot)(

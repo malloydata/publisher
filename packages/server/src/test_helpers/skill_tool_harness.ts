@@ -1,8 +1,9 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { expect } from "bun:test";
+import { expect, spyOn } from "bun:test";
 import { FCJ_MAX_CHARS } from "../constants";
+import * as replyBudget from "../mcp/reply_budget";
 import type { PackageLookup } from "../service/environment_ports";
 import { fakeOf } from "./store_fakes";
 
@@ -44,6 +45,21 @@ export function handlerOf(
       }),
    );
    return handler!;
+}
+
+/** Each payload `wireChars` is asked to measure while `run` runs, as parsed JSON, in order. */
+export async function measuredWhile(
+   run: () => Promise<unknown>,
+): Promise<Array<Record<string, unknown>>> {
+   const probes = spyOn(replyBudget, "wireChars");
+   try {
+      await run();
+      return probes.mock.calls.map(
+         ([, payload]) => JSON.parse(JSON.stringify(payload)) as never,
+      );
+   } finally {
+      probes.mockRestore();
+   }
 }
 
 /** The part size at which `handlerFor`'s answer, with the list beside it, just fills the limit. */

@@ -11,6 +11,7 @@ import {
    RELOAD_FAILURE_IS_SAFE,
    RELOAD_NEEDS_WATCH_MODE,
 } from "./tools/reload_package_tool";
+import { INSTALL_RULE } from "./tools/skill_reply";
 import packageJson from "../../package.json";
 import { mcpServicesFor } from "../test_helpers/mcp_services";
 
@@ -82,7 +83,18 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       // and changes on reload; see registerGetSkillTool.
       expect(names.has("get_skill")).toBe(true);
       expect(names.has("get_workflow")).toBe(true);
+      expect(names.has("get_skill_set")).toBe(true);
       expect(names.has("get_agent")).toBe(false);
+   });
+
+   it("puts the install rule right after the opening paragraph of both tools that serve a SKILL.md as written", async () => {
+      // A client that cuts a description cuts its tail first, and the rule is what protects an installing user.
+      const { tools } = await client.listTools();
+      for (const name of ["get_workflow", "get_skill_set"]) {
+         const description =
+            tools.find((t) => t.name === name)?.description ?? "";
+         expect(description.split("\n\n")[1]).toBe(INSTALL_RULE);
+      }
    });
 
    /**
@@ -272,9 +284,10 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       expect(instructions).toContain("get_status");
       // A guide's relative paths have one reader.
       expect(instructions).toContain("get_skill(skill_name, path)");
-      // Workflows are an explicit user choice, so nothing pre-authorization names them.
+      // Workflows and skill sets are an explicit user choice, so nothing pre-authorization names them.
       expect(instructions).not.toContain("workflow_name");
       expect(instructions).not.toContain("get_workflow");
+      expect(instructions).not.toContain("get_skill_set");
    });
 
    it("orients a client to the sequence the schemas actually accept", async () => {

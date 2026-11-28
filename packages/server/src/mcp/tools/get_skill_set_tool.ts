@@ -25,22 +25,24 @@ import {
 
 const GET_SKILL_SET_DESCRIPTION = `List the skill sets a package serves, fetch one whole, or read one of its files. A skill set is a folder of skills the package author wrote, each a SKILL.md and the files it names; a package's \`default\` set is its own skills, which get_skill already advertises. Other sets are for a workflow that lists them, or a chat that picks one.
 
+${INSTALL_RULE}
+
+USE A SET OTHER THAN \`default\` ONLY WHEN THE USER NAMES IT OR A WORKFLOW LISTS IT. Listing sets is not a reason to apply one.
+
 ## Call modes
 - \`scopes\` only: list the sets (name, description, digest).
 - plus \`skill_set\`: that set whole, every skill it holds.
-- plus \`skills: "summary"\`: each skill file reduced to {relative_filepath, name, description, bytes}.
+- plus \`skills: "summary"\`: each skill file as {relative_filepath, name, description, bytes}.
 - plus \`skill_path\`: one file, {relative_filepath, file_contents, digest, source}, by a \`<skill>/<file>\` path from the summary or the set's \`assets\`.
 
 ## Response
 - skillSet: the set; null when listing or when nothing matched; absent when skill_path returns a file.
 - skillFile: only with skill_path; skills is ignored. A missing, binary or oversize file gets skillFile.message.
 - availableSkillSets: always present; the sets served, as many as fit.
-- message: when skill_set did not match, or the reply was cut to fit the tool-result limit (REST serves all). A cut keeps the set's {name, digest} and its source before it keeps less.
-- reason: with skillSet null for an unserved set: SKILL_SET_NOT_SERVED (refused; message says why) or SKILL_SET_NOT_DECLARED.
-- digest: pins exactly what the set serves; two sets with the same content have the same digest.
-- source: sourceContentSha says which bytes this came from; report it when you use it.
-
-${INSTALL_RULE}`;
+- message: when skill_set did not match, or the reply was cut to fit the tool-result limit (REST serves all); a cut keeps the set's {name, digest} and source before it keeps less.
+- reason: with skillSet null: SKILL_SET_NOT_SERVED (message says why) or SKILL_SET_NOT_DECLARED.
+- digest: pins exactly what the set serves; equal content, equal digest.
+- source: sourceContentSha says which bytes this came from; report it when you use it.`;
 
 const getSkillSetShape = {
    skill_set: z

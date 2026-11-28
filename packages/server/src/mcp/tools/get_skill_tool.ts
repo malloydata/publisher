@@ -153,6 +153,8 @@ function guideAnswer(
       [false, true],
       [false, false],
    ] as const) {
+      // JSON never shortens a text, so a body over the limit alone rules out every reply that carries it.
+      if (content && text.length > FCJ_MAX_CHARS) continue;
       const listed = largest(
          (n) =>
             // The whole answer was measured above and did not fit.

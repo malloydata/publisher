@@ -122,10 +122,10 @@ describe("live reload of what a package's workflows serve", () => {
 
    /**
     * A watcher over a real directory: the package names the environment is asked to recompile, and the files the controller then announced.
-    * `onReload` stands in for the package adopting a manifest on a reload: it may change the paths the package reports as watched.
+    * `onReload` stands in for the package adopting a manifest on a reload: it may change the paths the package reports as watched, and the reload waits for what it returns.
     */
    async function watchPackage(
-      onReload: (watched: string[]) => void = () => undefined,
+      onReload: (watched: string[]) => void | Promise<void> = () => undefined,
    ) {
       envDir = fs.mkdtempSync(path.join(root, "env-"));
       fs.mkdirSync(path.join(envDir, "pkg", SET, "skill"), { recursive: true });
@@ -151,7 +151,7 @@ describe("live reload of what a package's workflows serve", () => {
          getPackage: async (name: string, reload: boolean) => {
             if (reload) {
                reloaded.push(name);
-               onReload(watched);
+               await onReload(watched);
             }
          },
       };
@@ -285,6 +285,47 @@ describe("live reload of what a package's workflows serve", () => {
          for (const spy of spies) spy.mockRestore();
       }
    }, 10_000);
+
+   it("recompiles twice for a burst of 50 saves, the second after the last save, so the package serves the last write", async () => {
+      const BURST = 50;
+      const file = (i: number) =>
+         path.join(envDir, "pkg", "scripts", `burst-${i}.malloy`);
+      // What the last file held each time the package was recompiled.
+      const lastSeen: string[] = [];
+      let release!: () => void;
+      const held = new Promise<void>((resolve) => (release = resolve));
+      let started!: () => void;
+      const firstStarted = new Promise<void>((resolve) => (started = resolve));
+      const { reloaded, announced, announcedFile } = await watchPackage(
+         async () => {
+            lastSeen.push(
+               fs.existsSync(file(BURST - 1))
+                  ? fs.readFileSync(file(BURST - 1), "utf8")
+                  : "",
+            );
+            if (lastSeen.length === 1) {
+               started();
+               await held;
+            }
+         },
+      );
+      fs.writeFileSync(file(0), "write 0");
+      await firstStarted;
+      // The controller's listener runs first and reaches the reload before any await, so by the time this one sees a file its event has been handed to the reload.
+      let delivered = 0;
+      const burstDelivered = new Promise<void>((resolve) =>
+         controller!.watcher!.on("add", () => {
+            if (++delivered === BURST - 1) resolve();
+         }),
+      );
+      for (let i = 1; i < BURST; i++) fs.writeFileSync(file(i), `write ${i}`);
+      await burstDelivered;
+      release();
+      await announcedFile(file(BURST - 1));
+      expect(reloaded).toEqual(["pkg", "pkg"]);
+      expect(lastSeen).toEqual(["", `write ${BURST - 1}`]);
+      expect(announced).toHaveLength(BURST);
+   }, 15_000);
 
    it("leaves a file the skill never serves alone, and recompiles for the .skillignore that decides it and for the instructions", async () => {
       const { reloaded, announced, announcedFile } = await watchPackage();

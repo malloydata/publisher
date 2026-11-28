@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it, spyOn } from "bun:test";
+import { describe, expect, it } from "bun:test";
 import { z } from "zod/v3";
 import { type BundledSkill } from "../../service/skills/build_skills_bundle";
 import {
@@ -9,7 +9,7 @@ import {
    type SkillFileRead,
 } from "../../service/skills/package_skills";
 import { FCJ_MAX_CHARS } from "../../constants";
-import * as replyBudget from "../reply_budget";
+import { measuredWhile } from "../../test_helpers/skill_tool_harness";
 import { registerGetSkillTool } from "./get_skill_tool";
 import { fakeOf } from "../../test_helpers/store_fakes";
 import type { PackageLookup } from "../../service/environment_ports";
@@ -483,29 +483,23 @@ describe("get_skill tool: a reply always fits the tool-result limit", () => {
       expect(wire(result)).toBeGreaterThan(FCJ_MAX_CHARS - 150);
    });
 
-   it("measures the whole answer once before it cuts, not again as the first cut", async () => {
+   it("measures the whole answer once, and no cut that still carries a body already over the limit", async () => {
       const text = "b".repeat(FCJ_MAX_CHARS + 1);
       const { handler } = register([
          packageSkill("huge", "d", { "SKILL.md": text, ...entries(3) }),
       ]);
-      const probes = spyOn(replyBudget, "wireChars");
-      try {
-         await handler({ scopes, skill_name: "huge" });
-         const wholeAnswers = probes.mock.calls.filter(([, payload]) => {
-            const answer = payload as {
-               skill?: { content?: string; files?: unknown[] };
-               message?: string;
-            };
-            return (
-               answer.skill?.content !== undefined &&
-               answer.skill.files?.length === 4 &&
-               answer.message === undefined
-            );
-         });
-         expect(wholeAnswers).toHaveLength(1);
-      } finally {
-         probes.mockRestore();
-      }
+      const measured = await measuredWhile(() =>
+         handler({ scopes, skill_name: "huge" }),
+      );
+      const withBody = measured.filter(
+         (answer) =>
+            (answer as { skill?: { content?: string } }).skill?.content !==
+            undefined,
+      );
+      expect(withBody).toHaveLength(1);
+      expect(new Set(measured.map((m) => JSON.stringify(m))).size).toBe(
+         measured.length,
+      );
    });
 
    it("drops the body only when SKILL.md is over the limit alone, and still lists what fits", async () => {

@@ -849,8 +849,6 @@ describe("package workflows", () => {
    });
 
    describe("a skill set served alone", () => {
-      const DUPLICATE = `Workflow 'analyst' lists skill 'conventions' in both '${HOUSE}' and '${EXTRA}'; both sets are served whole and an installer keeps the copy in '${HOUSE}', listed first. Fix: rename one of the two skills, or list only one of the sets.`;
-
       beforeEach(() => {
          write(
             `${SECOND}/extra/SKILL.md`,
@@ -870,28 +868,58 @@ describe("package workflows", () => {
          });
       });
 
-      it("returns the set the workflow embeds, with the package's pin and no definitionSha", async () => {
+      it("returns every set the workflow embeds, in both views, byte for byte as its own read serves it, with the package's pin and no definitionSha", async () => {
          const pkg = await load();
-         const full = pkg.getWorkflow("analyst")!;
-         const { source, ...bare } = pkg.getSkillSet(HOUSE)!;
-         expect(bare).toEqual(full.skill_sets[0]);
-         expect(source).toEqual({
-            environment: "env",
-            package: "pkg",
-            sourceContentSha: full.source.sourceContentSha,
-            servedRevision: full.source.servedRevision,
-         });
+         for (const view of ["full", "summary"] as const) {
+            const workflow = pkg.getWorkflow("analyst", view)!;
+            expect(workflow.skill_sets.map((s) => s.name)).toEqual([
+               HOUSE,
+               EXTRA,
+            ]);
+            for (const embedded of workflow.skill_sets) {
+               const { source, ...own } = pkg.getSkillSet(embedded.name, view)!;
+               expect(JSON.stringify(embedded)).toBe(JSON.stringify(own));
+               expect(source).toEqual({
+                  environment: "env",
+                  package: "pkg",
+                  sourceContentSha: workflow.source.sourceContentSha,
+                  servedRevision: workflow.source.servedRevision,
+               });
+            }
+         }
+      });
+
+      it("serves the skill both sets hold from both of them, so nothing is filtered out of the later one", async () => {
+         const pkg = await load();
+         for (const set of [HOUSE, EXTRA]) {
+            expect(
+               pkg
+                  .getSkillSet(set)!
+                  .skills.some(
+                     (f) => f.relative_filepath === "conventions/SKILL.md",
+                  ),
+            ).toBe(true);
+         }
       });
 
       it("carries that set's own findings, and the shadowing ones stay on the workflow", async () => {
          const pkg = await load();
          const second = pkg.getSkillSet(EXTRA)!;
          expectWarning(second.warnings, SKILL_FILE_SKIPPED, EXTRA, "a..b.py");
-         expect(second.warnings.map((w) => w.message)).not.toContain(DUPLICATE);
+         expect(second.warnings.map((w) => w.code)).not.toContain(
+            SKILL_SHADOWED,
+         );
          expect(pkg.getSkillSet(HOUSE)!.warnings).toEqual([]);
          const whole = pkg.getWorkflow("analyst")!.warnings;
-         expectWarning(whole, SKILL_SHADOWED, "analyst", "conventions");
-         expect(whole.map((w) => w.message)).toContain(DUPLICATE);
+         const shadowed = expectWarning(
+            whole,
+            SKILL_SHADOWED,
+            "analyst",
+            "conventions",
+         );
+         // It names both sets.
+         expect(shadowed.message).toContain(`'${HOUSE}'`);
+         expect(shadowed.message).toContain(`'${EXTRA}'`);
          // The set's own finding is on the set, never repeated on the workflow.
          expect(whole.map((w) => w.message).join("\n")).not.toContain(
             "a..b.py",
@@ -2479,11 +2507,12 @@ describe("package workflows", () => {
                         (f) => f.relative_filepath,
                      ),
                   ).toEqual(["readable/SKILL.md"]);
-                  expect(
-                     workflow.skill_sets[0]!.warnings.map(
-                        (w) => w.message,
-                     ).join("\n"),
-                  ).toContain("cannot be read (EACCES");
+                  expectWarning(
+                     workflow.skill_sets[0]!.warnings,
+                     SKILL_FINDING,
+                     workflow.skill_sets[0]!.name,
+                     "cannot be read (EACCES",
+                  );
                   expect(pkg.listWorkflows().map((w) => w.name)).toEqual([
                      "analyst",
                   ]);
@@ -2647,6 +2676,24 @@ describe("package workflows", () => {
                HOSTILE_SKILL_MD,
             );
          });
+
+         it("sizes the file in the summary by its bytes on disk, which the byte-order mark alone makes more than its text's length", async () => {
+            writeHostileSkill(dir, HOSTILE);
+            manifest({ skillSets: { [SET_NAME]: { path: HOSTILE } } });
+            const controller = new SkillController(storeFor(await load()));
+            expect(Buffer.byteLength(HOSTILE_SKILL_MD)).toBeGreaterThan(
+               HOSTILE_SKILL_MD.length,
+            );
+            const summary = await controller.getSkillSet(
+               "env",
+               "pkg",
+               SET_NAME,
+               "summary",
+            );
+            expect(
+               summary.skills.find((f) => f.relative_filepath === FILE)?.bytes,
+            ).toBe(Buffer.byteLength(HOSTILE_SKILL_MD));
+         });
       });
 
       describe("a default skill named like a bundled skill", () => {
@@ -2781,14 +2828,17 @@ describe("package workflows", () => {
          it("answers get_workflow and get_skill_set with the reason as a tool error", async () => {
             const pkg = await load();
             const scopes = [{ environment: "env", package: "pkg" }];
-            expect((await toolFor(pkg)({ scopes })).isError).toBe(true);
-            expect(
-               (await toolFor(pkg)({ scopes, workflow: "analyst" })).isError,
-            ).toBe(true);
-            expect((await setToolFor(pkg)({ scopes })).isError).toBe(true);
-            expect(
-               (await setToolFor(pkg)({ scopes, skill_set: HOUSE })).isError,
-            ).toBe(true);
+            for (const reply of [
+               await toolFor(pkg)({ scopes }),
+               await toolFor(pkg)({ scopes, workflow: "analyst" }),
+               await setToolFor(pkg)({ scopes }),
+               await setToolFor(pkg)({ scopes, skill_set: HOUSE }),
+            ]) {
+               expect(reply.isError).toBe(true);
+               expect(JSON.parse(reply.content[0]!.resource!.text).reason).toBe(
+                  "SKILL_SETS_UNAVAILABLE",
+               );
+            }
             const undeclared = await toolFor(pkg)({ scopes, workflow: "nope" });
             expect(undeclared.isError).toBeFalsy();
             expect(

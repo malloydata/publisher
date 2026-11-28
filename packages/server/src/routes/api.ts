@@ -631,9 +631,6 @@ function registerPackageRoutes(
       }),
    );
 
-   // A skill set file path carries slashes, so it is a wildcard rather than a
-   // named parameter. Express has already decoded the wildcard; decoding again
-   // throws on a bare %.
    app.get(
       `${pkg}/skills`,
       apiRoute((req) =>
@@ -752,6 +749,9 @@ function registerPackageRoutes(
          ),
       ),
    );
+   // A skill set file path carries slashes, so it is a wildcard rather than a
+   // named parameter. Express has already decoded the wildcard; decoding again
+   // throws on a bare %.
    app.get(
       `${pkg}/skill-sets/:skillSetName/skills/*`,
       apiRoute((req) =>

@@ -39,6 +39,18 @@ describe("expectWarning", () => {
       ).toThrow(/found 0/);
    });
 
+   it("fails when the warning it finds is not a warn", () => {
+      const warnings: PackageWarning[] = [
+         {
+            ...warning("skill-finding", "house", "a skill 'a'"),
+            severity: "error",
+         },
+      ];
+      expect(() =>
+         expectWarning(warnings, "skill-finding", "house", "'a'"),
+      ).toThrow();
+   });
+
    it("fails when two set findings both hold the token", () => {
       const warnings = [
          warning("skill-finding", "house", "a skill 'a' is bad"),

@@ -15,6 +15,7 @@ import fs from "fs";
 import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
+import { expectWarning } from "../../../src/test_helpers/expect_warning";
 import { RestE2EEnv, startRestE2E } from "../../harness/rest_e2e";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -309,19 +310,23 @@ describe("Package skills and workflows (E2E)", () => {
          expect((await get("/skill-sets/Bad_Name")).status).toBe(404);
       });
 
-      it("gives a set the package refuses SKILL_SET_NOT_SERVED and its refusal", async () => {
-         const { status, body } = await get(
-            "/skill-sets/broken",
-            REFUSED_SET_PACKAGE,
-         );
-         expect(status).toBe(404);
-         expect(body.reason).toBe("SKILL_SET_NOT_SERVED");
-         expect(body.message).toStartWith("Skill set 'broken' is not served: ");
+      it("gives a set the package refuses SKILL_SET_NOT_SERVED and the text of its warning, for the set and for a file of it", async () => {
          const { body: pkg } = await get("", REFUSED_SET_PACKAGE);
-         const refusals = (
-            pkg.warnings as Array<{ code?: string; subject?: string }>
-         ).filter((w) => w.code === "skill-set-not-served");
-         expect(refusals.map((w) => w.subject)).toEqual(["broken"]);
+         const refusal = expectWarning(
+            pkg.warnings,
+            "skill-set-not-served",
+            "broken",
+            "'broken' is not served",
+         );
+         for (const sub of [
+            "/skill-sets/broken",
+            "/skill-sets/broken/skills/guide/SKILL.md",
+         ]) {
+            const { status, body } = await get(sub, REFUSED_SET_PACKAGE);
+            expect(status).toBe(404);
+            expect(body.reason).toBe("SKILL_SET_NOT_SERVED");
+            expect(body.message).toBe(refusal.message);
+         }
          expect((await get("/skill-sets", REFUSED_SET_PACKAGE)).body).toEqual(
             [],
          );
@@ -445,11 +450,14 @@ describe("Package skills and workflows (E2E)", () => {
             "finance",
             "default",
          ]);
-         for (const set of body.skill_sets) {
-            const { source: _source, ...own } = (
-               await get(`/skill-sets/${set.name}`)
-            ).body;
-            expect(set).toEqual(own);
+         for (const view of ["", "?skills=summary"]) {
+            const { body: viewed } = await get(`/workflows/analyst${view}`);
+            for (const set of viewed.skill_sets) {
+               const { source: _source, ...own } = (
+                  await get(`/skill-sets/${set.name}${view}`)
+               ).body;
+               expect(JSON.stringify(set)).toBe(JSON.stringify(own));
+            }
          }
          expect(body.skill_sets[0].skills[0].file_contents).toContain(
             "Use net revenue.",

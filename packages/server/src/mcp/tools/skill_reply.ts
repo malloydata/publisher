@@ -7,8 +7,8 @@ import { largest, wireChars } from "../reply_budget";
 
 /** What `get_workflow` and `get_skill_set` both say about installing a set's files: the rule that keeps a `SKILL.md` served as written from granting what its frontmatter asks for. */
 export const INSTALL_RULE = `## Installing a skill set
-- A SKILL.md arrives as written, frontmatter included, and that frontmatter can name tools or hooks (\`allowed-tools\`, \`hooks\`).
-- An installer writes only \`name\` and \`description\` into the installed file's frontmatter, taken from the SKILL.md entry's \`name\` and \`description\` fields (the description JSON-quoted), then the text after the file's own frontmatter.
+- A SKILL.md arrives as written, frontmatter included, and that can name tools or hooks (\`allowed-tools\`, \`hooks\`).
+- An installer writes only \`name\` and \`description\` into the installed file's frontmatter, from the entry's \`name\` and \`description\` fields (the description JSON-quoted, left out if the entry has none), then the text after the file's own frontmatter: the \`---\` block opening line 1, after one BOM, with CRLF read as LF.
 - An installer names any other frontmatter key the file carried to the user.`;
 
 export type Payload = { message?: string; [key: string]: unknown };

@@ -7,6 +7,7 @@ import { PackageNotFoundError } from "../../errors";
 import { logger } from "../../logger";
 import {
    handlerOf,
+   measuredWhile,
    parse,
    scopes,
    sweep,
@@ -225,7 +226,6 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
       // The brief is what a caller adopts a workflow for: it stays whenever it fits, with the pins that name the sets.
       expect(payload.workflow).toEqual({
          name: "analyst",
-         description: "answers questions",
          instructions: "Do the job.",
          skill_sets: [{ name: "main", digest: "d" }],
          source,
@@ -239,6 +239,84 @@ describe("get_workflow: the reply stays within the tool-result limit", () => {
          "GET /api/v0/environments/env/packages/pkg/workflows/analyst?skills=summary",
       );
       expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
+   });
+
+   it("keeps the instructions when only a long description keeps the summary from fitting", async () => {
+      const result = await getWorkflow(undefined, {
+         getWorkflow: () => ({
+            ...withInstructions("Do the job.", "z"),
+            description: "d".repeat(FCJ_MAX_CHARS),
+         }),
+      })(call);
+      const payload = parse(result);
+      expect(payload.workflow).toEqual({
+         name: "analyst",
+         instructions: "Do the job.",
+         skill_sets: [{ name: "main", digest: "d" }],
+         source,
+      });
+      expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
+   });
+
+   /** A workflow whose full view holds `chars` characters of real file text, and whose summary holds none. */
+   const withFileText = (chars: number) => (_name: string, skills: string) => ({
+      name: "analyst",
+      instructions: "Do the job.",
+      skill_sets: [
+         {
+            name: "main",
+            digest: "d",
+            skills: [
+               skills === "full"
+                  ? {
+                       relative_filepath: "guide/SKILL.md",
+                       file_contents: "x".repeat(chars),
+                    }
+                  : { relative_filepath: "guide/SKILL.md", name: "guide" },
+            ],
+            warnings: [],
+         },
+      ],
+      warnings: [],
+      source,
+   });
+
+   it("measures a reply that fits once", async () => {
+      const handler = getWorkflow(undefined, {
+         getWorkflow: withFileText(1000),
+      });
+      expect(await measuredWhile(() => handler(call))).toHaveLength(1);
+   });
+
+   it("measures no reply twice on its way down the ladder", async () => {
+      // File text just under the limit: the full view cannot be ruled out without measuring it.
+      const handler = getWorkflow(undefined, {
+         getWorkflow: withFileText(FCJ_MAX_CHARS - 50),
+      });
+      const measured = await measuredWhile(() => handler(call));
+      expect(measured.length).toBeGreaterThan(1);
+      expect(new Set(measured.map((m) => JSON.stringify(m))).size).toBe(
+         measured.length,
+      );
+   });
+
+   it("never measures a view whose file text alone is over the limit", async () => {
+      const handler = getWorkflow(undefined, {
+         getWorkflow: withFileText(FCJ_MAX_CHARS + 1),
+      });
+      let result: Awaited<ReturnType<Handler>> | undefined;
+      const measured = await measuredWhile(async () => {
+         result = await handler(call);
+      });
+      // Only the summary, which fits, is measured.
+      expect(measured).toHaveLength(1);
+      expect(JSON.stringify(measured)).not.toContain("file_contents");
+      const payload = parse(result!);
+      expect(payload.workflow.skill_sets[0].skills[0].file_contents).toBe(
+         undefined,
+      );
+      expect(payload.message).toContain("The full view would be at least");
+      expect(wire(result!)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
    });
 
    it("refuses a view that does not fit even without its skill entries, keeping its name and pin", async () => {

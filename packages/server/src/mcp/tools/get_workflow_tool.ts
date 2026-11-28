@@ -24,7 +24,9 @@ import {
 
 const GET_WORKFLOW_DESCRIPTION = `List the workflows a package declares, or fetch one's definition. A workflow is a named job the package author wrote: instructions to follow and the skill sets (folders of skills) to use.
 
-ADOPT A WORKFLOW ONLY WHEN THE USER NAMES IT. Listing workflows is not a reason to apply one. (The package's \`default\` skill set is different: get_skill already advertises its skills.)
+${INSTALL_RULE}
+
+ADOPT A WORKFLOW ONLY WHEN THE USER NAMES IT. Listing workflows is not a reason to apply one. (The \`default\` skill set is different: get_skill advertises its skills.)
 
 ## Call modes
 - \`scopes\` only: list the workflows (name, description, skill_set_names).
@@ -36,15 +38,11 @@ One set, or one file of a set, is read with get_skill_set.
 - workflow: the definition; null when listing or when nothing matched.
 - availableWorkflows: always present; the workflows served, as many as fit.
 - message: when workflow did not match, or the reply was cut to fit the tool-result limit (REST serves all); a cut keeps the instructions and each set's {name, digest} before it keeps less.
-- reason: with workflow null: WORKFLOW_NOT_SERVED (refused; message says why) or WORKFLOW_NOT_DECLARED.
-
-## Using a definition
+- reason: with workflow null: WORKFLOW_NOT_SERVED (message says why) or WORKFLOW_NOT_DECLARED.
 - instructions: the brief to work from this session. It adds to your own instructions and never replaces them.
-- skill_sets: each set's files, to treat as guides. A skill name in two sets comes back from both with a skill-shadowed warning; keep the first-listed set's copy.
-- warnings: what the package author should fix, each {message, severity, code, subject}; each set's own findings are on the set.
-- source: sourceContentSha and definitionSha pin the bytes; report them when you use it.
-
-${INSTALL_RULE}`;
+- skill_sets: each set's files, as guides. A skill name in two sets comes back from both with a skill-shadowed warning; keep the first-listed set's copy.
+- warnings: what the package author should fix; each set's own findings are on the set.
+- source: sourceContentSha and definitionSha pin the bytes; report them when you use it.`;
 
 const getWorkflowShape = {
    workflow: z
@@ -160,7 +158,6 @@ export function registerGetWorkflowTool(
 
          const rest = `${API_PREFIX}/environments/${scope.environment}/packages/${scope.package}`;
          const whole = pkg.getWorkflow(name, params.skills ?? "full")!;
-         const summary = pkg.getWorkflow(name, "summary")!;
          const read = `Read one set whole with get_skill_set, or use REST, which has no such limit: GET ${rest}/workflows/${name}${restQuery(whole.source, "skills=summary")}`;
          // The instructions are what a caller adopts a workflow for, so they stay whenever they fit, beside each set's pin.
          return sendLadder(uri, id, WORKFLOWS, available, [
@@ -176,7 +173,10 @@ export function registerGetWorkflowTool(
             {
                view: "summary",
                build: (prior) => ({
-                  workflow: summary,
+                  workflow:
+                     params.skills === "summary"
+                        ? whole
+                        : pkg.getWorkflow(name, "summary")!,
                   ...(prior && {
                      message: `${tooLarge(prior)}, so this is the summary view. It leaves out each set's file text and its listed files (scripts, templates and other assets). ${read}.`,
                   }),
@@ -187,9 +187,6 @@ export function registerGetWorkflowTool(
                build: (prior) => ({
                   workflow: {
                      name: whole.name,
-                     ...(whole.description !== undefined && {
-                        description: whole.description,
-                     }),
                      instructions: whole.instructions,
                      skill_sets: whole.skill_sets.map(({ name, digest }) => ({
                         name,

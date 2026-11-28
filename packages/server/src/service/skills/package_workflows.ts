@@ -1689,14 +1689,14 @@ function readSkillSet(
       if (advertised && !fitsReply(skill.inline[0]!.text)) {
          ctx.warnings.push(unreturnableWarning(`${skill.rel}/${SKILL_MD}`));
       }
-      // Both names: the folder's is what an installer writes, and the frontmatter's is what `get_skill` serves it as.
-      const clash = [skill.dirName, skill.meta.name].find(
-         (name) => bundled.has(name) && !decl.overrides.includes(name),
-      );
-      if (clash !== undefined) {
+      // The walk refuses a skill whose frontmatter name is not its folder's, so one name is both.
+      if (
+         bundled.has(skill.dirName) &&
+         !decl.overrides.includes(skill.dirName)
+      ) {
          ctx.warnings.push(
             finding(
-               `Package skill '${skill.rel}' is named like a bundled skill. Fix: add '${clash}' to 'skillSets.${decl.name}.overrides' if it is meant to replace the bundled one, or rename the skill`,
+               `Package skill '${skill.rel}' is named like a bundled skill. Fix: add '${skill.dirName}' to 'skillSets.${decl.name}.overrides' if it is meant to replace the bundled one, or rename the skill`,
             ),
          );
       }

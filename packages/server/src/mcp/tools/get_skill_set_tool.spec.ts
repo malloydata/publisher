@@ -7,6 +7,7 @@ import { PackageNotFoundError } from "../../errors";
 import { logger } from "../../logger";
 import {
    handlerOf,
+   measuredWhile,
    parse,
    scopes,
    sweep,
@@ -270,6 +271,71 @@ describe("get_skill_set: the reply stays within the tool-result limit", () => {
       expect(payload.message).toContain("skill_path");
       expect(payload.availableSkillSets).toEqual(SETS);
       expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
+   });
+
+   /** A set whose full view holds `chars` characters of real file text, and whose summary holds none. */
+   const withFileText = (chars: number) => (name: string, skills: string) => ({
+      name,
+      digest: "d",
+      skills: [
+         skills === "full"
+            ? {
+                 relative_filepath: "guide/SKILL.md",
+                 file_contents: "x".repeat(chars),
+              }
+            : { relative_filepath: "guide/SKILL.md", name: "guide" },
+      ],
+      warnings: [],
+      source,
+   });
+
+   it("measures a reply that fits once", async () => {
+      const handler = getSkillSet(undefined, {
+         getSkillSet: withFileText(1000),
+      });
+      expect(await measuredWhile(() => handler(call))).toHaveLength(1);
+   });
+
+   it("measures no reply twice on its way down the ladder", async () => {
+      // File text just under the limit: the full view cannot be ruled out without measuring it.
+      const handler = getSkillSet(undefined, {
+         getSkillSet: withFileText(FCJ_MAX_CHARS - 50),
+      });
+      const measured = await measuredWhile(() => handler(call));
+      expect(measured.length).toBeGreaterThan(1);
+      expect(new Set(measured.map((m) => JSON.stringify(m))).size).toBe(
+         measured.length,
+      );
+   });
+
+   it("never measures a view or a file whose text alone is over the limit", async () => {
+      const handler = getSkillSet(undefined, {
+         getSkillSet: withFileText(FCJ_MAX_CHARS + 1),
+         getSkillSetFile: async (_name: string, path: string) => ({
+            relative_filepath: path,
+            file_contents: "x".repeat(FCJ_MAX_CHARS + 1),
+            digest: "d",
+            source,
+         }),
+      });
+      let result: Awaited<ReturnType<Handler>> | undefined;
+      const measured = await measuredWhile(async () => {
+         result = await handler(call);
+      });
+      // Only the summary, which fits, is measured.
+      expect(measured).toHaveLength(1);
+      expect(JSON.stringify(measured)).not.toContain("file_contents");
+      expect(parse(result!).message).toContain(
+         "The full view would be at least",
+      );
+      expect(wire(result!)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
+      const file = await measuredWhile(async () => {
+         result = await handler({ ...call, skill_path: "guide/SKILL.md" });
+      });
+      // Only the refusal, which fits, is measured.
+      expect(file).toHaveLength(1);
+      expect(JSON.stringify(file)).not.toContain("file_contents");
+      expect(parse(result!).skillFile.message).toContain("at least");
    });
 
    it("answers a skill file that does not fit with a message in place of its text, keeping its pin", async () => {
