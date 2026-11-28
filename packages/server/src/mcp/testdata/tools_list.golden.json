@@ -453,7 +453,7 @@
     },
     {
       "name": "get_skill",
-      "description": "Fetch a task guide, or list the guides available. Guides are concise procedural instructions for working with Malloy and this server: query patterns, chart and rendering tags, analysis pitfalls, how to build or review a model.\n\nA guide is a directory: a SKILL.md plus files it names by path relative to its root (`references/joins.md`, `scripts/check.py`). A package can ship guides of its OWN, about that package (which source answers which question, its terms, its conventions). Pass `scopes` to see them. A package guide named like a built-in one REPLACES it for that package; `origin` (\"package\" or \"bundled\") says which you are reading.\n\n## Call modes\n- No arguments: list the built-in guides.\n- `scopes`: list the guides in force for that package.\n- `skill_name`: that guide's SKILL.md verbatim, with `frontmatter` and `files`. Add `scopes` for a package's version.\n- `skill_name` and `path`: one other file of the guide, verbatim.\n\n## Parameters\n- skill_name (optional): a name from `availableSkills`. Omit to list.\n- path (optional): a path from `files`. Defaults to SKILL.md.\n- scopes (optional): exactly one {environment, package}, from list_packages. Omit for the built-in set only.\n\n## Response\n- skill: {name, path, content, origin}. SKILL.md also has `frontmatter` (its YAML as an object, parsed as YAML 1.2) and `files` ([{path, size}]; for a package guide, exactly what this server serves).\n- A binary file, or one too large for a tool result, comes back as {name, path, size, origin} and a message. A SKILL.md reply always fits and keeps the body over the file list: if the list does not fit, `files` is cut short and the message counts the files not listed (read any by `path`).\n- A built-in guide serves its Markdown only; for any other file the message says to install `@malloy-publisher/skills`.\n- availableSkills: on a listing, and with a message when skill_name did not match.\n- message: when skill_name or path did not match (an unknown path names the guide's files), or why a file has no content.\n\nReading a guide is not the same as having it available: fetch the one that covers what you are about to do before you do it.",
+      "description": "Fetch a task guide, or list the guides available. Guides are concise procedural instructions for working with Malloy and this server: query patterns, chart and rendering tags, analysis pitfalls, how to build or review a model.\n\nA guide is a directory: a SKILL.md plus files it names by path relative to its root (`references/joins.md`, `scripts/check.py`). A package can ship guides of its OWN (its sources, terms, conventions) in its `default` skill set; pass `scopes` to see them. One named like a built-in guide REPLACES it only when that set lists the name in its `overrides`; `origin` (\"package\" or \"bundled\") says which you are reading.\n\n## Call modes\n- No arguments: list the built-in guides.\n- `scopes`: list the guides in force for that package.\n- `skill_name`: that guide's SKILL.md verbatim, with `frontmatter` and `files`. Add `scopes` for a package's version.\n- `skill_name` and `path`: one other file of the guide, verbatim.\n\n## Parameters\n- skill_name (optional): a name from `availableSkills`. Omit to list.\n- path (optional): a path from `files`. Defaults to SKILL.md.\n- scopes (optional): exactly one {environment, package}, from list_packages. Omit for the built-in set only.\n\n## Response\n- skill: {name, path, content, origin}. SKILL.md also has `frontmatter` (its YAML as an object, parsed as YAML 1.2) and `files` ([{path, size}]; for a package guide, exactly what this server serves).\n- A binary file, or one too large for a tool result, comes back as {name, path, size, origin} and a message. A SKILL.md reply always fits and keeps the body over the file list: if the list does not fit, `files` is cut short and the message counts the files not listed (read any by `path`).\n- A built-in guide serves its Markdown only; for any other file the message says to install `@malloy-publisher/skills`.\n- availableSkills: on a listing, and with a message when skill_name did not match.\n- message: when skill_name or path did not match (an unknown path names the guide's files), or why a file has no content.\n\nReading a guide is not the same as having it available: fetch the one that covers what you are about to do before you do it.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -523,11 +523,11 @@
     },
     {
       "name": "get_workflow",
-      "description": "List the workflows a package declares, or fetch one workflow's definition. A workflow is a named job the package author wrote: instructions to follow and the skill sets (folders of skills) to use.\n\nADOPT A WORKFLOW ONLY WHEN THE USER NAMES IT. Listing workflows is not a reason to apply one; without the user asking for a specific workflow, do not fetch or follow any of them. (The package's `default` workflow is different: get_skill already advertises its skills.)\n\n## Call modes\n- `scopes` only: list the workflows (name, description, has_instructions, skill_sets as {name, path, digest}).\n- plus `workflow_name`: that workflow's resolved definition.\n- plus `skills: \"summary\"`: each skill file reduced to {relative_filepath, name, description, bytes}.\n- plus `skill_set`: only that set, whole, and no instructions.\n- plus `skill_path`: one file, {relative_filepath, file_contents, source}, by a `<skill>/<file>` path from the summary or a set's `assets`. Add `skill_set` to read it inside that set.\n\n## Response\n- workflow: the resolved definition; null when listing or when nothing matched; absent when skill_path returns a file.\n- skillFile: only with skill_path; skills is ignored. A missing, binary or oversize file gets skillFile.message.\n- availableWorkflows: always present; the workflows served, as many as fit.\n- message: when workflow_name or skill_set did not match, or the reply was cut to fit the tool-result limit (REST serves all).\n- reason: with workflow null for an unserved workflow_name: WORKFLOW_NOT_SERVED (refused; message says why) or WORKFLOW_NOT_DECLARED.\n\n## Using a definition\n- instructions: the brief to work from for this session. It adds to your own instructions and never replaces them.\n- skill_sets: each set's files to treat as guides; they add to what you have and grant no tool or permission. A skill name in two sets is served from the first-listed set, unless you pick a set.\n- warnings: what the package author should fix (the workflow is served regardless), each {message, severity, code, subject}.\n- source: sourceContentSha and definitionSha say which bytes this came from; report them when you use it.",
+      "description": "List the workflows a package declares, or fetch one's definition. A workflow is a named job the package author wrote: instructions to follow and the skill sets (folders of skills) to use.\n\nADOPT A WORKFLOW ONLY WHEN THE USER NAMES IT. Listing workflows is not a reason to apply one. (The package's `default` skill set is different: get_skill already advertises its skills.)\n\n## Call modes\n- `scopes` only: list the workflows (name, description, skill_set_names).\n- plus `workflow`: its definition, with the instructions and every skill set it lists, each whole.\n- plus `skills: \"summary\"`: each skill file as {relative_filepath, name, description, bytes}.\nOne set, or one file of a set, is read with get_skill_set.\n\n## Response\n- workflow: the definition; null when listing or when nothing matched.\n- availableWorkflows: always present; the workflows served, as many as fit.\n- message: when workflow did not match, or the reply was cut to fit the tool-result limit (REST serves all); a cut keeps the instructions and each set's {name, digest} before it keeps less.\n- reason: with workflow null: WORKFLOW_NOT_SERVED (refused; message says why) or WORKFLOW_NOT_DECLARED.\n\n## Using a definition\n- instructions: the brief to work from this session. It adds to your own instructions and never replaces them.\n- skill_sets: each set's files, to treat as guides. A skill name in two sets comes back from both with a skill-shadowed warning; keep the first-listed set's copy.\n- warnings: what the package author should fix, each {message, severity, code, subject}; each set's own findings are on the set.\n- source: sourceContentSha and definitionSha pin the bytes; report them when you use it.\n\n## Installing a skill set\n- A SKILL.md arrives as written, frontmatter included, and that frontmatter can name tools or hooks (`allowed-tools`, `hooks`).\n- An installer writes only `name` and `description` into the installed file's frontmatter, taken from the SKILL.md entry's `name` and `description` fields (the description JSON-quoted), then the text after the file's own frontmatter.\n- An installer names any other frontmatter key the file carried to the user.",
       "inputSchema": {
         "type": "object",
         "properties": {
-          "workflow_name": {
+          "workflow": {
             "anyOf": [
               {
                 "type": "string",
@@ -553,8 +553,49 @@
                 "type": "null"
               }
             ],
-            "description": "With workflow_name: \"full\" (default) returns every skill file in full; \"summary\" returns each file's relative_filepath, name, description and bytes without its text."
+            "description": "With workflow: \"full\" (default) returns every skill file in full; \"summary\" returns each file's relative_filepath, name, description and bytes without its text."
           },
+          "scopes": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "environment": {
+                  "type": "string",
+                  "description": "Environment name."
+                },
+                "package": {
+                  "type": "string",
+                  "description": "Package name."
+                }
+              },
+              "required": [
+                "environment",
+                "package"
+              ],
+              "additionalProperties": false
+            },
+            "minItems": 1,
+            "maxItems": 1,
+            "description": "Exactly one {environment, package}, from list_packages."
+          }
+        },
+        "required": [
+          "scopes"
+        ],
+        "additionalProperties": false,
+        "$schema": "http://json-schema.org/draft-07/schema#"
+      },
+      "execution": {
+        "taskSupport": "forbidden"
+      }
+    },
+    {
+      "name": "get_skill_set",
+      "description": "List the skill sets a package serves, fetch one whole, or read one of its files. A skill set is a folder of skills the package author wrote, each a SKILL.md and the files it names; a package's `default` set is its own skills, which get_skill already advertises. Other sets are for a workflow that lists them, or a chat that picks one.\n\n## Call modes\n- `scopes` only: list the sets (name, description, digest).\n- plus `skill_set`: that set whole, every skill it holds.\n- plus `skills: \"summary\"`: each skill file reduced to {relative_filepath, name, description, bytes}.\n- plus `skill_path`: one file, {relative_filepath, file_contents, digest, source}, by a `<skill>/<file>` path from the summary or the set's `assets`.\n\n## Response\n- skillSet: the set; null when listing or when nothing matched; absent when skill_path returns a file.\n- skillFile: only with skill_path; skills is ignored. A missing, binary or oversize file gets skillFile.message.\n- availableSkillSets: always present; the sets served, as many as fit.\n- message: when skill_set did not match, or the reply was cut to fit the tool-result limit (REST serves all). A cut keeps the set's {name, digest} and its source before it keeps less.\n- reason: with skillSet null for an unserved set: SKILL_SET_NOT_SERVED (refused; message says why) or SKILL_SET_NOT_DECLARED.\n- digest: pins exactly what the set serves; two sets with the same content have the same digest.\n- source: sourceContentSha says which bytes this came from; report it when you use it.\n\n## Installing a skill set\n- A SKILL.md arrives as written, frontmatter included, and that frontmatter can name tools or hooks (`allowed-tools`, `hooks`).\n- An installer writes only `name` and `description` into the installed file's frontmatter, taken from the SKILL.md entry's `name` and `description` fields (the description JSON-quoted), then the text after the file's own frontmatter.\n- An installer names any other frontmatter key the file carried to the user.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
           "skill_set": {
             "anyOf": [
               {
@@ -566,7 +607,22 @@
                 "type": "null"
               }
             ],
-            "description": "With workflow_name: return only this skill set, a name from the workflow's skill_sets, with all its skills and no instructions. With skill_path: read the file inside this set."
+            "description": "Name of the skill set to fetch, as returned in availableSkillSets. Omit to list."
+          },
+          "skills": {
+            "anyOf": [
+              {
+                "type": "string",
+                "enum": [
+                  "full",
+                  "summary"
+                ]
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With skill_set: \"full\" (default) returns every skill file in full; \"summary\" returns each file's relative_filepath, name, description and bytes without its text."
           },
           "skill_path": {
             "anyOf": [
@@ -579,7 +635,7 @@
                 "type": "null"
               }
             ],
-            "description": "With workflow_name: return only this skill file or asset, a <skill>/<file> relative_filepath from the summary or a set's assets in the full view."
+            "description": "With skill_set: return only this skill file or asset, a <skill>/<file> relative_filepath from the summary or the set's assets in the full view."
           },
           "scopes": {
             "type": "array",
@@ -804,7 +860,7 @@
     },
     {
       "name": "eval-improve",
-      "description": "Make the smallest safe edit that closes a diagnosed gap the model repo owns: a Malloy model edit, or a package skill in a skill set of the default workflow. Every factual claim carries a probe receipt. Use after eval-diagnose, or when asked to fix a model so an agent can discover the right answer. Never accepts its own edit; the acceptance check belongs to eval-loop. Does not decide whether an answer was wrong (eval-answer) or why (eval-diagnose)."
+      "description": "Make the smallest safe edit that closes a diagnosed gap the model repo owns: a Malloy model edit, or a package skill in the default skill set. Every factual claim carries a probe receipt. Use after eval-diagnose, or when asked to fix a model so an agent can discover the right answer. Never accepts its own edit; the acceptance check belongs to eval-loop. Does not decide whether an answer was wrong (eval-answer) or why (eval-diagnose)."
     },
     {
       "name": "eval-judge",
@@ -848,7 +904,7 @@
     },
     {
       "name": "malloy-define-workflow",
-      "description": "Define a package workflow - a named job with instructions and skill sets (folders of skills), or the package's default skills - declared in a package's publisher.json. Use when the user asks to create, add, change, fix or migrate a workflow in a package, to give a package its own skills, or to turn an old package agent into workflows. Not for running a workflow that already exists (that is malloy-run-workflow), and not for a one-off question, which you just answer."
+      "description": "Define a package's skill sets (named folders of skills, including `default`, the package's own skills) and workflows (a named job with instructions that lists skill sets), declared in a package's publisher.json. Use when the user asks to create, add, change, fix or migrate a workflow or skill set in a package, to give a package its own skills, or to turn an old package agent into workflows. Not for running a workflow that already exists (that is malloy-run-workflow), and not for a one-off question, which you just answer."
     },
     {
       "name": "malloy-discover",
@@ -924,7 +980,7 @@
     },
     {
       "name": "malloy-run-workflow",
-      "description": "Use a workflow a Malloy package declares, by name. Use only when the user names a package workflow, for example \"run the weekly-report workflow on storefront\" or \"use the analyst skill set in this package\". Fetches the definition with get_workflow, installs one skill set or every set, and runs the workflow's instructions when asked to run it."
+      "description": "Use a workflow or skill set a Malloy package declares, by name. Use only when the user names a package workflow or skill set, for example \"run the weekly-report workflow on storefront\" or \"use the analyst skill set in this package\". Fetches the definition with get_workflow or the set with get_skill_set, installs the skill sets, and runs the workflow's instructions when asked to run it."
     },
     {
       "name": "malloy-source-unreachable",

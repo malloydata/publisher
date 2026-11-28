@@ -17,8 +17,12 @@ import {
 import { sourceContextKey } from "../model/package_entities";
 import { round4 } from "../shared";
 import type { StoredSourceSummary } from "../index/source_summaries";
-import { WorkflowsUnavailableError } from "../../errors";
-import type { Package } from "../../service/package";
+import { SkillSetsUnavailableError } from "../../errors";
+import {
+   BUNDLED_CATALOG,
+   resolveSkills,
+   type ResolvedSkill,
+} from "../../service/skills/package_skills";
 
 /**
  * A stable, package-scoped identity for one entity: `kind:source:name`, so
@@ -469,11 +473,14 @@ const SKILLS_DESCRIPTION_BUDGET = 4000;
 export function skillsFor(ctx: Pick<ListingContext, "pkgIndex">) {
    // Descriptions are author-written and ride every response, so their total is bounded.
    let budget = SKILLS_DESCRIPTION_BUDGET;
-   let listed: ReturnType<Package["listSkills"]>;
+   let listed: ResolvedSkill[];
    try {
-      listed = ctx.pkgIndex.pkg.listSkills();
+      listed = resolveSkills(
+         BUNDLED_CATALOG,
+         ctx.pkgIndex.pkg.defaultSkills(),
+      ).filter((skill) => skill.origin === "package");
    } catch (error) {
-      if (!(error instanceof WorkflowsUnavailableError)) throw error;
+      if (!(error instanceof SkillSetsUnavailableError)) throw error;
       // The models still answer; the note says the package's guidance is missing, not absent.
       return {
          skills_note: `This package's own guidance could not be read, so none is listed. ${error.message}`,
@@ -488,7 +495,7 @@ export function skillsFor(ctx: Pick<ListingContext, "pkgIndex">) {
       ? {
            skills,
            skills_note:
-              "This package ships its own guidance, listed above. Read the relevant one before relying on names or conventions from this package. If it is already loaded as a skill, use that; otherwise fetch it with get_skill(skill_name, scopes), and if that tool is not available to you, proceed and say which guidance you could not read. A guide whose name matches a built-in one replaces it here.",
+              "This package ships its own guidance, listed above. Read the relevant one before relying on names or conventions from this package. If it is already loaded as a skill, use that; otherwise fetch it with get_skill(skill_name, scopes), and if that tool is not available to you, proceed and say which guidance you could not read. A guide whose name matches a built-in one replaces it here only where the package lists it in its `default` set's `overrides`.",
         }
       : {};
 }

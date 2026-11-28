@@ -430,28 +430,28 @@
       ]
     }
   },
-  "WorkflowsUnavailableError": {
-    "class": "WorkflowsUnavailableError",
+  "SkillSetsUnavailableError": {
+    "class": "SkillSetsUnavailableError",
     "http": {
       "status": 409,
       "json": {
         "code": 409,
-        "message": "Workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)",
-        "reason": "WORKFLOWS_UNAVAILABLE"
+        "message": "Skill sets and workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)",
+        "reason": "SKILL_SETS_UNAVAILABLE"
       },
       "logged": false,
       "logs": []
     },
     "mcp": {
-      "message": "Workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)",
+      "message": "Skill sets and workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)",
       "suggestions": [
         "Fix the cause named above, then reload the package: its skill sets are read at load, so a retry before then fails the same way."
       ],
-      "reason": "WORKFLOWS_UNAVAILABLE",
+      "reason": "SKILL_SETS_UNAVAILABLE",
       "logs": []
     },
     "mcpSetup": {
-      "message": "An unexpected internal error occurred during executeQuery (Setup).: Workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)",
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Skill sets and workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)",
       "suggestions": [
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."
@@ -1346,7 +1346,7 @@
     "mcp": {
       "message": "Workflow not found",
       "suggestions": [
-        "This is not transient: the package serves no such workflow, skill set or file until the package reloads with them fixed.",
+        "This is not transient: the package serves no such workflow until the package reloads with it fixed.",
         "Use a name from get_workflow's availableWorkflows, and read the package's warnings for why a declared workflow is refused."
       ],
       "logs": []
@@ -1380,7 +1380,7 @@
     "mcp": {
       "message": "Workflow 'w' is not served: a reason. Fix: correct it.",
       "suggestions": [
-        "This is not transient: the package serves no such workflow, skill set or file until the package reloads with them fixed.",
+        "This is not transient: the package serves no such workflow until the package reloads with it fixed.",
         "Use a name from get_workflow's availableWorkflows, and read the package's warnings for why a declared workflow is refused."
       ],
       "reason": "WORKFLOW_NOT_SERVED",
@@ -1415,7 +1415,7 @@
     "mcp": {
       "message": "No workflow named 'w' is declared in package 'pkg'.",
       "suggestions": [
-        "This is not transient: the package serves no such workflow, skill set or file until the package reloads with them fixed.",
+        "This is not transient: the package serves no such workflow until the package reloads with it fixed.",
         "Use a name from get_workflow's availableWorkflows, and read the package's warnings for why a declared workflow is refused."
       ],
       "reason": "WORKFLOW_NOT_DECLARED",
@@ -1423,6 +1423,109 @@
     },
     "mcpSetup": {
       "message": "An unexpected internal error occurred during executeQuery (Setup).: No workflow named 'w' is declared in package 'pkg'.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "SkillSetNotFoundError for a file the set does not hold": {
+    "class": "SkillSetNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "Skill file 'a/SKILL.md' not found in skill set 's' in package 'pkg'."
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Skill file 'a/SKILL.md' not found in skill set 's' in package 'pkg'.",
+      "suggestions": [
+        "This is not transient: the package serves no such skill set or file until the package reloads with it fixed.",
+        "Use a name from get_skill_set's availableSkillSets, and read the package's warnings for why a declared set is refused."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Skill file 'a/SKILL.md' not found in skill set 's' in package 'pkg'.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "SkillSetNotFoundError for a set the package refuses": {
+    "class": "SkillSetNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "Skill set 's' is not served: a reason. Fix: correct it.",
+        "reason": "SKILL_SET_NOT_SERVED"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Skill set 's' is not served: a reason. Fix: correct it.",
+      "suggestions": [
+        "This is not transient: the package serves no such skill set or file until the package reloads with it fixed.",
+        "Use a name from get_skill_set's availableSkillSets, and read the package's warnings for why a declared set is refused."
+      ],
+      "reason": "SKILL_SET_NOT_SERVED",
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Skill set 's' is not served: a reason. Fix: correct it.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "SkillSetNotFoundError for a set the package does not declare": {
+    "class": "SkillSetNotFoundError",
+    "http": {
+      "status": 404,
+      "json": {
+        "code": 404,
+        "message": "No skill set named 's' is declared in package 'pkg'.",
+        "reason": "SKILL_SET_NOT_DECLARED"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "No skill set named 's' is declared in package 'pkg'.",
+      "suggestions": [
+        "This is not transient: the package serves no such skill set or file until the package reloads with it fixed.",
+        "Use a name from get_skill_set's availableSkillSets, and read the package's warnings for why a declared set is refused."
+      ],
+      "reason": "SKILL_SET_NOT_DECLARED",
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: No skill set named 's' is declared in package 'pkg'.",
       "suggestions": [
         "Try the request again later.",
         "If the problem persists, check server logs or contact support."

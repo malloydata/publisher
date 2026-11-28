@@ -698,7 +698,7 @@ source: imported_ext is authorized extend {
       const pkg = {
          getPackageName: () => "fixture",
          getRetrievalSettings: () => DEFAULT_PACKAGE_RETRIEVAL,
-         listSkills: () => [],
+         defaultSkills: () => ({ skills: [], overrides: [] }),
          listModels: async () => [...models.keys()].map((p) => ({ path: p })),
          getModel: (p: string) => models.get(p),
       };

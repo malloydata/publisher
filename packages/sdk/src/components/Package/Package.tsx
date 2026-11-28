@@ -15,7 +15,11 @@ import {
 } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Database, type WorkflowSummary } from "../../client";
+import {
+   Database,
+   type SkillSetSummary,
+   type WorkflowSummary,
+} from "../../client";
 import { useNarrowScreen } from "../../hooks/useNarrowScreen";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { AddButton } from "../buttons";
@@ -210,7 +214,16 @@ export default function Package({
          ),
    });
 
-   // The package's workflows, from their own route.
+   // The package's skill sets and its workflows, each from its own route.
+   const skillSetsQuery = useQueryWithApiError({
+      queryKey: ["package-skill-sets", environmentName, packageName, versionId],
+      queryFn: () =>
+         apiClients.skillSets.listSkillSets(
+            environmentName,
+            packageName,
+            versionId,
+         ),
+   });
    const workflowsQuery = useQueryWithApiError({
       queryKey: ["package-workflows", environmentName, packageName, versionId],
       queryFn: () =>
@@ -362,6 +375,7 @@ export default function Package({
 
    const description = pkgQuery.data?.data?.description ?? "";
    const workflows = workflowsQuery.data?.data ?? [];
+   const skillSets = defaultFirst(skillSetsQuery.data?.data ?? []);
    const readmePath = (
       reports.find((r) => r.path === README_NOTEBOOK) ??
       reports.find((r) => isRootReadme(r.path))
@@ -718,11 +732,33 @@ export default function Package({
                   {models.length === 0 && <EmptyRow label="No models" />}
                </PackageSection>
 
+               {skillSets.length > 0 && (
+                  <PackageSection
+                     title="Skill sets"
+                     count={skillSets.length}
+                     description="Folders of skills, declared in publisher.json. The default set's skills are offered to every session; the others are used through a workflow."
+                  >
+                     {skillSets.map((set) => (
+                        <PackageItemRow
+                           key={set.name}
+                           type="skillSet"
+                           label={set.name}
+                           {...(set.description
+                              ? { description: set.description }
+                              : {})}
+                           {...(set.name === DEFAULT_SKILL_SET
+                              ? { rightLabel: "Always on" }
+                              : {})}
+                        />
+                     ))}
+                  </PackageSection>
+               )}
+
                {workflows.length > 0 && (
                   <PackageSection
                      title="Workflows"
                      count={workflows.length}
-                     description="Declared in publisher.json. Name one in an agent session to run it or use its skills. The default workflow's skills are offered to every session."
+                     description="Declared in publisher.json. Name one in an agent session to run it with the skill sets it lists."
                   >
                      {workflows.map((workflow) => (
                         <PackageWorkflowRow
@@ -814,14 +850,18 @@ function PackageItemRow({
    );
 }
 
-/** The default workflow's skills are advertised to every session, so it is not labelled as lacking instructions. */
-function workflowLabel(workflow: WorkflowSummary): string | undefined {
-   if (workflow.name === "default") return "Advertised skills";
-   return workflow.has_instructions ? undefined : "No instructions";
+/** The skill set whose skills every agent session is offered. */
+const DEFAULT_SKILL_SET = "default";
+
+/** The listing is in name order; the always-on set leads it. */
+function defaultFirst(sets: SkillSetSummary[]): SkillSetSummary[] {
+   return [
+      ...sets.filter((set) => set.name === DEFAULT_SKILL_SET),
+      ...sets.filter((set) => set.name !== DEFAULT_SKILL_SET),
+   ];
 }
 
 function PackageWorkflowRow({ workflow }: { workflow: WorkflowSummary }) {
-   const label = workflowLabel(workflow);
    return (
       <>
          <PackageItemRow
@@ -830,16 +870,14 @@ function PackageWorkflowRow({ workflow }: { workflow: WorkflowSummary }) {
             {...(workflow.description
                ? { description: workflow.description }
                : {})}
-            {...(label ? { rightLabel: label } : {})}
          />
-         {workflow.skill_sets.length > 0 && (
+         {workflow.skill_set_names.length > 0 && (
             <Typography
                variant="caption"
                color="text.secondary"
                sx={{ display: "block", ml: 6, mb: 0.5 }}
             >
-               Skill sets:{" "}
-               {workflow.skill_sets.map((set) => set.name).join(", ")}
+               Skill sets: {workflow.skill_set_names.join(", ")}
             </Typography>
          )}
       </>

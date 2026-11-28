@@ -12,7 +12,8 @@ import {
    BadRequestError,
    BuildPlanRefreshingError,
    BuildPlanUnavailableError,
-   WorkflowsUnavailableError,
+   SkillSetsUnavailableError,
+   SkillSetNotFoundError,
    ChainedShapeNotCarriedError,
    ContractCaptureFailedError,
    SchemaIncompatibleError,
@@ -162,10 +163,10 @@ const CASES: Array<[string, () => unknown]> = [
       () => new BuildPlanUnavailableError("build plan could not be derived"),
    ],
    [
-      "WorkflowsUnavailableError",
+      "SkillSetsUnavailableError",
       () =>
-         new WorkflowsUnavailableError(
-            "Workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)",
+         new SkillSetsUnavailableError(
+            "Skill sets and workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)",
          ),
    ],
    [
@@ -295,6 +296,29 @@ const CASES: Array<[string, () => unknown]> = [
          new WorkflowNotFoundError(
             "No workflow named 'w' is declared in package 'pkg'.",
             "WORKFLOW_NOT_DECLARED",
+         ),
+   ],
+   [
+      "SkillSetNotFoundError for a file the set does not hold",
+      () =>
+         new SkillSetNotFoundError(
+            "Skill file 'a/SKILL.md' not found in skill set 's' in package 'pkg'.",
+         ),
+   ],
+   [
+      "SkillSetNotFoundError for a set the package refuses",
+      () =>
+         new SkillSetNotFoundError(
+            "Skill set 's' is not served: a reason. Fix: correct it.",
+            "SKILL_SET_NOT_SERVED",
+         ),
+   ],
+   [
+      "SkillSetNotFoundError for a set the package does not declare",
+      () =>
+         new SkillSetNotFoundError(
+            "No skill set named 's' is declared in package 'pkg'.",
+            "SKILL_SET_NOT_DECLARED",
          ),
    ],
    ["ConflictError", () => new ConflictError("already exists")],

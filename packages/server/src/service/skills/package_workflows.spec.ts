@@ -14,11 +14,7 @@ import {
    boundedDeclaration,
    MANIFEST_DECLARATION_MAX_BYTES,
 } from "../package_revision";
-import {
-   advertisedSkills,
-   resolveSkills,
-   workflowSkillSet,
-} from "./package_skills";
+import { advertisedSkills, skillSetView } from "./package_skills";
 import {
    adoptWorkflows,
    emptyWorkflows,
@@ -33,6 +29,7 @@ import {
    SKILL_FILE_SKIPPED,
    SKILL_FINDING,
    SKILL_SET_NOT_SERVED,
+   SKILL_SETS_UNAVAILABLE,
    SKILL_SHADOWED,
    WORKFLOW_NOT_SERVED,
    type PackageWorkflows,
@@ -195,7 +192,7 @@ describe("readPackageWorkflows", () => {
 
    /** The files of one set of a served workflow, as the wire carries them. */
    const viewOf = (result: PackageWorkflows, index = 0, name = "analyst") => {
-      const set = workflowSkillSet(
+      const set = skillSetView(
          result.workflows.get(name)!.sets[index]!,
          "full",
       );
@@ -218,14 +215,14 @@ describe("readPackageWorkflows", () => {
          });
          expect(workflow.definitionSha).toMatch(/^[0-9a-f]{64}$/);
          expect(workflow.sets).toHaveLength(1);
-         expect(workflow.sets[0]!.set).toMatchObject({
+         expect(workflow.sets[0]!).toMatchObject({
             name: HOUSE,
             path: MAIN,
             overrides: [],
             findings: [],
          });
-         expect(workflow.sets[0]!.set.digest).toMatch(/^[0-9a-f]{64}$/);
-         expect(result.sets.get(HOUSE)).toBe(workflow.sets[0]!.set);
+         expect(workflow.sets[0]!.digest).toMatch(/^[0-9a-f]{64}$/);
+         expect(result.sets.get(HOUSE)).toBe(workflow.sets[0]!);
          expect([...result.contentShas.keys()].sort()).toEqual([
             INSTRUCTIONS,
             `${CONVENTIONS}/SKILL.md`,
@@ -258,10 +255,8 @@ describe("readPackageWorkflows", () => {
          const result = read({ analyst: listing(HOUSE) });
          const full = viewOf(result).skills[0]!;
          expect(
-            workflowSkillSet(
-               result.workflows.get("analyst")!.sets[0]!,
-               "summary",
-            ).skills,
+            skillSetView(result.workflows.get("analyst")!.sets[0]!, "summary")
+               .skills,
          ).toEqual([
             {
                relative_filepath: "quoted/SKILL.md",
@@ -311,7 +306,7 @@ describe("readPackageWorkflows", () => {
          writeSkill(MAIN, "conventions");
          const result = read({ default: listing(HOUSE) });
          expect(result.workflows.has("default")).toBe(true);
-         expect(advertisedSkills(result)).toEqual([]);
+         expect(advertisedSkills(result).skills).toEqual([]);
       });
 
       it("refuses only the bad workflow and keeps the others", () => {
@@ -825,10 +820,10 @@ describe("readPackageWorkflows", () => {
          analyst();
          const result = read({ one: listing(HOUSE), two: listing(HOUSE) });
          expect([...result.sets.keys()]).toEqual([HOUSE]);
-         expect(result.workflows.get("one")!.sets[0]!.set).toBe(
-            result.workflows.get("two")!.sets[0]!.set,
+         expect(result.workflows.get("one")!.sets[0]!).toBe(
+            result.workflows.get("two")!.sets[0]!,
          );
-         expect(result.workflows.get("one")!.sets[0]!.set.name).toBe(HOUSE);
+         expect(result.workflows.get("one")!.sets[0]!.name).toBe(HOUSE);
       });
 
       it("refuses a set whose path is a link out of the package, the same whether or not the outside directory exists", () => {
@@ -958,7 +953,7 @@ describe("readPackageWorkflows", () => {
                { default: { path: MAIN } },
             );
             expect([...result.workflows.keys()]).toEqual(["first", "second"]);
-            expect(advertisedSkills(result).map((s) => s.name)).toEqual([
+            expect(advertisedSkills(result).skills.map((s) => s.name)).toEqual([
                "conventions",
             ]);
             expect(
@@ -1149,7 +1144,13 @@ describe("readPackageWorkflows", () => {
          expect(result.workflows.size).toBe(0);
          expect(result.sets.size).toBe(0);
          expect(result.contentShas.size).toBe(0);
-         expect(texts(result.warnings)).toEqual([]);
+         expect(result.warnings).toHaveLength(1);
+         expectWarning(
+            result.warnings,
+            SKILL_SETS_UNAVAILABLE,
+            undefined,
+            reason,
+         );
          expect(result.skillsDirNotRead).toBe(false);
       };
 
@@ -1504,7 +1505,7 @@ describe("readPackageWorkflows", () => {
    });
 
    describe("a skill in a set", () => {
-      it("is served from the first set that holds its name, with a warning on the workflow", () => {
+      it("is served by both sets that hold its name, with a shadowing warning on the workflow", () => {
          const entry = analyst();
          writeSkill(SECOND, "conventions", "second copy");
          writeSkill(SECOND, "extra");
@@ -1512,26 +1513,27 @@ describe("readPackageWorkflows", () => {
             analyst: { ...entry, skillSets: [HOUSE, EXTRA] },
          });
          const workflow = result.workflows.get("analyst")!;
-         expect(workflow.shadowing).toEqual([
-            {
-               code: SKILL_SHADOWED,
-               subject: "analyst",
-               severity: "warn",
-               message: `Workflow 'analyst' lists skill 'conventions' in both '${HOUSE}' and '${EXTRA}'; the copy in '${HOUSE}', listed first, is the one served. Fix: rename one of the two skills, or list only one of the sets.`,
-            },
-         ]);
+         expect(workflow.shadowing).toHaveLength(1);
+         expectWarning(
+            workflow.shadowing,
+            SKILL_SHADOWED,
+            "analyst",
+            `lists skill 'conventions' in both '${HOUSE}' and '${EXTRA}'`,
+         );
+         expect(workflow.shadowing[0]!.message).toContain(
+            `an installer keeps the copy in '${HOUSE}', listed first`,
+         );
          expect(result.warnings).toEqual(workflow.shadowing);
+         // Each set is whole: the later one keeps the name the first also holds.
          expect(
             workflow.sets.map(({ skills }) => skills.map((s) => s.dirName)),
-         ).toEqual([["conventions"], ["extra"]]);
+         ).toEqual([["conventions"], ["conventions", "extra"]]);
          expect(
             viewOf(result, 0).skills.map((s) => s.file_contents)[0],
          ).toContain("Use net revenue.");
-         // The set itself still holds both, for a workflow that lists it first.
-         expect(result.sets.get(EXTRA)!.skills.map((s) => s.dirName)).toEqual([
-            "conventions",
-            "extra",
-         ]);
+         expect(
+            viewOf(result, 1).skills.map((s) => s.file_contents)[0],
+         ).toContain("second copy");
       });
 
       it("keeps its own set per file path: sets are listed in the order the workflow lists them", () => {
@@ -1541,7 +1543,7 @@ describe("readPackageWorkflows", () => {
             analyst: { ...entry, skillSets: [EXTRA, HOUSE] },
          });
          expect(
-            result.workflows.get("analyst")!.sets.map((s) => s.set.path),
+            result.workflows.get("analyst")!.sets.map((s) => s.path),
          ).toEqual([SECOND, MAIN]);
          expect(
             viewOf(result, 0).skills.map((s) => s.relative_filepath),
@@ -2044,8 +2046,8 @@ describe("readPackageWorkflows", () => {
          expect(digests(backward)).toEqual(digests(forward));
          expect(definition(backward)).toBe(definition(forward));
          expect(forward.sets.size).toBe(2);
-         expect(forward.workflows.get("analyst")!.sets[1]!.set).toBe(
-            forward.workflows.get("other")!.sets[0]!.set,
+         expect(forward.workflows.get("analyst")!.sets[1]!).toBe(
+            forward.workflows.get("other")!.sets[0]!,
          );
       });
 
@@ -2085,11 +2087,13 @@ describe("readPackageWorkflows", () => {
          analyst();
          writeSkill(MAIN, "extra");
          const result = read(undefined, { default: { path: MAIN } });
-         expect(advertisedSkills(result).map((s) => s.name)).toEqual([
+         expect(advertisedSkills(result).skills.map((s) => s.name)).toEqual([
             "conventions",
             "extra",
          ]);
-         expect(await advertisedSkills(result)[0]!.read("SKILL.md")).toEqual({
+         expect(
+            await advertisedSkills(result).skills[0]!.read("SKILL.md"),
+         ).toEqual({
             text: expect.stringContaining("Use net revenue."),
          });
       });
@@ -2101,35 +2105,39 @@ describe("readPackageWorkflows", () => {
             path.join(pkg, CONVENTIONS, "SKILL.md"),
             "utf8",
          );
-         expect(await advertisedSkills(result)[0]!.read("SKILL.md")).toEqual({
+         expect(
+            await advertisedSkills(result).skills[0]!.read("SKILL.md"),
+         ).toEqual({
             text: written,
          });
       });
 
       it("are none when no set is named default, whatever else the package declares", () => {
          const result = read({ analyst: analyst() });
-         expect(advertisedSkills(result)).toEqual([]);
-         expect(advertisedSkills(emptyWorkflows())).toEqual([]);
+         expect(advertisedSkills(result).skills).toEqual([]);
+         expect(advertisedSkills(emptyWorkflows()).skills).toEqual([]);
       });
 
       it("are none for a default set that is refused, or a workflow named default", () => {
          writeSkill(MAIN, "one");
          expect(
-            advertisedSkills(read(undefined, { default: { path: "nope" } })),
+            advertisedSkills(read(undefined, { default: { path: "nope" } }))
+               .skills,
          ).toEqual([]);
-         expect(advertisedSkills(read({ default: listing(HOUSE) }))).toEqual(
-            [],
-         );
+         expect(
+            advertisedSkills(read({ default: listing(HOUSE) })).skills,
+         ).toEqual([]);
       });
 
-      it("shadow a bundled skill of the same name through resolveSkills", () => {
+      it("carry the names the default set overrides, which resolveSkills lets them replace", () => {
          writeSkill(MAIN, "malloy-analysis", "OUR ANALYSIS");
-         const resolved = resolveSkills(
-            [],
-            advertisedSkills(read(undefined, { default: { path: MAIN } })),
-         );
-         expect(resolved.map((s) => [s.name, s.origin])).toEqual([
-            ["malloy-analysis", "package"],
+         const advertised = (overrides?: string[]) =>
+            advertisedSkills(
+               read(undefined, { default: { path: MAIN, overrides } }),
+            );
+         expect(advertised().overrides).toEqual([]);
+         expect(advertised(["malloy-analysis"]).overrides).toEqual([
+            "malloy-analysis",
          ]);
       });
    });

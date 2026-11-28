@@ -78,13 +78,16 @@ tags:
   - name: skills
     description:
       Agent skills in force for a package - the bundled guides plus the skills
-      of the package's `default` workflow, with the package's copy replacing a
-      bundled one of the same name, each read file by file by its path in the
-      skill
+      of the package's `default` skill set, which replace a bundled guide of the
+      same name only when that set's `overrides` lists it
+  - name: skill-sets
+    description:
+      Skill sets a package declares under `skillSets` in `publisher.json`, each
+      served whole at its own route, whether or not a workflow lists it
   - name: workflows
     description:
       Workflows a package declares in `publisher.json`, resolved to their
-      instructions and skill sets (served, never run)
+      instructions and the skill sets they list (served, never run)
   - name: databases
     description: Embedded database management and access
   - name: watch-mode
@@ -2766,25 +2769,28 @@ paths:
       summary: List the agent skills in force for a package
       description: |
         Lists the agent skills that apply to this package: the guides bundled
-        with this server, plus the skills of the package's `default` workflow
+        with this server, plus the skills of the package's `default` skill set
         (none when the package declares no `default`).
 
-        Resolution is name shadowing. A package skill whose `name` matches a
-        bundled skill REPLACES it for this package; one with a new name is
+        A `default` skill named like a bundled skill is served in the bundled
+        skill's place only when `default`'s `overrides` lists that name;
+        otherwise the bundled skill is served. A skill with a new name is
         added. Nothing is merged, because the server does not know which guides
         the calling agent already holds and so cannot patch one. Read `origin`
-        on each entry to tell a replaced skill from the original.
+        on each entry to tell a replaced skill from the original. This is the
+        only place `overrides` changes what is served: the set routes serve a
+        set whole either way.
 
         Bodies are not returned here. Fetch one with
         `GET .../skills/{skillName}`. Any other file of a package skill is read
-        at `GET .../workflows/default/skills/{skill}/{file}`; a bundled skill's
+        at `GET .../skill-sets/default/skills/{skill}/{file}`; a bundled skill's
         other files are read through the `get_skill` MCP tool.
 
-        409 `WORKFLOWS_UNAVAILABLE` when the package declares a `default`
-        workflow and the load could not read its skill sets, which is where its
-        own skills come from: the message carries the reason and it lasts until
-        the package reloads. A package with no `default` has no skills of its
-        own, so it lists the bundled ones as usual.
+        409 `SKILL_SETS_UNAVAILABLE` when the package declares a `default` set
+        and the load could not read it, which is where its own skills come from:
+        the message carries the reason and it lasts until the package reloads. A
+        package with no `default` has no skills of its own, so it lists the
+        bundled ones as usual.
 
         The REST half of the `get_skill` MCP tool, for callers running
         unattended.
@@ -2840,17 +2846,15 @@ paths:
         of a `.skillignore`. `skillName` is a name from the listing, exactly as
         spelled there.
 
-        The `SKILL.md` is served as written, for reading. A workflow's own read
-        (`GET .../workflows/{workflowName}`) serves a `SKILL.md` re-emitted with
-        only its `name` and `description` quoted, for installing, and the set
-        digests hash that form; an installer reads that route. A package
-        skill's other files are read at
-        `GET .../workflows/default/skills/{skill}/{file}`; a bundled skill's
+        The `SKILL.md` is served as written, and so is every skill set route's:
+        an installer reads a set at `GET .../skill-sets/{skillSetName}`. A
+        package skill's other files are read at
+        `GET .../skill-sets/default/skills/{skill}/{file}`; a bundled skill's
         other files are read through the `get_skill` MCP tool.
 
-        404 when no skill of that name is in force. 409 `WORKFLOWS_UNAVAILABLE`
-        when the package declares a `default` workflow whose skill sets could
-        not be read at load, as for the listing.
+        404 when no skill of that name is in force. 409 `SKILL_SETS_UNAVAILABLE`
+        when the package declares a `default` set that could not be read at
+        load, as for the listing.
       parameters:
         - name: environmentName
           in: path
@@ -3159,6 +3163,248 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
+  /environments/{environmentName}/packages/{packageName}/skill-sets:
+    get:
+      tags:
+        - skill-sets
+      operationId: list-skill-sets
+      summary: List the skill sets a package serves
+      description: |
+        Lists every skill set the package's `publisher.json` declares under
+        `skillSets` that is served, in name order, without skill text: each
+        one's name, description and digest. A set that failed validation is not
+        listed; the package's `warnings` say why. Empty when the manifest
+        declares none. A set is listed whether or not a workflow lists it, and
+        the `default` set, whose skills are the package's own, is listed with
+        the rest.
+
+        409 `SKILL_SETS_UNAVAILABLE` when the load could not read the package's
+        skill sets (the walk threw, or a declared set exists but cannot be read,
+        such as `EACCES` or `EIO`): the models still serve, the message carries
+        the reason, and it lasts until the package reloads, so there is no
+        `Retry-After`. A name the manifest never declares is still a 404.
+
+        The REST half of the `get_skill_set` MCP tool.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
+      responses:
+        "200":
+          description: The skill sets the package serves
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SkillSetSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/skill-sets/{skillSetName}:
+    get:
+      tags:
+        - skill-sets
+      operationId: get-skill-set
+      summary: Get one skill set, whole
+      description: |
+        Returns one skill set: its skills' inline files and the files its
+        skills list, with `source`, which pins the package load so a caller can
+        prove which bytes it read. A set is served whole or not at all, and its
+        `digest` covers exactly what this reply carries, so two sets with the
+        same content have the same digest.
+
+        A `SKILL.md` is served as written, byte for byte, and each `SKILL.md`
+        entry carries its parsed `name` and `description` in both views.
+        **Installing a set.** An installer writes a `SKILL.md` as `name` and
+        `description` taken from the entry's fields, followed by the text after
+        the file's own frontmatter, and names any other frontmatter key the file
+        carried (`allowed-tools`, `hooks`) to the user. The text as written can
+        carry keys that grant a tool or run a command, and nothing in this route
+        removes them.
+
+        409 `SKILL_SETS_UNAVAILABLE` when the load could not read the package's
+        skill sets (the walk threw, or a declared set exists but cannot be read,
+        such as `EACCES` or `EIO`): the models still serve, the message carries
+        the reason, and it lasts until the package reloads, so there is no
+        `Retry-After`. A name the manifest never declares is still a 404.
+
+        404 when no skill set of that name is served. `reason` says why:
+        `SKILL_SET_NOT_SERVED` when the manifest declares the set and
+        Publisher refuses it (the message is the refusal, the same text as the
+        package's `skill-set-not-served` warning for it), or refuses its whole
+        declaration, for every name (the message is the text of the package
+        warning that says so); `SKILL_SET_NOT_DECLARED` when the manifest
+        declares no set of that name.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: skillSetName
+          in: path
+          description: >-
+            Skill set name as returned by the listing, its key under
+            `skillSets` in the manifest. Names are 1-64 lowercase letters,
+            digits and single hyphens; any other value is a 404, not a 400.
+          required: true
+          schema:
+            type: string
+            pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+            maxLength: 64
+        - name: skills
+          in: query
+          description: >-
+            `full` (the default) returns every skill file with its text and the
+            set's `assets`. `summary` returns each file's `relative_filepath`
+            and `bytes`, plus `name` and `description` for a `SKILL.md`, and no
+            `file_contents` and no `assets`; fetch a file with
+            `GET .../skill-sets/{skillSetName}/skills/{path}`. The `digest` and
+            `source` are identical in both. Any other value, including an empty
+            one, is a 400.
+          required: false
+          schema:
+            type: string
+            enum: [full, summary]
+            default: full
+        - $ref: "#/components/parameters/versionId"
+      responses:
+        "200":
+          description: The skill set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillSet"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/skill-sets/{skillSetName}/skills/{path}:
+    get:
+      tags:
+        - skill-sets
+      operationId: get-skill-set-file
+      summary: Get one file of a skill set
+      description: |
+        The one route that reads a single file of a package skill. Returns one
+        file of the set, named by a `<skill>/<file>` path relative to the set's
+        folder (for example `analyst-conventions/SKILL.md`) from
+        `GET .../skill-sets/{skillSetName}?skills=summary`, or from the set's
+        `assets`, with the set's `digest` and the same `source` pin as the set.
+        The path is looked up in the set's served files, never joined onto the
+        filesystem. A file from the set's `assets` listing is matched exactly
+        against the listing, then read from disk and served only if it still
+        hashes to its listed `sha256`; one that changed, or became a link, since
+        the load is a 404 that says it changed and is not served until the
+        package reloads. A text file answers with `file_contents`, as written;
+        a binary one (not UTF-8, or holding a NUL byte) has no `file_contents`
+        and answers with a `message` naming its size.
+
+        404 when the set or the file is not served. When it is the set,
+        `reason` is `SKILL_SET_NOT_SERVED` or `SKILL_SET_NOT_DECLARED`, as for
+        `GET .../skill-sets/{skillSetName}`; a file the set does not hold has no
+        `reason`.
+
+        409 `SKILL_SETS_UNAVAILABLE` when the load could not read the package's
+        skill sets, as for the set itself. A name the manifest never declares is
+        still a 404.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: skillSetName
+          in: path
+          description: >-
+            Skill set name as returned by the listing. Names are 1-64 lowercase
+            letters, digits and single hyphens; any other value is a 404, not a
+            400.
+          required: true
+          schema:
+            type: string
+            pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+            maxLength: 64
+        - name: path
+          in: path
+          description: >-
+            A `<skill>/<file>` path from the set's summary, or from its `assets`
+            in the full view. Slashes may be sent literally or as `%2F`; a
+            literal `%` in a name must be sent as `%25`.
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/versionId"
+      responses:
+        "200":
+          description: The skill set file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillSetFileRead"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
   /environments/{environmentName}/packages/{packageName}/workflows:
     get:
       tags:
@@ -3168,15 +3414,15 @@ paths:
       description: |
         Lists the workflows declared under `workflows` in the package's
         `publisher.json` that passed validation, without instructions or skill
-        text: each one's name, description, whether it has instructions, and
-        its skill sets (name, path and digest). A workflow that failed
+        text: each one's name, description and the names of the skill sets it
+        lists, in the order the manifest lists them. A workflow that failed
         validation is not listed; the package's `warnings` say why. Empty when
         the manifest declares none.
 
-        409 `WORKFLOWS_UNAVAILABLE` when the load could not read the package's skill
-        sets (the walk threw, or a listed set exists but cannot be read, such as
-        `EACCES` or `EIO`): the models still serve, the message carries the
-        reason, and it lasts until the package reloads, so there is no
+        409 `SKILL_SETS_UNAVAILABLE` when the load could not read the package's
+        skill sets (the walk threw, or a declared set exists but cannot be read,
+        such as `EACCES` or `EIO`): the models still serve, the message carries
+        the reason, and it lasts until the package reloads, so there is no
         `Retry-After`. A name the manifest never declares is still a 404.
 
         The REST half of the `get_workflow` MCP tool.
@@ -3225,43 +3471,32 @@ paths:
       operationId: get-workflow
       summary: Get one workflow, resolved
       description: |
-        Returns one workflow with its instructions and each of its skill sets
-        (their skill files and listed files), plus `source`, which pins the
-        package load and the workflow's own content so a runner can prove which
-        bytes ran. Publisher serves the definition and runs nothing: the
-        caller's own harness executes it.
+        Returns one workflow with its instructions and every skill set it
+        lists, each whole and byte-identical to what `GET
+        .../skill-sets/{skillSetName}` returns for it minus `source`, plus
+        `source`, which pins the package load and the workflow's own content so
+        a runner can prove which bytes ran. Publisher serves the definition and
+        runs nothing: the caller's own harness executes it.
 
         A skill name that two of the workflow's sets both hold is served from
-        the first-listed set only, and the workflow's `warnings` say so.
+        both, and the workflow's `warnings` carry `skill-shadowed`: an installer
+        keeps the first-listed set's copy.
 
-        A `SKILL.md` is served re-emitted, with only its `name` and
-        `description` quoted, because this route is what an installer reads;
-        the set `digest` and `definitionSha` hash that form. `GET
-        .../skills/{skillName}` serves `SKILL.md` as written, for reading.
-
-        With `skillSet`, the reply carries the summary fields and that one
-        set only, and no `instructions`: a chat that picks a set never runs the
-        workflow's instructions. The set is served whole, every skill it holds
-        included, because the reply has no other set for a name to collide
-        with; its `digest` then pins exactly what the reply carries.
-        `warnings` is then that set's findings only: the finding that says
-        which set serves a repeated skill name is left out, since this reply
-        serves the set's own copy.
+        A `SKILL.md` is served as written, as on the set route; the install rule
+        there applies to this reply too.
 
         404 when no workflow of that name is served. `reason` says why:
         `WORKFLOW_NOT_SERVED` when the manifest declares the workflow and
         Publisher refuses it (the message is the refusal, the same text as the
         package's `workflow-not-served` warning for it), or refuses its whole
-        `workflows` value, for every name (the message is the text of the
-        package warning that says so), `WORKFLOW_NOT_DECLARED`
-        when the manifest declares no workflow of that name. A served
-        workflow with no set named `skillSet` is a 404 with no `reason`. A
-        repeated or empty `skillSet` is a 400.
+        declaration, for every name (the message is the text of the package
+        warning that says so); `WORKFLOW_NOT_DECLARED` when the manifest
+        declares no workflow of that name.
 
-        409 `WORKFLOWS_UNAVAILABLE` when the load could not read the package's skill
-        sets (the walk threw, or a listed set exists but cannot be read, such as
-        `EACCES` or `EIO`): the models still serve, the message carries the
-        reason, and it lasts until the package reloads, so there is no
+        409 `SKILL_SETS_UNAVAILABLE` when the load could not read the package's
+        skill sets (the walk threw, or a declared set exists but cannot be read,
+        such as `EACCES` or `EIO`): the models still serve, the message carries
+        the reason, and it lasts until the package reloads, so there is no
         `Retry-After`. A name the manifest never declares is still a 404.
       parameters:
         - name: environmentName
@@ -3294,7 +3529,7 @@ paths:
             `summary` returns each file's `relative_filepath` and `bytes`, plus
             `name` and `description` for a `SKILL.md`, and no `file_contents`
             and no `assets`; fetch a file with
-            `GET .../workflows/{workflowName}/skills/{path}`. The `source` pin
+            `GET .../skill-sets/{skillSetName}/skills/{path}`. The `source` pin
             is identical in both. Any other value, including an empty one, is a
             400.
           required: false
@@ -3302,16 +3537,6 @@ paths:
             type: string
             enum: [full, summary]
             default: full
-        - name: skillSet
-          in: query
-          description: >-
-            A skill set's name (its folder's name, as listed under
-            `skill_sets`). Returns that set only, with every skill it holds,
-            and no `instructions`. A repeated or empty value is a 400.
-          required: false
-          schema:
-            type: string
-            minLength: 1
         - $ref: "#/components/parameters/versionId"
       responses:
         "200":
@@ -3320,111 +3545,6 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/Workflow"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
-        "409":
-          $ref: "#/components/responses/Conflict"
-        "410":
-          $ref: "#/components/responses/Gone"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
-  /environments/{environmentName}/packages/{packageName}/workflows/{workflowName}/skills/{path}:
-    get:
-      tags:
-        - workflows
-      operationId: get-workflow-skill-file
-      summary: Get one of a workflow's skill files
-      description: |
-        The one route that reads a single file of a package skill. Returns
-        one file from the workflow's resolved skills, named by a
-        `<skill>/<file>` path (for example `analyst-conventions/SKILL.md`)
-        from `GET .../workflows/{workflowName}?skills=summary`, with the same
-        `source` pin as the full definition. Without `skillSet` a skill name
-        is served from the first-listed set that holds it, so the path names
-        one file whichever set holds it. With `skillSet` the path is looked
-        up in that set, whole: use it after installing one set with
-        `GET .../workflows/{workflowName}?skillSet=`, so a skill another set
-        also holds is read from the set you installed. The path is looked up
-        in the resolved skills, never joined onto the filesystem. A file from a set's `assets` listing is matched exactly
-        against the listing, then read from disk and served only if it still
-        hashes to its listed `sha256`; one that changed, or became a link, since
-        the load is a 404 that says it changed and is not served until the
-        package reloads. A text file answers with `file_contents`; a binary
-        one (not UTF-8, or holding a NUL byte) has no `file_contents` and
-        answers with a `message` naming its size. A `SKILL.md` answers
-        re-emitted, as in `GET .../workflows/{workflowName}`, which is the form
-        the set `digest` hashes; `GET .../skills/{skillName}` serves it as
-        written.
-
-        404 when the workflow, the set named by `skillSet` or the file is not
-        served. When it is the workflow, `reason` is `WORKFLOW_NOT_SERVED` or
-        `WORKFLOW_NOT_DECLARED`, as for `GET .../workflows/{workflowName}`;
-        a missing set or file has no `reason`.
-
-        409 `WORKFLOWS_UNAVAILABLE` when the load could not read the package's skill
-        sets (the walk threw, or a listed set exists but cannot be read, such as
-        `EACCES` or `EIO`): the models still serve, the message carries the
-        reason, and it lasts until the package reloads, so there is no
-        `Retry-After`. A name the manifest never declares is still a 404.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: workflowName
-          in: path
-          description: >-
-            Workflow name as returned by the listing. Names are 1-64 lowercase
-            letters, digits and single hyphens; any other value is a 404, not a
-            400.
-          required: true
-          schema:
-            type: string
-            pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
-            maxLength: 64
-        - name: path
-          in: path
-          description: >-
-            A `<skill>/<file>` path from the workflow's skill summary, or from
-            a set's `assets` in the full view. Slashes may be
-            sent literally or as `%2F`; a literal `%` in a name must be sent as
-            `%25`.
-          required: true
-          schema:
-            type: string
-        - name: skillSet
-          in: query
-          description: >-
-            A skill set's name, as listed under `skill_sets`. Looks the path up
-            in that set only, with every skill it holds. A repeated or empty
-            value is a 400.
-          required: false
-          schema:
-            type: string
-            minLength: 1
-        - $ref: "#/components/parameters/versionId"
-      responses:
-        "200":
-          description: The skill file
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/WorkflowSkillRead"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
@@ -4273,9 +4393,9 @@ components:
           * BUILD_PLAN_UNAVAILABLE: the package's build plan could not be
             derived when it loaded. Reload the package; retrying the read does
             not help.
-          * WORKFLOWS_UNAVAILABLE: the package's skill sets could not be read
-            when it loaded, so its workflows and skills are not served. Reload
-            the package; retrying the read does not help.
+          * SKILL_SETS_UNAVAILABLE: the package's skill sets could not be read
+            when it loaded, so its skill sets, workflows and skills are not
+            served. Reload the package; retrying the read does not help.
       content:
         application/json:
           schema:
@@ -5435,10 +5555,10 @@ components:
           description: >-
             Server-computed, read-only: SHA-256 over the package-relative path
             and bytes of every file the package is serving: each model file,
-            each file of each skill set a served workflow lists, and, when the
-            manifest declares `workflows`, the canonical form of that
-            `workflows` object plus every instructions file those workflows
-            read.
+            each file of each served skill set, and, when the manifest declares
+            `skillSets` or `workflows`, the canonical form of that declaration
+            plus every instructions file the served workflows read. It is
+            computed in the package-load worker.
 
             This is the reload receipt. Publisher serves a COPY of a package
             under `publisher_data/<env>/<pkg>/` unless the environment was
@@ -5912,26 +6032,31 @@ components:
             `report-layout-unknown` (a `layout=` other than `grid` or
             `linear`). The rest are `warn` (a mistyped `(markdown)` opener, a
             block that never closes, and similar).
-            Workflow and skill set findings, all `warn`, each with a `code`
-            and a `subject`: `workflow-not-served` (`subject` the workflow's
-            name) for each workflow the manifest declares that is not served,
-            with the reason in `message`; `skill-shadowed` (the workflow's
-            name) for a skill name two of a workflow's sets both hold; and,
-            once per skill set however many workflows list it, each finding of
-            the set (`subject` the set's path): `skill-file-skipped` for a
-            served skill that has a file of its directory left out (a skipped
+            Skill set and workflow findings, all `warn`, each with a `code`
+            and, except the last, a `subject`: `workflow-not-served` (`subject`
+            the workflow's name) for each workflow the manifest declares that is
+            not served, with the reason in `message`; `skill-set-not-served`
+            (the set's name) for each skill set it declares that is not served;
+            `skill-shadowed` (the workflow's name) for a skill name two of a
+            workflow's sets both hold; once per skill set, each finding of the
+            set (`subject` the set's name): `skill-file-skipped` for a served
+            skill that has a file of its directory left out (a skipped
             reference or asset, a file over the reply budget of `get_skill`),
             and `skill-finding` for any other: a skill that is not served
             (unreadable or linked-out `SKILL.md`, a frontmatter `name` that is
             not its directory name, an `assets/` that breaks a rule, a
             `SKILL.md` past the set's inline budget), a skill served with a
             gap (no `description`, frontmatter that is not valid YAML), a set
-            that holds no skills, and a set past its skill cap. A workflow's
-            own `Workflow.warnings` carry the same findings.
+            that holds no skills, a set past its skill cap, a skill named like a
+            bundled skill that the set's `overrides` does not list, and a bad
+            `overrides` value; and `skill-sets-unavailable` (no `subject`) when
+            the walk failed, so no skill set or workflow is served until the
+            package reloads. A `SkillSet.warnings` carries the set's own
+            findings, and `Workflow.warnings` the workflow's `skill-shadowed`.
             Hard-break findings, all `warn`, each with a `code`: a manifest
             that declares `agents`, which is no longer read
             (`PACKAGE_AGENTS_NOT_READ`), and a root `skills/` directory that no
-            workflow lists as a skill set, which is no longer read
+            declared skill set reads, which is no longer read
             (`PACKAGE_SKILLS_DIR_NOT_READ`).
             Deprecated-format findings, all `warn`: each `.malloynb` notebook
             (`model` is its path), and each source a file declares deprecated
@@ -6247,8 +6372,8 @@ components:
     PackageWarning:
       type: object
       description: >-
-        One non-fatal finding about a package, as `Package.warnings` and
-        `Workflow.warnings` carry it. `message` is the only field every finding
+        One non-fatal finding about a package, as `Package.warnings`,
+        `SkillSet.warnings` and `Workflow.warnings` carry it. `message` is the only field every finding
         has; a client that acts on a finding reads its `code` and `subject` and
         shows its `message` whole, never parsing it.
       properties:
@@ -6264,8 +6389,8 @@ components:
             sits on (`by_carrier`, `flights -> by_carrier`), the source a
             materialization finding belongs to, for a report
             finding, the report's name or the `source.dimension` a
-            `# drill` is declared on, or, for a workflow finding, the
-            workflow's name or the skill set's path (see `code`). Absent
+            `# drill` is declared on, or, for a workflow or skill set
+            finding, the workflow's or the skill set's name (see `code`). Absent
             when a finding sits on none
             of those, either because it spans several, in which case the
             message names them, or because it is about the lint itself
@@ -6330,23 +6455,35 @@ components:
             message the measure; `warn`; only while
             `PUBLISHER_MATERIALIZE` is on).
             `workflow-not-served`: a workflow the manifest declares and
-            Publisher refuses (`subject` the workflow's name; the message is
-            the refusal, and the workflow's 404 carries the same text).
-            `skill-shadowed`: a skill name two of a workflow's sets both hold,
-            served from the first-listed set (`subject` the workflow's name).
+            Publisher refuses, or lists an undeclared or refused set
+            (`subject` the workflow's name; the message is the refusal, and
+            the workflow's 404 carries the same text).
+            `skill-set-not-served`: a skill set the manifest declares and
+            Publisher refuses, for a bad key, path or description, a path
+            another set also names, or because it would take the package past
+            the 8 MiB asset cap (`subject` the set's name; the message is the
+            refusal, and the set's 404 carries the same text).
+            `skill-shadowed`: a skill name two of a workflow's sets both hold;
+            both sets are served whole, and an installer keeps the first-listed
+            set's copy (`subject` the workflow's name).
             `skill-file-skipped`: a served skill has a file of its directory
             left out, a skipped reference or asset or a file over the reply
-            budget of `get_skill` (`subject` the skill set's path).
-            `skill-finding`: any other finding of a skill set, a skill not
-            served, a skill served with a gap, a set with no skills or a set
-            past its skill cap (`subject` the set's path). Each finding of a
-            set is published once, however many workflows list it. All four
-            are `warn`.
+            budget of `get_skill` (`subject` the skill set's name).
+            `skill-finding`: any other finding of a skill set: a skill not
+            served, a skill served with a gap, a set with no skills, a set
+            past its skill cap, a skill named like a bundled skill that the
+            set's `overrides` does not list, or a bad `overrides` value
+            (`subject` the set's name). Each finding of a set is published
+            once, however many workflows list it. All five are `warn`.
+            `skill-sets-unavailable`: the walk that reads the declared skill
+            sets failed, so no skill set or workflow is served until the
+            package reloads (no `subject`; one per load).
             `PACKAGE_AGENTS_NOT_READ`: the manifest declares `agents`,
             which is no longer read (one per load; the message says to
             declare `workflows`). `PACKAGE_SKILLS_DIR_NOT_READ`: the
-            package has a root `skills/` directory that no workflow lists
-            as a skill set, so it is no longer read (one per load).
+            package has a root `skills/` directory that no declared skill
+            set reads, so it is no longer read (one per load; the message
+            names the one-line fix, a `default` set whose `path` is `skills`).
             `deprecated-rollup-namespace`: a rollup line placed with
             `namespace=`, the deprecated spelling of its `name=`
             container; still read, in that container under the readable
@@ -6714,78 +6851,44 @@ components:
             never reached are exactly what it cannot report.
       required:
         - message
-    WorkflowSkillSetSummary:
+    SkillSetSummary:
       type: object
       readOnly: true
-      description: >-
-        A skill set a workflow lists, without its skills: the set's folder
-        name, its normalized path, and its digest.
+      description: One skill set a package serves, without its skills.
       properties:
         name:
           type: string
           description: >-
-            The set's folder name, which is what a chat picks it by and what
-            `skillSet=` takes.
-        path:
+            The set's key under `skillSets` in the manifest, which is what a
+            chat picks it by and what a workflow lists. The folder's own name
+            never matters.
+        description:
           type: string
-          description: >-
-            Package-relative path of the set's folder, normalized: `./` and
-            `..` segments, doubled slashes and a trailing slash are resolved or
-            dropped from what the manifest wrote.
+          description: The set's description. Absent when the manifest sets none.
         digest:
           type: string
           description: >-
-            SHA-256 over the set's path and each of its skills as a workflow
-            serves it: each inline file's path and the text a reply carries (a
-            `SKILL.md` as re-emitted), each listed file's path and SHA-256, and
-            each skill's applied `.skillignore`. It covers every skill in the
-            set, including one a workflow serves from an earlier set, so
-            editing that skill moves it though that workflow's reply does not
-            carry the skill. Editing another set, or a workflow's instructions,
-            does not move it; a package past the 8 MiB asset cap can couple
-            sets.
+            SHA-256 over what the set serves: each served file's path and
+            as-written SHA-256, inline and listed files alike, each skill's
+            applied `.skillignore` SHA-256, and the set's sorted `overrides`. It
+            does not cover the set's name, path or description, so two sets with
+            the same content have the same digest and it is safe as a cache key.
+            A set read returns exactly what its digest covers.
       required:
         - name
-        - path
         - digest
 
-    WorkflowSummary:
-      type: object
-      readOnly: true
-      description: One workflow a package declares, without its instructions or skills.
-      properties:
-        name:
-          type: string
-          description: The workflow's name (its key in the manifest's `workflows` object).
-        description:
-          type: string
-          description: The workflow's description. Absent when the manifest sets none.
-        has_instructions:
-          type: boolean
-          description: >-
-            Whether the workflow declares instructions. A workflow without
-            them has nothing to run.
-        skill_sets:
-          type: array
-          description: The workflow's skill sets, in the order the manifest lists them.
-          items:
-            $ref: "#/components/schemas/WorkflowSkillSetSummary"
-      required:
-        - name
-        - has_instructions
-        - skill_sets
-
-    WorkflowSkillFile:
+    SkillSetFile:
       type: object
       readOnly: true
       description: >-
         One of a set's inline skill files: a skill's `SKILL.md` and every
         other Markdown file in its directory outside `assets/`, at any depth,
         while they fit the set's 256 KiB inline budget. Markdown past the
-        budget is listed as a `WorkflowAsset` instead. The snake_case keys
-        (`relative_filepath`, `file_contents`) mirror the MCP `get_workflow`
-        tool the shape is shared with, unlike the camelCase used elsewhere in
-        this API.
+        budget is listed as a `SkillSetAsset` instead. The snake_case keys
+        (`relative_filepath`, `file_contents`) mirror the MCP `get_skill_set`
+        and `get_workflow` tools the shape is shared with, unlike the camelCase
+        used elsewhere in this API.
       properties:
         relative_filepath:
           type: string
@@ -6796,25 +6899,27 @@ components:
         file_contents:
           type: string
           description: >-
-            A `SKILL.md` is re-emitted with only a quoted `name` and
-            `description` in its frontmatter; other Markdown is served raw.
-            Absent when the workflow was fetched with `skills=summary`.
+            The file as written, byte for byte, a `SKILL.md`'s frontmatter
+            included. Absent when the set was fetched with `skills=summary`.
         name:
           type: string
-          description: A `SKILL.md`'s name. Only in the `skills=summary` view.
+          description: >-
+            A `SKILL.md`'s name, read by the bounded frontmatter reader. In
+            both views; absent when the file has none or it is not a string.
         description:
           type: string
-          description: A `SKILL.md`'s description. Only in the `skills=summary` view.
+          description: >-
+            A `SKILL.md`'s description, read as `name` is. In both views;
+            absent when the file has none or it is not a string.
         bytes:
           type: integer
           description: >-
-            Length in UTF-8 bytes of the `file_contents` the full view serves
-            for this file, so a re-emitted `SKILL.md` is shorter than its file
-            on disk. Only in the `skills=summary` view.
+            The file's size on disk in bytes. Only in the `skills=summary`
+            view.
       required:
         - relative_filepath
 
-    WorkflowAsset:
+    SkillSetAsset:
       type: object
       readOnly: true
       description: >-
@@ -6823,7 +6928,7 @@ components:
         inline budget, text or binary, anywhere in the skill but `SKILL.md`. A
         skill's `.skillignore` decides which files the skill has. Listed
         without its contents; fetch a text one with
-        `GET .../workflows/{workflowName}/skills/{path}`, which
+        `GET .../skill-sets/{skillSetName}/skills/{path}`, which
         answers a binary one with a message naming its size.
       properties:
         relative_filepath:
@@ -6842,27 +6947,35 @@ components:
         - bytes
         - sha256
 
-    WorkflowSkillSet:
+    SkillSet:
       type: object
       readOnly: true
       description: >-
-        A skill set as a workflow serves it: its skills' inline files and the
-        files its skills list. In a whole-workflow view a skill name an earlier
-        set of the same workflow also holds is left out here and served from
-        that set; a reply for one `skillSet` holds every skill the set has.
+        A skill set, whole: its skills' inline files and the files its skills
+        list. A set is served whole or refused whole, and its content depends
+        only on its own files and declaration. Inside a `Workflow`, each set is
+        byte-identical to the set route's reply minus `source`.
       properties:
         name:
           type: string
+        description:
+          type: string
+          description: The set's description. Absent when the manifest sets none.
         path:
           type: string
+          description: >-
+            Package-relative path of the set's folder, normalized: `./` and
+            `..` segments, doubled slashes and a trailing slash are resolved or
+            dropped from what the manifest wrote. Publisher always sets it; a
+            gateway in front of it may withhold it.
         digest:
           type: string
-          description: See `WorkflowSkillSetSummary.digest`.
+          description: See `SkillSetSummary.digest`.
         skills:
           type: array
           description: The set's inline skill files, sorted by `relative_filepath`.
           items:
-            $ref: "#/components/schemas/WorkflowSkillFile"
+            $ref: "#/components/schemas/SkillSetFile"
         assets:
           type: array
           description: >-
@@ -6870,41 +6983,59 @@ components:
             sorted by `relative_filepath`. Absent when there are none and in
             the `skills=summary` view.
           items:
-            $ref: "#/components/schemas/WorkflowAsset"
+            $ref: "#/components/schemas/SkillSetAsset"
+        warnings:
+          type: array
+          description: >-
+            The set's own findings, `skill-file-skipped` and `skill-finding`,
+            with the set's name as `subject`, as `Package.warnings` carries
+            them.
+          items:
+            $ref: "#/components/schemas/PackageWarning"
+        source:
+          $ref: "#/components/schemas/ServedSource"
+          description: >-
+            What the set was read from. Present only on the set route's reply,
+            not on a set inside a `Workflow`, whose own `source` covers it.
       required:
         - name
-        - path
         - digest
         - skills
+        - warnings
 
-    WorkflowSkillRead:
+    SkillSetFileRead:
       type: object
       readOnly: true
       description: >-
-        One workflow skill file or listed file, with the pin of the definition
-        it belongs to. A listed file that is binary (not UTF-8 text, or holding
-        a NUL byte) has no `file_contents`: `message` says so and names its
-        size.
+        One skill set file or listed file, with the digest of the set it
+        belongs to and the pin of the load it was read from. A listed file that
+        is binary (not UTF-8 text, or holding a NUL byte) has no
+        `file_contents`: `message` says so and names its size.
       properties:
         relative_filepath:
           type: string
         file_contents:
           type: string
+          description: The file as written, byte for byte.
         message:
           type: string
           description: >-
             Set instead of `file_contents` when the file is binary and so is
             never served as a body.
+        digest:
+          type: string
+          description: The set's `digest`.
         source:
-          $ref: "#/components/schemas/WorkflowSource"
+          $ref: "#/components/schemas/ServedSource"
       required:
         - relative_filepath
+        - digest
         - source
 
-    WorkflowSource:
+    ServedSource:
       type: object
       readOnly: true
-      description: What a resolved workflow was read from, so a runner can prove which bytes ran.
+      description: What a skill set or a workflow was read from, so a caller can prove which bytes it used.
       properties:
         environment:
           type: string
@@ -6913,71 +7044,86 @@ components:
         versionId:
           $ref: "#/components/schemas/VersionIdPattern"
           description: >-
-            The published version the definition was read from. Absent for a
+            The published version the reply was read from. Absent for a
             package that has no published versions. Pass it as `?versionId=`
-            to fetch the same definition again after `latest` moves.
+            to fetch the same reply again after `latest` moves.
         sourceContentSha:
           type: string
-          description: The package's `sourceContentSha` at the load this definition came from.
+          description: The package's `sourceContentSha` at the load this reply came from.
+        servedRevision:
+          type: string
+          description: The package's `servedRevision` at the load this reply came from.
         definitionSha:
           type: string
           description: >-
-            SHA-256 over this workflow's name, description, instructions path
-            and text, and each of its skill sets' path and digest, in the
-            order listed. A set's digest covers every skill in the set, whether
-            or not this workflow serves it, so this can move when no reply
-            changed. Editing another workflow, or a model, does not move it.
-        servedRevision:
-          type: string
-          description: The package's `servedRevision` at the load this definition came from.
+            SHA-256 over a workflow's name, description, the SHA-256 of its
+            instructions, and each listed set's name and digest, in the order
+            listed. Present on a `Workflow` and absent on a skill set. Editing
+            another workflow, or a model, does not move it.
       required:
         - environment
         - package
         - sourceContentSha
-        - definitionSha
         - servedRevision
+
+    WorkflowSummary:
+      type: object
+      readOnly: true
+      description: One workflow a package declares, without its instructions or skills.
+      properties:
+        name:
+          type: string
+          description: The workflow's name (its key in the manifest's `workflows` object).
+        description:
+          type: string
+          description: The workflow's description. Absent when the manifest sets none.
+        skill_set_names:
+          type: array
+          description: >-
+            The names of the skill sets the workflow lists, in the order the
+            manifest lists them. Read each set at `GET .../skill-sets/{name}`.
+          items:
+            type: string
+      required:
+        - name
+        - skill_set_names
 
     Workflow:
       type: object
       readOnly: true
       description: >-
-        A workflow a package declares, resolved to its instructions and its
-        skill sets' files. Adopt it only when the user asks for it by name.
+        A workflow a package declares, resolved to its instructions and every
+        skill set it lists, whole. Adopt it only when the user asks for it by
+        name.
       properties:
         name:
           type: string
         description:
           type: string
-        has_instructions:
-          type: boolean
         instructions:
           type: string
-          description: >-
-            The instructions file's Markdown, at most 16 KiB. Absent when the
-            workflow declares none and when the reply is for one `skillSet`.
+          description: The instructions file's Markdown, at most 16 KiB.
         skill_sets:
           type: array
           description: >-
-            The workflow's skill sets in the order the manifest lists them, or
-            just the one asked for with `skillSet`.
+            Every skill set the workflow lists, whole, in the order the manifest
+            lists them. Each is byte-identical to the set route's reply minus
+            `source`.
           items:
-            $ref: "#/components/schemas/WorkflowSkillSet"
+            $ref: "#/components/schemas/SkillSet"
         warnings:
           type: array
           description: >-
             A `skill-shadowed` finding for each skill name two of its sets both
-            hold (served from the first-listed set), then each of its sets'
-            findings (`skill-file-skipped` and `skill-finding`, `subject` the
-            set's path), as `Package.warnings` carries them. With `skillSet`,
-            only that set's findings: the set is served whole, so which set
-            serves a repeated name does not describe the reply.
+            hold, whose first-listed set's copy an installer keeps. Each set's
+            own findings travel on that set.
           items:
             $ref: "#/components/schemas/PackageWarning"
         source:
-          $ref: "#/components/schemas/WorkflowSource"
+          $ref: "#/components/schemas/ServedSource"
       required:
         - name
-        - has_instructions
+        - instructions
         - skill_sets
         - warnings
         - source
@@ -7005,9 +7151,9 @@ components:
             - package
           description: >-
             `bundled` = shipped with this server. `package` = shipped by the
-            package's `default` workflow, which includes a package skill whose
-            name matches a bundled one and therefore REPLACES it for this
-            package.
+            package's `default` skill set. A `default` skill whose name matches
+            a bundled one replaces it for this package only when `default`'s
+            `overrides` lists that name; otherwise the bundled skill is served.
             Present so a caller can tell a replaced skill from the original,
             which is otherwise invisible.
 
@@ -7021,7 +7167,7 @@ components:
       properties:
         path:
           type: string
-          description: Path relative to the skill's root. A package skill's file is read at `GET .../workflows/{workflowName}/skills/{skill}/{path}`.
+          description: Path relative to the skill's root. A package skill's file is read at `GET .../skill-sets/default/skills/{skill}/{path}`.
         size:
           type: integer
           description: >-
@@ -10599,17 +10745,25 @@ components:
                 package with no `latest` yet refuses none.
               * VERSION_NOT_FOUND (404): the package has no such version.
               * VERSION_ARCHIVED (410): the version is archived.
-              * WORKFLOWS_UNAVAILABLE (409): the package's skill sets could not
-                be read when it loaded, so its workflows and skills are not
-                served until it reloads.
+              * SKILL_SETS_UNAVAILABLE (409): the package's skill sets could
+                not be read when it loaded, so its skill sets, workflows and
+                skills are not served until it reloads.
               * WORKFLOW_NOT_SERVED (404): the workflow routes name a workflow
                 the manifest declares and Publisher refuses, or any workflow
-                while the manifest's whole `workflows` value is refused. The
+                while the manifest's whole declaration is refused. The
                 message is the refusal, the same text as the package's
                 `workflow-not-served` warning for it, or of the package warning
-                that refuses the whole value.
+                that refuses the whole declaration.
               * WORKFLOW_NOT_DECLARED (404): the workflow routes name a
                 workflow the manifest does not declare.
+              * SKILL_SET_NOT_SERVED (404): the skill set routes name a set the
+                manifest declares and Publisher refuses, or any set while the
+                manifest's whole declaration is refused. The message is the
+                refusal, the same text as the package's `skill-set-not-served`
+                warning for it, or of the package warning that refuses the whole
+                declaration.
+              * SKILL_SET_NOT_DECLARED (404): the skill set routes name a set
+                the manifest does not declare.
 
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND, RESULT_TRUNCATED,
@@ -10621,7 +10775,8 @@ components:
             PACKAGE_INSTALLED_FROM_LOCATION, FILE_EXISTS, VERSION_IS_LATEST,
             VERSION_IS_LAST_ACTIVE, VERSION_BUILDING, VERSION_ID_INVALID,
             VERSION_NOT_LATEST, VERSION_NOT_FOUND, VERSION_ARCHIVED,
-            WORKFLOWS_UNAVAILABLE, WORKFLOW_NOT_SERVED, WORKFLOW_NOT_DECLARED.
+            SKILL_SETS_UNAVAILABLE, WORKFLOW_NOT_SERVED, WORKFLOW_NOT_DECLARED,
+            SKILL_SET_NOT_SERVED, SKILL_SET_NOT_DECLARED.
         problems:
           type: array
           description: |

@@ -149,14 +149,19 @@ export type ErrorReason =
    // 409: the package's build plan could not be derived at load; a reload
    // derives it again, a retry does not.
    | "BUILD_PLAN_UNAVAILABLE"
-   // 409: the package's workflows could not be read at load; a reload reads
-   // them again, a retry does not.
-   | "WORKFLOWS_UNAVAILABLE"
+   // 409: the package's skill sets and workflows could not be read at load; a
+   // reload reads them again, a retry does not.
+   | "SKILL_SETS_UNAVAILABLE"
    // 404: the manifest declares the workflow and the package refuses it; the
    // message is the refusal.
    | "WORKFLOW_NOT_SERVED"
    // 404: the manifest declares no workflow of that name.
    | "WORKFLOW_NOT_DECLARED"
+   // 404: the manifest declares the skill set and the package refuses it; the
+   // message is the refusal.
+   | "SKILL_SET_NOT_SERVED"
+   // 404: the manifest declares no skill set of that name.
+   | "SKILL_SET_NOT_DECLARED"
    // 500: a version's build manifest was fetched or bound and failed; the
    // version keeps serving what it served before (ManifestBindFailedError).
    | "MANIFEST_BIND_FAILED"
@@ -546,15 +551,15 @@ export class BuildPlanUnavailableError extends Error {
    }
 }
 
-/** 409: the package's workflows could not be read at load; the models still serve and the workflows are not absent, until it reloads. */
-export class WorkflowsUnavailableError extends Error {
-   get kind(): "workflows_unavailable" {
-      return "workflows_unavailable";
+/** 409: the package's skill sets and workflows could not be read at load; the models still serve and the sets and workflows are not absent, until it reloads. */
+export class SkillSetsUnavailableError extends Error {
+   get kind(): "skill_sets_unavailable" {
+      return "skill_sets_unavailable";
    }
 
    constructor(message: string) {
       super(message);
-      this.name = "WorkflowsUnavailableError";
+      this.name = "SkillSetsUnavailableError";
    }
 }
 
@@ -772,7 +777,7 @@ export type WorkflowNotFoundReason =
    | "WORKFLOW_NOT_SERVED"
    | "WORKFLOW_NOT_DECLARED";
 
-/** No workflow with that name, or no skill set or file of that name in it, is served for the package. `reason` says whether a missing workflow was refused or never declared, and is absent for a missing set or file. */
+/** No workflow with that name is served for the package. `reason` says whether it was refused or never declared. */
 export class WorkflowNotFoundError extends Error {
    get kind(): "workflow_not_found" {
       return "workflow_not_found";
@@ -781,6 +786,24 @@ export class WorkflowNotFoundError extends Error {
    constructor(
       message: string,
       readonly reason?: WorkflowNotFoundReason,
+   ) {
+      super(message);
+   }
+}
+
+export type SkillSetNotFoundReason =
+   | "SKILL_SET_NOT_SERVED"
+   | "SKILL_SET_NOT_DECLARED";
+
+/** No skill set with that name, or no file of it, is served for the package. `reason` says whether a missing set was refused or never declared, and is absent for a missing file. */
+export class SkillSetNotFoundError extends Error {
+   get kind(): "skill_set_not_found" {
+      return "skill_set_not_found";
+   }
+
+   constructor(
+      message: string,
+      readonly reason?: SkillSetNotFoundReason,
    ) {
       super(message);
    }
@@ -1774,7 +1797,7 @@ type PayloadTooLargeKind = "payload_too_large" | "response_unserializable";
 interface ErrorByKind {
    package_version: PackageVersionError;
    build_plan_unavailable: BuildPlanUnavailableError;
-   workflows_unavailable: WorkflowsUnavailableError;
+   skill_sets_unavailable: SkillSetsUnavailableError;
    build_plan_refreshing: BuildPlanRefreshingError;
    not_implemented: NotImplementedError;
    bad_request: BadRequestError;
@@ -1792,6 +1815,7 @@ interface ErrorByKind {
    dashboard_not_found: DashboardNotFoundError;
    skill_not_found: SkillNotFoundError;
    workflow_not_found: WorkflowNotFoundError;
+   skill_set_not_found: SkillSetNotFoundError;
    conflict: ConflictError;
    connection_not_found: ConnectionNotFoundError;
    table_not_found: TableNotFoundError;
@@ -1867,7 +1891,7 @@ const ERROR_CLASSES: {
 } = {
    package_version: PackageVersionError,
    build_plan_unavailable: BuildPlanUnavailableError,
-   workflows_unavailable: WorkflowsUnavailableError,
+   skill_sets_unavailable: SkillSetsUnavailableError,
    build_plan_refreshing: BuildPlanRefreshingError,
    not_implemented: NotImplementedError,
    bad_request: BadRequestError,
@@ -1885,6 +1909,7 @@ const ERROR_CLASSES: {
    dashboard_not_found: DashboardNotFoundError,
    skill_not_found: SkillNotFoundError,
    workflow_not_found: WorkflowNotFoundError,
+   skill_set_not_found: SkillSetNotFoundError,
    conflict: ConflictError,
    connection_not_found: ConnectionNotFoundError,
    table_not_found: TableNotFoundError,
@@ -2187,11 +2212,23 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       status: 404,
       reason: (error) => error.reason,
       mcp: {
-         // A refusal, not a fault: the message says which workflow, set or file is not served.
+         // A refusal, not a fault: the message says which workflow is not served.
          advice: "fixed",
          suggestions: [
-            "This is not transient: the package serves no such workflow, skill set or file until the package reloads with them fixed.",
+            "This is not transient: the package serves no such workflow until the package reloads with it fixed.",
             "Use a name from get_workflow's availableWorkflows, and read the package's warnings for why a declared workflow is refused.",
+         ],
+      },
+   },
+   skill_set_not_found: {
+      status: 404,
+      reason: (error) => error.reason,
+      mcp: {
+         // A refusal, not a fault: the message says which skill set or file is not served.
+         advice: "fixed",
+         suggestions: [
+            "This is not transient: the package serves no such skill set or file until the package reloads with it fixed.",
+            "Use a name from get_skill_set's availableSkillSets, and read the package's warnings for why a declared set is refused.",
          ],
       },
    },
@@ -2233,9 +2270,9 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       reason: "BUILD_PLAN_UNAVAILABLE",
       mcp: { advice: "internal" },
    },
-   workflows_unavailable: {
+   skill_sets_unavailable: {
       status: 409,
-      reason: "WORKFLOWS_UNAVAILABLE",
+      reason: "SKILL_SETS_UNAVAILABLE",
       // No Retry-After: the walk's failure lasts until the package reloads.
       mcp: {
          advice: "fixed",

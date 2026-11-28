@@ -32,9 +32,9 @@ import {
    writeWorkflow,
 } from "./__fixtures__/skill-directory/fixture";
 import {
-   readWorkflowFile,
+   readSkillSetFile,
    skillFileList,
-   workflowSkillSet,
+   skillSetView,
 } from "./package_skills";
 import {
    PACKAGE_ASSET_FILE_MAX_BYTES,
@@ -77,7 +77,7 @@ const sha = (data: string | Buffer) =>
 /** The first set of a workflow as the wire carries it, with what the workflow and its set warn of. */
 const viewOf = (workflow: PackageWorkflow) => {
    const entry = workflow.sets[0]!;
-   const { skills, assets } = workflowSkillSet(entry, "full");
+   const { skills, assets } = skillSetView(entry, "full");
    return {
       // The full view's files; the view's own type is the union with the summary's.
       skills: skills as Array<{
@@ -85,7 +85,7 @@ const viewOf = (workflow: PackageWorkflow) => {
          file_contents: string;
       }>,
       assets: assets ?? [],
-      warnings: texts([...workflow.shadowing, ...entry.set.findings]),
+      warnings: texts([...workflow.shadowing, ...entry.findings]),
       definitionSha: workflow.definitionSha,
       catalog: entry.skills.map((s) => s.catalog),
    };
@@ -96,11 +96,8 @@ const wireOf = (workflow: PackageWorkflow) => ({
    name: workflow.name,
    description: workflow.description,
    instructions: workflow.instructions?.text,
-   skill_sets: workflow.sets.map((entry) => workflowSkillSet(entry, "full")),
-   warnings: [
-      ...workflow.shadowing,
-      ...workflow.sets.flatMap(({ set }) => set.findings),
-   ],
+   skill_sets: workflow.sets.map((entry) => skillSetView(entry, "full")),
+   warnings: workflow.shadowing,
    source: { definitionSha: workflow.definitionSha },
 });
 
@@ -328,17 +325,17 @@ describe("a skill is its whole directory", () => {
 
    it("serves a listed text file, and refuses a binary one with a message naming its size and not its bytes", async () => {
       const skill = workflowOf().sets[0]!.skills[0]!;
-      expect(await readWorkflowFile(skill, "pricing/scripts/run.py")).toEqual({
+      expect(await readSkillSetFile(skill, "pricing/scripts/run.py")).toEqual({
          text: FILES["scripts/run.py"] as string,
       });
-      const refused = await readWorkflowFile(skill, "pricing/assets/logo.png");
+      const refused = await readSkillSetFile(skill, "pricing/assets/logo.png");
       expect(refused).toEqual({
          message: expect.stringContaining(`${PNG.length} bytes`),
       });
       expect(JSON.stringify(refused)).not.toContain(PNG.toString("base64"));
       // Listed, and still a 404 for what is not.
       expect(
-         await readWorkflowFile(skill, "pricing/fixtures/data.csv"),
+         await readSkillSetFile(skill, "pricing/fixtures/data.csv"),
       ).toBeUndefined();
    });
 
@@ -355,7 +352,7 @@ describe("a skill is its whole directory", () => {
 
    it("reads the block scalar description to its true length, and the frontmatter as JSON, whatever the file carries", () => {
       const view = viewOf(workflowOf());
-      const summary = workflowSkillSet(workflowOf().sets[0]!, "summary");
+      const summary = skillSetView(workflowOf().sets[0]!, "summary");
       expect(
          summary.skills.find((f) => f.relative_filepath === "pricing/SKILL.md"),
       ).toMatchObject({ name: "pricing", description: DESCRIPTION });
@@ -390,9 +387,9 @@ describe("a skill is its whole directory", () => {
    });
 
    it("moves the set's digest for an edit to a SKILL.md key only a host reads, since the file is served whole", () => {
-      const base = workflowOf().sets[0]!.set.digest;
+      const base = workflowOf().sets[0]!.digest;
       write("SKILL.md", SKILL_MD.replace("model: opus", "model: sonnet"));
-      expect(workflowOf().sets[0]!.set.digest).not.toBe(base);
+      expect(workflowOf().sets[0]!.digest).not.toBe(base);
    });
 
    it("keeps a SKILL.md that is a directory out of service, and serves none of what is inside it", () => {
@@ -996,11 +993,11 @@ describe("a skill set's own skills", () => {
          "pricing/NOTES.md",
          "pricing/references/a.md",
       ]) {
-         expect(await readWorkflowFile(counted, file)).toMatchObject({
+         expect(await readSkillSetFile(counted, file)).toMatchObject({
             text: expect.any(String),
          });
       }
-      expect(await readWorkflowFile(counted, "pricing/SKILL.md")).toEqual({
+      expect(await readSkillSetFile(counted, "pricing/SKILL.md")).toEqual({
          text: SKILL_MD,
       });
       expect(metaReads).toBe(0);
@@ -1163,7 +1160,7 @@ describe("a skill read whole still serves what it served before", () => {
    ) => readDeclared(pkg, declaration);
    /** The analyst workflow's first skill set, as the wire carries it. */
    const viewOf = (result = read()) =>
-      workflowSkillSet(result.workflows.get("analyst")!.sets[0]!, "full");
+      skillSetView(result.workflows.get("analyst")!.sets[0]!, "full");
    type SetView = ReturnType<typeof viewOf>;
    const inline = (view: SetView) =>
       view.skills.map((f) => f.relative_filepath);

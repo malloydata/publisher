@@ -207,7 +207,7 @@ const CUSTOMERS_MODEL = {
 };
 
 const packageOf = (models: Record<string, unknown>) => ({
-   listSkills: () => [],
+   defaultSkills: () => ({ skills: [], overrides: [] }),
    listModels: async () => Object.keys(models).map((p) => ({ path: p })),
    getModel: (p: string) => models[p],
 });

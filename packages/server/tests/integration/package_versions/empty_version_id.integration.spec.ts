@@ -12,7 +12,7 @@
  *
  * modes.integration.spec.ts covers 17 routes this way. This file covers the
  * rest: reports (list and one), a notebook cell, skills,
- * workflows and a workflow's skill file, the package duckdb connection's tables
+ * skill sets, a set's file, workflows, the package duckdb connection's tables
  * (and one table), the report write, a materialization's create (body),
  * get, stop and delete, and the model query with the version in its URL.
  *
@@ -215,8 +215,13 @@ const READ_ROUTES: ReadRoute[] = [
       marker: (n) => `instructions v${n}`,
    },
    {
-      name: "GET workflow skill file",
-      path: "/workflows/analyst/skills/conventions/SKILL.md",
+      name: "GET skill set",
+      path: "/skill-sets/finance",
+      marker: (n) => `conventions v${n}`,
+   },
+   {
+      name: "GET skill set file",
+      path: "/skill-sets/finance/skills/conventions/SKILL.md",
       marker: (n) => `conventions v${n}`,
    },
    // The package's duckdb sandbox is in memory, one per loaded tree, and the

@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { linkTextKeptVerbatim } from "../../test_helpers/link_text";
-import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it, spyOn } from "bun:test";
 import { execFileSync } from "child_process";
 import fs from "fs";
 import os from "os";
@@ -13,8 +13,10 @@ import {
    resolveSkills,
    skillFileList,
    skillFilePath,
+   skillSetView,
    type ServedSkill,
 } from "./package_skills";
+import * as workflowsModule from "./package_workflows";
 import {
    emptyWorkflows,
    PACKAGE_SKILL_FILE_MAX_BYTES,
@@ -95,6 +97,24 @@ describe("a skill set read through a workflow", () => {
       fs.mkdirSync(refDir, { recursive: true });
       fs.writeFileSync(path.join(refDir, file), contents);
    };
+
+   it("builds a set's rows once per load, however many replies carry the set", () => {
+      writeSkill("real", "---\nname: real\ndescription: d\n---\n\nbody\n");
+      const set = readSet().result.sets.get("default")!;
+      const builds = spyOn(workflowsModule, "skillSetRows");
+      try {
+         const full = skillSetView(set, "full");
+         const summary = skillSetView(set, "summary");
+         expect(skillSetView(set, "full").skills).toBe(full.skills);
+         expect(skillSetView(set, "summary").skills).toBe(summary.skills);
+         expect(builds).toHaveBeenCalledTimes(1);
+         // A reload adopts new set objects, which build their own rows.
+         skillSetView(readSet().result.sets.get("default")!, "full");
+         expect(builds).toHaveBeenCalledTimes(2);
+      } finally {
+         builds.mockRestore();
+      }
+   });
 
    it("serves nothing, and flags the skills/ directory nothing reads, when the manifest declares no skill sets", () => {
       writeSkill("real", "---\nname: real\ndescription: d\n---\n\nbody\n");
@@ -441,9 +461,14 @@ describe("resolveSkills", () => {
       bundledSkill("malloy-analysis", "bundled analysis", "BUNDLED ANALYSIS"),
       bundledSkill("malloy-phrase-detection", "bundled phrases", "PHRASES"),
    ];
+   /** The `default` set as a package advertises it: its skills and the bundled names it overrides. */
+   const own = (skills: ServedSkill[], overrides: string[] = []) => ({
+      skills,
+      overrides,
+   });
 
    it("returns the bundled set unchanged when the package ships none", async () => {
-      const resolved = resolveSkills(bundled, []);
+      const resolved = resolveSkills(bundled);
       expect(resolved.map((s) => [s.name, s.origin])).toEqual([
          ["malloy-analysis", "bundled"],
          ["malloy-phrase-detection", "bundled"],
@@ -454,26 +479,58 @@ describe("resolveSkills", () => {
       });
    });
 
-   it("shadows a bundled skill of the same name, in place", async () => {
-      const resolved = resolveSkills(bundled, [
-         packageSkill("malloy-phrase-detection", "ours", "OUR PHRASES"),
-      ]);
+   it("replaces a bundled skill, in place, only when the default set overrides its name", async () => {
+      const resolved = resolveSkills(
+         bundled,
+         own(
+            [packageSkill("malloy-phrase-detection", "ours", "OUR PHRASES")],
+            ["malloy-phrase-detection"],
+         ),
+      );
       expect(resolved).toHaveLength(2);
-      const shadowed = resolved[1]!;
-      expect(shadowed.name).toBe("malloy-phrase-detection");
-      expect(await shadowed.read("SKILL.md")).toEqual({ text: "OUR PHRASES" });
-      expect(shadowed.origin).toBe("package");
-      // The one it did not shadow is untouched.
+      const replaced = resolved[1]!;
+      expect(replaced.name).toBe("malloy-phrase-detection");
+      expect(await replaced.read("SKILL.md")).toEqual({ text: "OUR PHRASES" });
+      expect(replaced.origin).toBe("package");
+      // The one it did not replace is untouched.
       expect(await resolved[0]!.read("SKILL.md")).toEqual({
          text: "BUNDLED ANALYSIS",
       });
       expect(resolved[0]!.origin).toBe("bundled");
    });
 
-   it("appends a package skill whose name is new", () => {
-      const resolved = resolveSkills(bundled, [
-         packageSkill("revenue-rules", "ours", "OURS"),
+   it("serves the bundled skill, and leaves the package's copy out, for a name the default set does not override", async () => {
+      const resolved = resolveSkills(
+         bundled,
+         own([packageSkill("malloy-phrase-detection", "ours", "OUR PHRASES")]),
+      );
+      expect(resolved.map((s) => [s.name, s.origin])).toEqual([
+         ["malloy-analysis", "bundled"],
+         ["malloy-phrase-detection", "bundled"],
       ]);
+      expect(await resolved[1]!.read("SKILL.md")).toEqual({ text: "PHRASES" });
+   });
+
+   it("lets an override name change nothing when the set holds no skill of that name or no bundled skill has it", () => {
+      const resolved = resolveSkills(
+         bundled,
+         own(
+            [packageSkill("revenue-rules", "ours", "OURS")],
+            ["malloy-analysis", "never-bundled"],
+         ),
+      );
+      expect(resolved.map((s) => [s.name, s.origin])).toEqual([
+         ["malloy-analysis", "bundled"],
+         ["malloy-phrase-detection", "bundled"],
+         ["revenue-rules", "package"],
+      ]);
+   });
+
+   it("appends a package skill whose name is new", () => {
+      const resolved = resolveSkills(
+         bundled,
+         own([packageSkill("revenue-rules", "ours", "OURS")]),
+      );
       expect(resolved.map((s) => s.name)).toEqual([
          "malloy-analysis",
          "malloy-phrase-detection",
@@ -482,11 +539,17 @@ describe("resolveSkills", () => {
       expect(resolved[2]!.origin).toBe("package");
    });
 
-   it("shadows and appends in one pass", () => {
-      const resolved = resolveSkills(bundled, [
-         packageSkill("malloy-analysis", "ours", "OUR ANALYSIS"),
-         packageSkill("revenue-rules", "ours", "OURS"),
-      ]);
+   it("replaces and appends in one pass", () => {
+      const resolved = resolveSkills(
+         bundled,
+         own(
+            [
+               packageSkill("malloy-analysis", "ours", "OUR ANALYSIS"),
+               packageSkill("revenue-rules", "ours", "OURS"),
+            ],
+            ["malloy-analysis"],
+         ),
+      );
       expect(resolved.map((s) => [s.name, s.origin])).toEqual([
          ["malloy-analysis", "package"],
          ["malloy-phrase-detection", "bundled"],
@@ -494,23 +557,25 @@ describe("resolveSkills", () => {
       ]);
    });
 
-   it("drops a shadowed bundled skill's other files, since nothing is merged", () => {
+   it("drops a replaced bundled skill's other files, since nothing is merged", () => {
       const resolved = resolveSkills(
          [
             bundledSkill("malloy-review", "bundled", "B", {
                "reference/x.md": 3,
             }),
          ],
-         [packageSkill("malloy-review", "ours", "OURS")],
+         own(
+            [packageSkill("malloy-review", "ours", "OURS")],
+            ["malloy-review"],
+         ),
       );
       expect(Object.keys(resolved[0]!.catalog.files)).toEqual(["SKILL.md"]);
    });
 
    it("serves a bundled skill's Markdown, and names the package to install for any other file", async () => {
-      const [skill] = resolveSkills(
-         [bundledSkill("pricing", "d", "B", { "scripts/run.py": 120 })],
-         [],
-      );
+      const [skill] = resolveSkills([
+         bundledSkill("pricing", "d", "B", { "scripts/run.py": 120 }),
+      ]);
       const read = await skill!.read("scripts/run.py");
       expect(read).toEqual({
          message: expect.stringContaining("@malloy-publisher/skills"),
@@ -520,23 +585,20 @@ describe("resolveSkills", () => {
 
    it("does not mutate the inputs", () => {
       const packageSkills = [packageSkill("malloy-analysis", "ours", "OURS")];
-      resolveSkills(bundled, packageSkills);
+      resolveSkills(bundled, own(packageSkills, ["malloy-analysis"]));
       expect((bundled[0] as { origin?: string }).origin).toBeUndefined();
       expect((packageSkills[0] as { origin?: string }).origin).toBeUndefined();
    });
 });
 
 describe("a path of a skill", () => {
-   const [skill] = resolveSkills(
-      [
-         bundledSkill("pricing", "d", "B", {
-            "scripts/run.py": 1,
-            "references/a.md": 2,
-            "NOTES.md": 3,
-         }),
-      ],
-      [],
-   );
+   const [skill] = resolveSkills([
+      bundledSkill("pricing", "d", "B", {
+         "scripts/run.py": 1,
+         "references/a.md": 2,
+         "NOTES.md": 3,
+      }),
+   ]);
 
    it("defaults to SKILL.md when blank, and drops a leading ./ but never trims a name", () => {
       expect(skillFilePath(undefined)).toBe("SKILL.md");
@@ -567,7 +629,7 @@ describe("a path of a skill", () => {
             1,
          ]),
       );
-      const [big] = resolveSkills([bundledSkill("big", "d", "B", many)], []);
+      const [big] = resolveSkills([bundledSkill("big", "d", "B", many)]);
       const named = namedSkillFiles(big!);
       expect(named.startsWith("SKILL.md, f00.md, f01.md")).toBe(true);
       expect(named).toContain("(and 6 more; see `files` on SKILL.md");

@@ -1,10 +1,10 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-/** The package page's Workflows section: what a package declares, read-only. */
+/** The package page's Skill sets and Workflows sections: what a package declares, read-only. */
 import { render, screen } from "@testing-library/react";
 import { beforeEach, expect, it } from "bun:test";
-import type { WorkflowSummary } from "../../client";
+import type { SkillSetSummary, WorkflowSummary } from "../../client";
 import {
    clearCache,
    mockServerProvider,
@@ -14,6 +14,7 @@ import {
 } from "../../../test/serverProvider";
 
 let workflows: WorkflowSummary[] | undefined;
+let skillSets: SkillSetSummary[] | undefined;
 
 mockServerProvider(
    {
@@ -21,9 +22,12 @@ mockServerProvider(
       packages: {
          getPackage: () => Promise.resolve({ data: { name: "pkg" } }),
       },
-      // The section reads the package's workflows from their own route.
+      // The sections read the package's workflows and skill sets from their own routes.
       workflows: {
          listWorkflows: () => Promise.resolve({ data: workflows ?? [] }),
+      },
+      skillSets: {
+         listSkillSets: () => Promise.resolve({ data: skillSets ?? [] }),
       },
       reports: { listReports: () => Promise.resolve({ data: [] }) },
       models: { listModels: () => Promise.resolve({ data: [] }) },
@@ -44,49 +48,17 @@ const mount = () =>
 beforeEach(() => {
    clearCache();
    workflows = undefined;
+   skillSets = undefined;
 });
 
-it("lists each workflow with its description and its skill sets by name, and flags one with no instructions", async () => {
+it("lists each workflow with its description and the skill sets it lists, by name", async () => {
    workflows = [
       {
          name: "weekly-report",
          description: "Writes the weekly revenue report",
-         has_instructions: true,
-         skill_sets: [
-            {
-               name: "analyst",
-               path: "workflows/weekly-report/skill_sets/analyst",
-               digest: "a",
-            },
-            {
-               name: "house",
-               path: "workflows/default/skill_sets/house",
-               digest: "b",
-            },
-         ],
+         skill_set_names: ["analyst", "default"],
       },
-      {
-         name: "default",
-         has_instructions: false,
-         skill_sets: [
-            {
-               name: "house",
-               path: "workflows/default/skill_sets/house",
-               digest: "b",
-            },
-         ],
-      },
-      {
-         name: "skills-only",
-         has_instructions: false,
-         skill_sets: [
-            {
-               name: "house",
-               path: "workflows/default/skill_sets/house",
-               digest: "b",
-            },
-         ],
-      },
+      { name: "brief", skill_set_names: [] },
    ];
 
    mount();
@@ -94,22 +66,35 @@ it("lists each workflow with its description and its skill sets by name, and fla
    const section = await screen.findByRole("region", { name: "Workflows" });
    expect(section.textContent).toContain("weekly-report");
    expect(section.textContent).toContain("Writes the weekly revenue report");
-   expect(section.textContent).toContain("Skill sets: analyst, house");
-   // `default` is advertised, not "without instructions"; only skills-only says so.
-   const row = (name: string) =>
-      screen.getByText(name, { exact: true }).closest("li, [role], div")
-         ?.parentElement?.textContent ?? "";
-   expect(row("default")).toContain("Advertised skills");
-   expect(row("default")).not.toContain("No instructions");
-   expect(row("skills-only")).toContain("No instructions");
-   expect(row("weekly-report")).not.toContain("No instructions");
-   expect(section.textContent?.match(/No instructions/g)).toHaveLength(1);
+   expect(section.textContent).toContain("Skill sets: analyst, default");
+   // A workflow listing no set says nothing of sets, and none is labelled as lacking instructions.
+   expect(section.textContent?.match(/Skill sets:/g)).toHaveLength(1);
+   expect(section.textContent).not.toContain("No instructions");
    expect(section.querySelectorAll('[role="button"]')).toHaveLength(0);
 });
 
-it("shows no section for a package that declares no workflows", async () => {
+it("lists every skill set, default first and marked always on", async () => {
+   skillSets = [
+      { name: "analyst", description: "Revenue rules", digest: "a" },
+      { name: "default", digest: "b" },
+      { name: "zeta", digest: "c" },
+   ];
+
+   mount();
+
+   const section = await screen.findByRole("region", { name: "Skill sets" });
+   const text = section.textContent ?? "";
+   expect(text).toContain("Revenue rules");
+   expect(text.indexOf("default")).toBeLessThan(text.indexOf("analyst"));
+   expect(text.indexOf("analyst")).toBeLessThan(text.indexOf("zeta"));
+   expect(text.match(/Always on/g)).toHaveLength(1);
+   expect(section.querySelectorAll('[role="button"]')).toHaveLength(0);
+});
+
+it("shows no section for a package that declares neither", async () => {
    mount();
 
    await screen.findByRole("region", { name: "Models" });
    expect(screen.queryByRole("region", { name: "Workflows" })).toBeNull();
+   expect(screen.queryByRole("region", { name: "Skill sets" })).toBeNull();
 });

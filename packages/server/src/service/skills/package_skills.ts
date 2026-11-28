@@ -1,19 +1,23 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { components } from "../../api";
 import type { BundledSkill } from "./build_skills_bundle";
 import {
    DEFAULT_SKILL_SET,
-   servedInline,
-   type PackageWorkflow,
+   skillSetRows,
    type ServedSkill,
    type ServedWorkflows,
    type SetSkill,
-   type WorkflowSet,
+   type SkillSet,
+   type SkillSetRows,
 } from "./package_workflows";
 import { SKILL_MD } from "./skill_files";
 import skillsBundle from "./skills_bundle.json";
 import { compareText } from "../../compare_text";
+
+type ApiSkillSet = components["schemas"]["SkillSet"];
+type ApiSkillSetSummary = components["schemas"]["SkillSetSummary"];
 
 /** The build-time bundle of the repo's skills: each one's manifest, frontmatter and Markdown text. */
 export const BUNDLED_CATALOG = (
@@ -37,59 +41,41 @@ export interface ResolvedSkill extends ServedSkill {
    origin: SkillOrigin;
 }
 
-/** The sets a read covers: the workflow's own, each without a skill name an earlier set holds, or with `skillSet`, a set's name, that one set whole, since a reply of one set has nothing to collide with and its digest then pins exactly what it serves. Undefined when the workflow lists no set of that name. */
-export function pickedSets(
-   workflow: PackageWorkflow,
-   skillSet?: string,
-): WorkflowSet[] | undefined {
-   if (skillSet === undefined) return workflow.sets;
-   const picked = workflow.sets.find(({ set }) => set.name === skillSet);
-   return picked && [{ set: picked.set, skills: picked.set.skills }];
-}
+/** A set's rows, built on the first read of its load: a reload adopts new set objects, so they last exactly as long as the content they hold. */
+const rowsOfSet = new WeakMap<SkillSet, SkillSetRows>();
 
-/**
- * A workflow's set as the wire carries it. The full view holds each inline
- * file's text and every listed file; the summary swaps each text for its size
- * and gives a SKILL.md its name and description. Files are sorted by path.
- */
-export function workflowSkillSet(
-   { set, skills }: WorkflowSet,
+/** The one projection of a skill set a reply carries. The full view holds each inline file's text and every listed file; the summary swaps each text for its size on disk. Files are sorted by path. Every route embeds this same value, so a set inside a workflow is the set route's reply. */
+export function skillSetView(
+   set: SkillSet,
    view: "full" | "summary",
-) {
-   const files = skills
-      .flatMap(servedInline)
-      .sort((a, b) => compareText(a.relative_filepath, b.relative_filepath));
-   const assets = skills
-      .flatMap((skill) => skill.listed)
-      .map(({ relative_filepath, bytes, sha256 }) => ({
-         relative_filepath,
-         bytes,
-         sha256,
-      }))
-      .sort((a, b) => compareText(a.relative_filepath, b.relative_filepath));
+): ApiSkillSet {
+   let rows = rowsOfSet.get(set);
+   if (!rows) {
+      rows = skillSetRows(set);
+      rowsOfSet.set(set, rows);
+   }
    return {
       name: set.name,
+      ...(set.description !== undefined && { description: set.description }),
       path: set.path,
       digest: set.digest,
-      skills:
-         view === "full"
-            ? files.map(({ relative_filepath, file_contents }) => ({
-                 relative_filepath,
-                 file_contents,
-              }))
-            : files.map(
-                 ({ relative_filepath, file_contents, name, description }) => ({
-                    relative_filepath,
-                    ...(name !== undefined && { name, description }),
-                    bytes: Buffer.byteLength(file_contents),
-                 }),
-              ),
-      ...(view === "full" && assets.length > 0 && { assets }),
+      skills: view === "full" ? rows.full : rows.summary,
+      ...(view === "full" && rows.assets.length > 0 && { assets: rows.assets }),
+      warnings: set.findings,
    };
 }
 
-/** One file of a workflow's skill by its `<skill>/<file>` path: an inline file as written, or a listed file as the skill reads it (a binary one answers with a message naming its size, one that changed since load with `changed`). Undefined when it is not served. */
-export async function readWorkflowFile(
+/** A set without its skills: its name, description and digest, which is also the pin a cut reply keeps. */
+export function skillSetSummary(set: SkillSet): ApiSkillSetSummary {
+   return {
+      name: set.name,
+      ...(set.description !== undefined && { description: set.description }),
+      digest: set.digest,
+   };
+}
+
+/** One file of a set's skill by its `<skill>/<file>` path: an inline file as written, or a listed file as the skill reads it (a binary one answers with a message naming its size, one that changed since load with `changed`). Undefined when it is not served. */
+export async function readSkillSetFile(
    skill: SetSkill,
    relativeFilepath: string,
 ): Promise<
@@ -111,13 +97,24 @@ export async function readWorkflowFile(
    };
 }
 
-/** The skills a package advertises: those of its `default` skill set, none without one. */
-export function advertisedSkills(workflows: ServedWorkflows): ServedSkill[] {
-   return (
-      workflows.sets
-         .get(DEFAULT_SKILL_SET)
-         ?.skills.map((skill) => skill.served) ?? []
-   );
+/** The skills a package advertises: those of its `default` skill set, and the names that set's `overrides` lets them replace. */
+export interface DefaultSkills {
+   skills: ServedSkill[];
+   overrides: readonly string[];
+}
+
+/** What a package with no `default` set advertises. */
+export const NO_DEFAULT_SKILLS: DefaultSkills = { skills: [], overrides: [] };
+
+/** The `default` skill set as advertised, whole: which of its skills are served where a bundled one has the name is {@link resolveSkills}'s to say. */
+export function advertisedSkills(workflows: ServedWorkflows): DefaultSkills {
+   const set = workflows.sets.get(DEFAULT_SKILL_SET);
+   return set
+      ? {
+           skills: set.skills.map((skill) => skill.served),
+           overrides: set.overrides,
+        }
+      : NO_DEFAULT_SKILLS;
 }
 
 /** Where a skill's files are installed from when this server does not carry them. */
@@ -140,33 +137,38 @@ function bundledSkill({ bodies, ...catalog }: BundledSkill): ServedSkill {
 }
 
 /**
- * The skills in force for one package: the bundled set, with the package's own
- * skills shadowing any bundled skill of the same name and adding the rest.
+ * The skills in force for one package: the bundled set, with the `default`
+ * set's skills added, and a `default` skill named like a bundled one served in
+ * its place only when `default`'s `overrides` lists the name. Otherwise the
+ * bundled skill is served and the package's copy is left out here; the set
+ * routes still serve it.
  *
- * Shadowing by name is the whole mechanism: Publisher does not know which
- * skills the agent already holds, so it cannot merge, only choose what a name
- * returns. Nothing is merged, a shadowed skill's bundled files go with it.
- * `origin` is on every entry because a replaced skill is otherwise
- * indistinguishable from the original.
+ * Choosing what a name returns is the whole mechanism: Publisher does not know
+ * which skills the agent already holds, so it cannot merge, only choose. A
+ * replaced skill's bundled files go with it. `origin` is on every entry because
+ * a replaced skill is otherwise indistinguishable from the original.
  */
 export function resolveSkills(
    bundled: BundledSkill[],
-   packageSkills: ServedSkill[],
+   own: DefaultSkills = NO_DEFAULT_SKILLS,
 ): ResolvedSkill[] {
-   const shadows = new Map(packageSkills.map((s) => [s.name, s]));
+   const byName = new Map(own.skills.map((s) => [s.name, s]));
+   const overrides = new Set(own.overrides);
    const bundledNames = new Set(bundled.map((s) => s.name));
    // Bundled order first, each skill replaced in place by the package's copy
-   // when there is one, then the package's new names in their own order. Two
+   // when it overrides, then the package's new names in their own order. Two
    // packages' listings therefore line up row for row wherever they agree.
    return [
       ...bundled.map((b): ResolvedSkill => {
-         const shadow = shadows.get(b.name);
+         const replacement = overrides.has(b.name)
+            ? byName.get(b.name)
+            : undefined;
          // A bundled manifest is informational: it lists a template's publisher.json, which the package reserved-name and listed-file rules would skip.
-         return shadow
-            ? { ...shadow, origin: "package" }
+         return replacement
+            ? { ...replacement, origin: "package" }
             : { ...bundledSkill(b), origin: "bundled" };
       }),
-      ...packageSkills
+      ...own.skills
          .filter((s) => !bundledNames.has(s.name))
          .map((s): ResolvedSkill => ({ ...s, origin: "package" })),
    ];
@@ -185,8 +187,8 @@ export function skillFilePath(raw: string | null | undefined): string {
    return withoutDotSlash(raw) || SKILL_MD;
 }
 
-/** A workflow file path as a caller wrote it, `<skill>/<file>`: a blank file part (`<skill>/`) names the skill's SKILL.md, as a blank `path` does in `get_skill`. */
-export function workflowFilePath(raw: string): string {
+/** A skill set file path as a caller wrote it, `<skill>/<file>`: a blank file part (`<skill>/`) names the skill's SKILL.md, as a blank `path` does in `get_skill`. */
+export function skillSetFilePath(raw: string): string {
    const relative = withoutDotSlash(raw);
    const slash = relative.indexOf("/");
    return slash > 0

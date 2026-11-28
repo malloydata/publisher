@@ -3706,6 +3706,9 @@ export class Environment {
       // INVARIANT: code reachable from a fast-path Package (MCP query tools,
       // Model.getModel()) must stay in-memory; any new disk I/O against the
       // canonical tree needs `withPackageLock`, or it races install/delete.
+      // The one exception is a skill file read (`Package.getSkillSetFile`): it
+      // takes no lock, but captures the load's identity before its await and
+      // checks the file's sha after it, so a race answers `changed`, not stale bytes.
       const _package = this.packages.get(packageName);
       if (_package !== undefined && !reload) {
          if (!this.unversionedReadsHeld.has(packageName)) return _package;

@@ -93,7 +93,8 @@ import {
    PackageManifestError,
    PackageNotFoundError,
    ServiceUnavailableError,
-   WorkflowsUnavailableError,
+   SkillSetsUnavailableError,
+   type SkillSetNotFoundReason,
    type WorkflowNotFoundReason,
 } from "../errors";
 import { applyExtensionSessionSettings } from "./duckdb_session_setup";
@@ -120,11 +121,12 @@ import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import {
    advertisedSkills,
    BUNDLED_SKILL_NAMES,
-   pickedSets,
-   readWorkflowFile,
-   workflowFilePath,
-   workflowSkillSet,
-   type ServedSkill,
+   NO_DEFAULT_SKILLS,
+   readSkillSetFile,
+   skillSetFilePath,
+   skillSetSummary,
+   skillSetView,
+   type DefaultSkills,
 } from "./skills/package_skills";
 import {
    adoptWorkflows,
@@ -432,8 +434,10 @@ interface ClassificationMemo {
 }
 type ApiWorkflow = components["schemas"]["Workflow"];
 type ApiWorkflowSummary = components["schemas"]["WorkflowSummary"];
-type ApiWorkflowSource = components["schemas"]["WorkflowSource"];
-type ApiWorkflowSkillRead = components["schemas"]["WorkflowSkillRead"];
+type ApiSkillSet = components["schemas"]["SkillSet"];
+type ApiSkillSetSummary = components["schemas"]["SkillSetSummary"];
+type ApiSkillSetFileRead = components["schemas"]["SkillSetFileRead"];
+type ApiServedSource = components["schemas"]["ServedSource"];
 
 type ApiColumn = components["schemas"]["Column"];
 type ApiTableDescription = components["schemas"]["TableDescription"];
@@ -673,13 +677,13 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    private servedRevision: string = mintServedRevision();
    private sourceContentSha: string = "";
    /**
-    * The workflows the manifest declares and the skill sets they list, as the
-    * load worker walked them, installed with the content sha so an edit to
-    * either is covered by the reload receipt by construction.
+    * The skill sets and workflows the manifest declares, as the load worker
+    * walked them, installed with the content sha so an edit to either is
+    * covered by the reload receipt by construction.
     */
    private workflows: ServedWorkflows = emptyWorkflows();
    /** The skills the package advertises: its `default` skill set's, read from `workflows.sets`. */
-   private packageSkills: ServedSkill[] = [];
+   private packageSkills: DefaultSkills = NO_DEFAULT_SKILLS;
    /** What the load worker found in the manifest that an earlier release read and this one does not. */
    private manifestFindings: ApiPackageWarning[] = [];
    /** The manifest's `retrieval` block (prompt files included), re-read on reload. */
@@ -730,64 +734,94 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.sourceContentSha;
    }
 
-   /** Throws for an unread walk, since an unread set is not an absent workflow; a `name` the manifest never declared is still absent. */
-   private readableWorkflows(name?: string): ServedWorkflows {
+   /** Throws for an unread walk, since an unread set is not an absent workflow or skill set; a name the manifest never declared is still absent. */
+   private readable(
+      declares?: { workflow: string } | { skillSet: string },
+   ): ServedWorkflows {
       const { unavailable } = this.workflows;
       if (
          unavailable !== undefined &&
-         (name === undefined || unavailable.declared.includes(name))
+         (declares === undefined ||
+            ("workflow" in declares
+               ? unavailable.declared.includes(declares.workflow)
+               : unavailable.declaredSets.includes(declares.skillSet)))
       ) {
-         throw this.workflowsUnavailable(unavailable.reason);
+         throw this.skillSetsUnavailable(unavailable.reason);
       }
       return this.workflows;
    }
 
-   private workflowsUnavailable(reason: string): WorkflowsUnavailableError {
-      return new WorkflowsUnavailableError(
-         `Workflows are unavailable for package '${this.packageName}': ${reason}. They are read when the package loads, so this lasts until it reloads.`,
+   private skillSetsUnavailable(reason: string): SkillSetsUnavailableError {
+      return new SkillSetsUnavailableError(
+         `Skill sets and workflows are unavailable for package '${this.packageName}': ${reason}. They are read when the package loads, so this lasts until it reloads.`,
       );
    }
 
-   /** The agent skills this package advertises: its `default` skill set's, none without one, and unavailable only when `default` is declared. */
-   public listSkills(): ServedSkill[] {
-      const { unavailable } = this.workflows;
-      if (unavailable?.declaredSets.includes(DEFAULT_SKILL_SET)) {
-         throw this.workflowsUnavailable(unavailable.reason);
-      }
+   /** The agent skills this package advertises: its `default` skill set's, with the names that set may serve in place of a bundled skill. None without a `default`, and unavailable only when `default` is declared. */
+   public defaultSkills(): DefaultSkills {
+      this.readable({ skillSet: DEFAULT_SKILL_SET });
       return this.packageSkills;
    }
 
    /** The workflows the manifest declares that passed validation, without their text. */
    public listWorkflows(): ApiWorkflowSummary[] {
-      return [...this.readableWorkflows().workflows.values()].map((w) => ({
+      return [...this.readable().workflows.values()].map((w) => ({
          name: w.name,
          ...(w.description !== undefined && { description: w.description }),
-         has_instructions: true,
-         skill_sets: w.sets.map(({ set }) => ({
-            name: set.name,
-            path: set.path,
-            digest: set.digest,
-         })),
+         skill_set_names: w.sets.map((set) => set.name),
       }));
    }
 
-   /** Why `name` is not a served workflow: the walk's refusal when the manifest declares it or refuses its whole `workflows` value, else that it declares none of that name. `withFix: false` leaves off the undeclared name's "use a name the package lists" clause, for a reply that has no list to point at. Undefined when it is served. */
+   /** The skill sets the manifest declares that are served, in name order, without their skills. */
+   public listSkillSets(): ApiSkillSetSummary[] {
+      return [...this.readable().sets.values()].map(skillSetSummary);
+   }
+
+   /** Why `name` is not a served `kind`: the walk's refusal when the manifest declares it or refuses its whole declaration, else that it declares none of that name. `withFix: false` leaves off the undeclared name's "use a name the package lists" clause, for a reply that has no list to point at. Undefined when it is served. */
+   private notServed<R extends string>(
+      kind: "workflow" | "skillSet",
+      name: string,
+      withFix: boolean,
+      reasons: { served: R; declared: R },
+   ): { reason: R; message: string } | undefined {
+      const served =
+         kind === "workflow"
+            ? this.workflows.workflows.has(name)
+            : this.workflows.sets.has(name);
+      if (served) return undefined;
+      const code =
+         kind === "workflow" ? WORKFLOW_NOT_SERVED : SKILL_SET_NOT_SERVED;
+      const message =
+         this.workflows.declarationRefusal ??
+         this.workflows.warnings.find(
+            (w) => w.code === code && w.subject === name,
+         )?.message;
+      return message
+         ? { reason: reasons.served, message }
+         : {
+              reason: reasons.declared,
+              message: `No ${kind === "workflow" ? "workflow" : "skill set"} named '${name}' is declared in package '${this.packageName}'.${withFix ? " Fix: use a name the package lists." : ""}`,
+           };
+   }
+
    public workflowNotServed(
       name: string,
       withFix = true,
    ): { reason: WorkflowNotFoundReason; message: string } | undefined {
-      if (this.workflows.workflows.has(name)) return undefined;
-      const message =
-         this.workflows.declarationRefusal ??
-         this.workflows.warnings.find(
-            (w) => w.code === WORKFLOW_NOT_SERVED && w.subject === name,
-         )?.message;
-      return message
-         ? { reason: "WORKFLOW_NOT_SERVED", message }
-         : {
-              reason: "WORKFLOW_NOT_DECLARED",
-              message: `No workflow named '${name}' is declared in package '${this.packageName}'.${withFix ? " Fix: use a name the package lists." : ""}`,
-           };
+      return this.notServed("workflow", name, withFix, {
+         served: "WORKFLOW_NOT_SERVED",
+         declared: "WORKFLOW_NOT_DECLARED",
+      });
+   }
+
+   public skillSetNotServed(
+      name: string,
+      withFix = true,
+   ): { reason: SkillSetNotFoundReason; message: string } | undefined {
+      return this.notServed("skillSet", name, withFix, {
+         served: "SKILL_SET_NOT_SERVED",
+         declared: "SKILL_SET_NOT_DECLARED",
+      });
    }
 
    /** The package-relative paths an edit to which changes what is served: each skill set's folder and each instructions file. */
@@ -795,72 +829,68 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return this.workflows.watched;
    }
 
-   private workflowSource(definitionSha: string): ApiWorkflowSource {
+   private servedSource(definitionSha?: string): ApiServedSource {
       const versionId = this.getVersionId();
       return {
          environment: this.environmentName,
          package: this.packageName,
-         // A published version's workflow can be fetched again by it after
+         // A published version's reply can be fetched again by it after
          // `latest` moves; absent for a package with no versions.
          ...(versionId ? { versionId } : {}),
          sourceContentSha: this.sourceContentSha,
-         definitionSha,
+         ...(definitionSha !== undefined && { definitionSha }),
          servedRevision: this.servedRevision,
       };
    }
 
    /**
-    * One workflow resolved, pinned to the load and content it was read from.
-    * `summary` swaps each skill file's text for its name, description and size;
-    * the pin is the same because both are views of one resolved definition.
-    * With `skillSet`, only that set, whole, and no instructions: a chat that
-    * picks a set never runs them. Undefined when the workflow, or a set of that
-    * name in it, is not served.
+    * One workflow resolved, pinned to the load and content it was read from:
+    * its instructions and every set it lists, each whole and as `getSkillSet`
+    * serves it. `summary` swaps each skill file's text for its size; the pin is
+    * the same because both are views of one resolved definition. Undefined when
+    * the workflow is not served.
     */
    public getWorkflow(
       name: string,
       skills: "full" | "summary" = "full",
-      skillSet?: string,
    ): ApiWorkflow | undefined {
-      const workflow = this.readableWorkflows(name).workflows.get(name);
+      const workflow = this.readable({ workflow: name }).workflows.get(name);
       if (!workflow) return undefined;
-      const sets = pickedSets(workflow, skillSet);
-      if (!sets) return undefined;
       return {
          name,
          ...(workflow.description !== undefined && {
             description: workflow.description,
          }),
-         has_instructions: true,
-         ...(skillSet === undefined && {
-            instructions: workflow.instructions.text,
-         }),
-         skill_sets: sets.map((entry) => workflowSkillSet(entry, skills)),
-         warnings: [
-            // A picked set is served whole, so which set serves a repeated name does not describe it.
-            ...(skillSet === undefined ? workflow.shadowing : []),
-            ...sets.flatMap(({ set }) => set.findings),
-         ],
-         source: this.workflowSource(workflow.definitionSha),
+         instructions: workflow.instructions.text,
+         skill_sets: workflow.sets.map((set) => skillSetView(set, skills)),
+         warnings: workflow.shadowing,
+         source: this.servedSource(workflow.definitionSha),
       };
    }
 
-   /** One file of a workflow's skills by its `<skill>/<file>` path, looked up in the resolved skills (or, with `skillSet`, in that set whole) and never joined onto the filesystem; a listed file is matched exactly, then read from disk and re-checked against its listed sha. A binary one answers with a message, not its bytes, and one that changed since load with `changed`. */
-   public async getWorkflowSkillFile(
+   /** One skill set, whole, pinned to the load it was read from; undefined when it is not served. */
+   public getSkillSet(
+      name: string,
+      skills: "full" | "summary" = "full",
+   ): ApiSkillSet | undefined {
+      const set = this.readable({ skillSet: name }).sets.get(name);
+      if (!set) return undefined;
+      return { ...skillSetView(set, skills), source: this.servedSource() };
+   }
+
+   /** One file of a skill set by its `<skill>/<file>` path, looked up in the set's served files and never joined onto the filesystem; a listed file is matched exactly, then read from disk and re-checked against its listed sha. A binary one answers with a message, not its bytes, and one that changed since load with `changed`. */
+   public async getSkillSetFile(
       name: string,
       relativeFilepath: string,
-      skillSet?: string,
-   ): Promise<ApiWorkflowSkillRead | { changed: true } | undefined> {
-      const workflow = this.readableWorkflows(name).workflows.get(name);
-      if (!workflow) return undefined;
-      // Taken before the read: a reload that lands during it must not give an old definition the new load's identity.
-      const source = this.workflowSource(workflow.definitionSha);
-      const relative = workflowFilePath(relativeFilepath);
+   ): Promise<ApiSkillSetFileRead | { changed: true } | undefined> {
+      const set = this.readable({ skillSet: name }).sets.get(name);
+      if (!set) return undefined;
+      // Taken before the read: a reload that lands during it must not give an old file the new load's identity.
+      const source = this.servedSource();
+      const relative = skillSetFilePath(relativeFilepath);
       const skillName = relative.split("/")[0]!;
-      const skill = pickedSets(workflow, skillSet)
-         ?.flatMap(({ skills }) => skills)
-         .find((s) => s.dirName === skillName);
-      const read = skill && (await readWorkflowFile(skill, relative));
+      const skill = set.skills.find((s) => s.dirName === skillName);
+      const read = skill && (await readSkillSetFile(skill, relative));
       if (!read) return undefined;
       if ("changed" in read) return read;
       return {
@@ -868,6 +898,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...("text" in read
             ? { file_contents: read.text }
             : { message: read.message }),
+         digest: set.digest,
          source,
       };
    }

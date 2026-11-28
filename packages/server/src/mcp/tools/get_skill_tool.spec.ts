@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { describe, expect, it, spyOn } from "bun:test";
 import { z } from "zod/v3";
 import { type BundledSkill } from "../../service/skills/build_skills_bundle";
 import {
@@ -9,6 +9,7 @@ import {
    type SkillFileRead,
 } from "../../service/skills/package_skills";
 import { FCJ_MAX_CHARS } from "../../constants";
+import * as replyBudget from "../reply_budget";
 import { registerGetSkillTool } from "./get_skill_tool";
 import { fakeOf } from "../../test_helpers/store_fakes";
 import type { PackageLookup } from "../../service/environment_ports";
@@ -82,15 +83,20 @@ const bundled: BundledSkill[] = [
    bundledSkill("malloy-review", "bundled", { "SKILL.md": "BUNDLED REVIEW" }),
 ];
 
-const storeWith = (skills: ServedSkill[]): PackageLookup =>
+const storeWith = (skills: ServedSkill[], overrides: string[]): PackageLookup =>
    fakeOf<PackageLookup>({
       getEnvironment: async (name: string) => {
          if (name !== "env") throw new Error("unknown environment");
-         return { getPackage: async () => ({ listSkills: () => skills }) };
+         return {
+            getPackage: async () => ({
+               defaultSkills: () => ({ skills, overrides }),
+            }),
+         };
       },
    });
 
-function register(skills: ServedSkill[]) {
+/** `skills` as the package's `default` set holds them; `overrides` names the bundled skills they may replace. */
+function register(skills: ServedSkill[], overrides: string[] = []) {
    let handler: Handler | undefined;
    let shape: z.ZodRawShape | undefined;
    registerGetSkillTool(
@@ -104,7 +110,7 @@ function register(skills: ServedSkill[]) {
             handler = h;
          },
       } as never,
-      storeWith(skills),
+      storeWith(skills, overrides),
       bundled,
    );
    return { handler: handler!, shape: shape! };
@@ -147,11 +153,32 @@ describe("get_skill tool", () => {
       expect(out.availableSkills).toHaveLength(2);
    });
 
-   it("lets the package's copy replace a bundled guide and reports origin", async () => {
+   it("serves the bundled guide, not the package's copy of its name, unless the default set overrides it", async () => {
       const { handler } = register([
          packageSkill("malloy-review", "ours", { "SKILL.md": "OURS" }),
          house,
       ]);
+      const out = body(await handler({ scopes, skill_name: "malloy-review" }));
+      expect(out.skill.content).toBe("BUNDLED REVIEW");
+      expect(out.skill.origin).toBe("bundled");
+      const listed = body(await handler({ scopes }));
+      expect(
+         listed.availableSkills.map((s: { name: string; origin: string }) => [
+            s.name,
+            s.origin,
+         ]),
+      ).toEqual([
+         ["malloy-analysis", "bundled"],
+         ["malloy-review", "bundled"],
+         ["house", "package"],
+      ]);
+   });
+
+   it("lets the package's copy replace a bundled guide its default set overrides, and reports origin", async () => {
+      const { handler } = register(
+         [packageSkill("malloy-review", "ours", { "SKILL.md": "OURS" }), house],
+         ["malloy-review"],
+      );
       const out = body(await handler({ scopes, skill_name: "malloy-review" }));
       expect(out.skill).toEqual({
          name: "malloy-review",
@@ -454,6 +481,31 @@ describe("get_skill tool: a reply always fits the tool-result limit", () => {
       expect(wire(result)).toBeLessThanOrEqual(FCJ_MAX_CHARS);
       // The most that fits: the slack is less than one more entry.
       expect(wire(result)).toBeGreaterThan(FCJ_MAX_CHARS - 150);
+   });
+
+   it("measures the whole answer once before it cuts, not again as the first cut", async () => {
+      const text = "b".repeat(FCJ_MAX_CHARS + 1);
+      const { handler } = register([
+         packageSkill("huge", "d", { "SKILL.md": text, ...entries(3) }),
+      ]);
+      const probes = spyOn(replyBudget, "wireChars");
+      try {
+         await handler({ scopes, skill_name: "huge" });
+         const wholeAnswers = probes.mock.calls.filter(([, payload]) => {
+            const answer = payload as {
+               skill?: { content?: string; files?: unknown[] };
+               message?: string;
+            };
+            return (
+               answer.skill?.content !== undefined &&
+               answer.skill.files?.length === 4 &&
+               answer.message === undefined
+            );
+         });
+         expect(wholeAnswers).toHaveLength(1);
+      } finally {
+         probes.mockRestore();
+      }
    });
 
    it("drops the body only when SKILL.md is over the limit alone, and still lists what fits", async () => {

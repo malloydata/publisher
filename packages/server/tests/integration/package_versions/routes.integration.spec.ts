@@ -110,13 +110,15 @@ function writePackage(
 const api = (suffix: string) =>
    `${baseUrl}/api/v0/environments/${ENV_NAME}/packages/${suffix}`;
 
-/** The skill and workflow routes, each reading the package a request names. */
+/** The skill, skill set and workflow routes, each reading the package a request names. */
 const SKILL_AND_WORKFLOW_ROUTES = [
    `${PKG}/skills`,
    `${PKG}/skills/house-rules`,
+   `${PKG}/skill-sets`,
+   `${PKG}/skill-sets/finance`,
+   `${PKG}/skill-sets/finance/skills/conventions/SKILL.md`,
    `${PKG}/workflows`,
    `${PKG}/workflows/analyst`,
-   `${PKG}/workflows/analyst/skills/conventions/SKILL.md`,
 ];
 
 async function json(res: Response): Promise<Record<string, unknown>> {
@@ -341,7 +343,7 @@ describe("package-scoped routes of a versioned package", () => {
       ).toBe(404);
    });
 
-   it("skills and workflows are the named version's, and a workflow's pin names it", async () => {
+   it("skills, skill sets and workflows are the named version's, and a read's pin names it", async () => {
       const read = async (sub: string) =>
          json(await fetch(api(`${PKG}${sub}`)));
       const list = async (sub: string) =>
@@ -370,8 +372,17 @@ describe("package-scoped routes of a versioned package", () => {
       const latest = await read("/workflows/analyst");
       expect(String(latest.instructions)).toContain("instructions v2");
       expect(latest.source).toMatchObject({ versionId: "2.0.0" });
+      expect(
+         (await list("/skill-sets?versionId=1.0.0")).map((s) => s.name),
+      ).toEqual(["default", "finance"]);
+      const set = await read("/skill-sets/finance?versionId=1.0.0");
+      expect(set.source).toMatchObject({ versionId: "1.0.0" });
+      expect(JSON.stringify(set.skills)).toContain("conventions v1");
+      expect((await read("/skill-sets/finance")).source).toMatchObject({
+         versionId: "2.0.0",
+      });
       const file = await read(
-         "/workflows/analyst/skills/conventions/SKILL.md?versionId=1.0.0",
+         "/skill-sets/finance/skills/conventions/SKILL.md?versionId=1.0.0",
       );
       expect(String(file.file_contents)).toContain("conventions v1");
       expect(file.source).toMatchObject({ versionId: "1.0.0" });

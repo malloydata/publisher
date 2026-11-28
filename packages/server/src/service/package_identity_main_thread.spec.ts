@@ -116,9 +116,9 @@ describe("loading and reloading a cap-size package", () => {
          "w3",
       ]);
       expect(
-         pkg.listWorkflows().flatMap((w) => w.skill_sets.map((s) => s.name)),
+         pkg.listWorkflows().flatMap((w) => w.skill_set_names),
       ).toHaveLength(CAP_SETS);
-      expect(pkg.listSkills().length).toBeGreaterThan(0);
+      expect(pkg.defaultSkills().skills.length).toBeGreaterThan(0);
       expect(pkg.getPackageMetadata().warnings ?? []).toEqual([]);
       // Every set spends its caps, so the block above is the most a set can cost.
       const sets = pkg

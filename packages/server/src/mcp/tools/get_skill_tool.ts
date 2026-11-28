@@ -17,6 +17,7 @@ import {
    skillFileList,
    skillFilePath,
    skillFileView,
+   type DefaultSkills,
    type ResolvedSkill,
 } from "../../service/skills/package_skills";
 import { SKILL_MD } from "../../service/skills/skill_files";
@@ -26,7 +27,7 @@ import { parseEnvironmentName, parsePackageName } from "../../service/identity";
 
 const GET_SKILL_DESCRIPTION = `Fetch a task guide, or list the guides available. Guides are concise procedural instructions for working with Malloy and this server: query patterns, chart and rendering tags, analysis pitfalls, how to build or review a model.
 
-A guide is a directory: a SKILL.md plus files it names by path relative to its root (\`references/joins.md\`, \`scripts/check.py\`). A package can ship guides of its OWN, about that package (which source answers which question, its terms, its conventions). Pass \`scopes\` to see them. A package guide named like a built-in one REPLACES it for that package; \`origin\` ("package" or "bundled") says which you are reading.
+A guide is a directory: a SKILL.md plus files it names by path relative to its root (\`references/joins.md\`, \`scripts/check.py\`). A package can ship guides of its OWN (its sources, terms, conventions) in its \`default\` skill set; pass \`scopes\` to see them. One named like a built-in guide REPLACES it only when that set lists the name in its \`overrides\`; \`origin\` ("package" or "bundled") says which you are reading.
 
 ## Call modes
 - No arguments: list the built-in guides.
@@ -154,8 +155,10 @@ function guideAnswer(
    ] as const) {
       const listed = largest(
          (n) =>
+            // The whole answer was measured above and did not fit.
+            !(content && frontmatter && n === entries.length) &&
             wireChars(uri, answer(content, frontmatter, n, wire), id) <=
-            FCJ_MAX_CHARS,
+               FCJ_MAX_CHARS,
          entries.length,
       );
       if (listed !== undefined) {
@@ -245,8 +248,9 @@ async function fileAnswer(
 
 /**
  * Registers the get_skill MCP tool: serves the bundled guides, and the skills of
- * a package's `default` workflow, with the package's copy shadowing a bundled
- * one of the same name. A guide is read file by file, by path.
+ * a package's `default` skill set, with the package's copy taking the place of
+ * a bundled one of the same name only where its `overrides` lists it. A guide
+ * is read file by file, by path.
  *
  * A tool rather than more prompts: prompts are registered once at start, while
  * packages load and reload at runtime, and a tool takes the package as an
@@ -287,7 +291,7 @@ export function registerGetSkillTool(
       }),
       run: async (params: GetSkillParams, uri, extra: RequestExtra) => {
          const scope = params.scopes?.[0];
-         let resolved = resolveSkills(bundledSkills, []);
+         let own: DefaultSkills | undefined;
          if (scope) {
             const environment = await environmentStore.getEnvironment(
                parseEnvironmentName(scope.environment),
@@ -297,8 +301,9 @@ export function registerGetSkillTool(
                parsePackageName(scope.package),
                false,
             );
-            resolved = resolveSkills(bundledSkills, pkg.listSkills());
+            own = pkg.defaultSkills();
          }
+         const resolved = resolveSkills(bundledSkills, own);
 
          if (params.skill_name === undefined || params.skill_name === null) {
             return jsonResource(

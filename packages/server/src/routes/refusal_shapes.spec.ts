@@ -129,53 +129,41 @@ it("a workflow's bad skills value answers { code, message }", async () => {
    });
 });
 
-it("a repeated skillSet answers { code, message }", async () => {
+it("a skill set's bad skills value answers { code, message }", async () => {
+   const res = await request(app).get(`${PKG}/skill-sets/s?skills=some`);
+   expect(res.status).toBe(400);
+   expect(res.body).toEqual({
+      code: 400,
+      message: `'skills' must be 'full' or 'summary', got "some".`,
+   });
+});
+
+it("a repeated skills value is refused with the repeated values named", async () => {
    const res = await request(app).get(
-      `${PKG}/workflows/a?skillSet=x&skillSet=y`,
+      `${PKG}/workflows/a?skills=full&skills=summary`,
    );
    expect(res.status).toBe(400);
    expect(res.body).toEqual({
       code: 400,
-      message: `'skillSet' must be one skill set name, got ["x","y"].`,
+      message: `'skills' must be 'full' or 'summary', got ["full","summary"].`,
    });
 });
 
-it("an empty skillSet is refused as MCP refuses an empty skill_set, with { code, message }", async () => {
-   const res = await request(app).get(`${PKG}/workflows/a?skillSet=`);
-   expect(res.status).toBe(400);
-   expect(res.body).toEqual({
-      code: 400,
-      message: `'skillSet' must be one skill set name, got "".`,
-   });
+it("a workflow's skills are read through its sets, so the per-workflow skill routes are gone", async () => {
+   for (const path of [
+      `${PKG}/workflows/a/skills/s/SKILL.md`,
+      `${PKG}/workflows/a/skills/s/SKILL.md?skillSet=x`,
+   ]) {
+      const res = await request(app).get(path);
+      expect(res.status).toBe(404);
+   }
 });
 
-it("a repeated skillSet on a workflow's skill file answers { code, message }", async () => {
-   const res = await request(app).get(
-      `${PKG}/workflows/a/skills/s/SKILL.md?skillSet=x&skillSet=y`,
-   );
-   expect(res.status).toBe(400);
-   expect(res.body).toEqual({
-      code: 400,
-      message: `'skillSet' must be one skill set name, got ["x","y"].`,
-   });
-});
-
-it("an empty skillSet on a workflow's skill file is refused the same way", async () => {
-   const res = await request(app).get(
-      `${PKG}/workflows/a/skills/s/SKILL.md?skillSet=`,
-   );
-   expect(res.status).toBe(400);
-   expect(res.body).toEqual({
-      code: 400,
-      message: `'skillSet' must be one skill set name, got "".`,
-   });
-});
-
-it("a workflow's malformed skillSet and skills are logged as refusals", async () => {
+it("a malformed skills value on a set or a workflow is logged as a refusal", async () => {
    const warn = spyOn(logger, "warn");
    try {
       await request(app).get(
-         `${API_PREFIX}/environments/workflow-marker/packages/pkg/workflows/a?skillSet=`,
+         `${API_PREFIX}/environments/workflow-marker/packages/pkg/skill-sets/a?skills=some`,
       );
       await request(app).get(
          `${API_PREFIX}/environments/workflow-marker/packages/pkg/workflows/a?skills=some`,

@@ -35,10 +35,16 @@ const packageSkill = (
    read: async (p) => ({ text: files[p]! }),
 });
 
-const storeWith = (skills: ServedSkill[]): PackageLookup =>
+/** `skills` as the package's `default` set holds them; `overrides` names the bundled skills they may replace. */
+const storeWith = (
+   skills: ServedSkill[],
+   overrides: string[] = [],
+): PackageLookup =>
    fakeOf<PackageLookup>({
       getEnvironment: async () => ({
-         getPackage: async () => ({ listSkills: () => skills }),
+         getPackage: async () => ({
+            defaultSkills: () => ({ skills, overrides }),
+         }),
       }),
    });
 
@@ -57,12 +63,38 @@ describe("SkillController skills", () => {
       expect(JSON.stringify(listed)).not.toContain('"content"');
    });
 
-   it("lets a package skill replace a bundled one and add a new one, marked by origin", async () => {
+   it("serves the bundled skill for a name the default set holds, and adds its new names, unless it overrides", async () => {
       const controller = new SkillController(
          storeWith([
             packageSkill(bundled.name, "ours", { "SKILL.md": "OUR BODY" }),
             packageSkill("house-rules", "new", { "SKILL.md": "RULES" }),
          ]),
+      );
+      const listed = await controller.listSkills("env", "pkg");
+      expect(listed.find((s) => s.name === bundled.name)).toEqual({
+         name: bundled.name,
+         description: bundledDescription.trim(),
+         origin: "bundled",
+      });
+      expect(listed.at(-1)).toEqual({
+         name: "house-rules",
+         description: "new",
+         origin: "package",
+      });
+      const read = await controller.getSkill("env", "pkg", bundled.name);
+      expect(read.content).toBe(bundled.bodies["SKILL.md"]);
+      expect(read.origin).toBe("bundled");
+   });
+
+   it("lets a package skill replace a bundled one that the default set overrides, marked by origin", async () => {
+      const controller = new SkillController(
+         storeWith(
+            [
+               packageSkill(bundled.name, "ours", { "SKILL.md": "OUR BODY" }),
+               packageSkill("house-rules", "new", { "SKILL.md": "RULES" }),
+            ],
+            [bundled.name],
+         ),
       );
       const listed = await controller.listSkills("env", "pkg");
       expect(listed.find((s) => s.name === bundled.name)).toEqual({

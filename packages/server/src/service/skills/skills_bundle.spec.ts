@@ -239,7 +239,9 @@ describe("skills_bundle.json (generated dual-channel asset)", () => {
          | undefined;
       const store = fakeOf<PackageLookup>({
          getEnvironment: async () => ({
-            getPackage: async () => ({ listSkills: () => [] }),
+            getPackage: async () => ({
+               defaultSkills: () => ({ skills: [], overrides: [] }),
+            }),
          }),
       });
       registerGetSkillTool(

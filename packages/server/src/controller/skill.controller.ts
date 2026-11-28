@@ -2,7 +2,11 @@
 // SPDX-License-Identifier: MIT
 
 import { components } from "../api";
-import { SkillNotFoundError, WorkflowNotFoundError } from "../errors";
+import {
+   SkillNotFoundError,
+   SkillSetNotFoundError,
+   WorkflowNotFoundError,
+} from "../errors";
 import {
    BUNDLED_CATALOG,
    fileChangedMessage,
@@ -17,17 +21,20 @@ import { loadedPackage } from "./loaded_package";
 
 type ApiWorkflow = components["schemas"]["Workflow"];
 type ApiWorkflowSummary = components["schemas"]["WorkflowSummary"];
-type ApiWorkflowSkillRead = components["schemas"]["WorkflowSkillRead"];
+type ApiSkillSet = components["schemas"]["SkillSet"];
+type ApiSkillSetSummary = components["schemas"]["SkillSetSummary"];
+type ApiSkillSetFileRead = components["schemas"]["SkillSetFileRead"];
 type ApiSkill = components["schemas"]["Skill"];
 type ApiSkillSummary = components["schemas"]["SkillSummary"];
 
 /**
- * The REST half of the `get_skill` and `get_workflow` MCP tools: the bundled
- * guides, shadowed by the skills of the package's `default` workflow of the
- * same name, and the package's declared workflows, whose skill files are the
- * one REST read of a skill's other files. Serves state read at load; nothing compiles.
- * Every route takes the package's `versionId`, so a version's own skills and
- * workflows are served, never `latest`'s.
+ * The REST half of the `get_skill`, `get_skill_set` and `get_workflow` MCP
+ * tools: the bundled guides with the package's `default` skill set's added
+ * (replacing a bundled one only where that set's `overrides` says so), the
+ * package's declared skill sets, whose file route is the one REST read of a
+ * skill's other files, and its declared workflows. Serves state read at load;
+ * nothing compiles. Every route takes the package's `versionId`, so a version's
+ * own skills, sets and workflows are served, never `latest`'s.
  */
 export class SkillController {
    private environmentStore: PackageLookup;
@@ -55,7 +62,7 @@ export class SkillController {
       versionId: VersionRef,
    ): Promise<ResolvedSkill[]> {
       const p = await this.packageOf(environmentName, packageName, versionId);
-      return resolveSkills(BUNDLED_CATALOG, p.listSkills());
+      return resolveSkills(BUNDLED_CATALOG, p.defaultSkills());
    }
 
    /** Name, description and origin for every skill in force for the package. */
@@ -102,7 +109,7 @@ export class SkillController {
       };
    }
 
-   /** Name, description, instructions flag and skill sets of every workflow the package serves. */
+   /** Name, description and skill set names of every workflow the package serves. */
    public async listWorkflows(
       environmentName: string,
       packageName: string,
@@ -113,55 +120,71 @@ export class SkillController {
       ).listWorkflows();
    }
 
-   /** One workflow resolved to its instructions and skill sets, or to one set with `skillSet`. */
+   /** One workflow resolved to its instructions and every skill set it lists, whole. */
    public async getWorkflow(
       environmentName: string,
       packageName: string,
       workflowName: string,
       skills: "full" | "summary" = "full",
-      skillSet?: string,
       versionId: VersionRef = VersionRef.LATEST,
    ): Promise<ApiWorkflow> {
       const pkg = await this.packageOf(environmentName, packageName, versionId);
-      const workflow = pkg.getWorkflow(workflowName, skills, skillSet);
+      const workflow = pkg.getWorkflow(workflowName, skills);
       if (!workflow) {
-         const unserved = pkg.workflowNotServed(workflowName);
-         throw unserved
-            ? new WorkflowNotFoundError(unserved.message, unserved.reason)
-            : new WorkflowNotFoundError(
-                 `Workflow '${workflowName}' with a skill set '${skillSet}' not found in package '${packageName}'.`,
-              );
+         const unserved = pkg.workflowNotServed(workflowName)!;
+         throw new WorkflowNotFoundError(unserved.message, unserved.reason);
       }
       return workflow;
    }
 
-   /** One file of a workflow's skills, by a `<skill>/<file>` path from the summary, read inside one set with `skillSet`. */
-   public async getWorkflowSkillFile(
+   /** Name, description and digest of every skill set the package serves, in name order. */
+   public async listSkillSets(
       environmentName: string,
       packageName: string,
-      workflowName: string,
-      relativeFilepath: string,
-      skillSet?: string,
       versionId: VersionRef = VersionRef.LATEST,
-   ): Promise<ApiWorkflowSkillRead> {
+   ): Promise<ApiSkillSetSummary[]> {
+      return (
+         await this.packageOf(environmentName, packageName, versionId)
+      ).listSkillSets();
+   }
+
+   /** One skill set, whole. */
+   public async getSkillSet(
+      environmentName: string,
+      packageName: string,
+      skillSetName: string,
+      skills: "full" | "summary" = "full",
+      versionId: VersionRef = VersionRef.LATEST,
+   ): Promise<ApiSkillSet> {
       const pkg = await this.packageOf(environmentName, packageName, versionId);
-      const file = await pkg.getWorkflowSkillFile(
-         workflowName,
-         relativeFilepath,
-         skillSet,
-      );
+      const set = pkg.getSkillSet(skillSetName, skills);
+      if (!set) {
+         const unserved = pkg.skillSetNotServed(skillSetName)!;
+         throw new SkillSetNotFoundError(unserved.message, unserved.reason);
+      }
+      return set;
+   }
+
+   /** One file of a skill set, by a `<skill>/<file>` path from the set's summary or its assets. */
+   public async getSkillSetFile(
+      environmentName: string,
+      packageName: string,
+      skillSetName: string,
+      relativeFilepath: string,
+      versionId: VersionRef = VersionRef.LATEST,
+   ): Promise<ApiSkillSetFileRead> {
+      const pkg = await this.packageOf(environmentName, packageName, versionId);
+      const file = await pkg.getSkillSetFile(skillSetName, relativeFilepath);
       if (file && "changed" in file) {
-         throw new WorkflowNotFoundError(fileChangedMessage(relativeFilepath));
+         throw new SkillSetNotFoundError(fileChangedMessage(relativeFilepath));
       }
       if (!file) {
-         const unserved = pkg.workflowNotServed(workflowName);
+         const unserved = pkg.skillSetNotServed(skillSetName);
          if (unserved) {
-            throw new WorkflowNotFoundError(unserved.message, unserved.reason);
+            throw new SkillSetNotFoundError(unserved.message, unserved.reason);
          }
-         throw new WorkflowNotFoundError(
-            skillSet === undefined
-               ? `Skill file '${relativeFilepath}' not found for workflow '${workflowName}' in package '${packageName}'.`
-               : `Skill file '${relativeFilepath}' not found in skill set '${skillSet}' of workflow '${workflowName}' in package '${packageName}'.`,
+         throw new SkillSetNotFoundError(
+            `Skill file '${relativeFilepath}' not found in skill set '${skillSetName}' in package '${packageName}'.`,
          );
       }
       return file;

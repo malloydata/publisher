@@ -497,14 +497,15 @@ function givensParam(
    throw new BadRequestError("givens must be one JSON object");
 }
 
-/** The `skillSet` query value, one non-empty set name or undefined; any other shape is a 400. */
-function skillSetParam(req: express.Request): string | undefined {
-   const skillSet = req.query.skillSet;
-   if (skillSet === undefined) return undefined;
-   if (typeof skillSet === "string" && skillSet !== "") return skillSet;
-   throw new BadRequestError(
-      `'skillSet' must be one skill set name, got ${JSON.stringify(skillSet)}.`,
-   );
+/** The `skills` query value of a set or workflow read: `full` (the default) or `summary`; any other shape is a 400. */
+function skillsViewParam(req: express.Request): "full" | "summary" {
+   const skills = req.query.skills ?? "full";
+   if (skills !== "full" && skills !== "summary") {
+      throw new BadRequestError(
+         `'skills' must be 'full' or 'summary', got ${JSON.stringify(skills)}.`,
+      );
+   }
+   return skills;
 }
 
 function registerPackageRoutes(
@@ -630,9 +631,9 @@ function registerPackageRoutes(
       }),
    );
 
-   // A workflow's skill file path carries slashes, so it is a wildcard rather
-   // than a named parameter. Express has already decoded the wildcard; decoding
-   // again throws on a bare %.
+   // A skill set file path carries slashes, so it is a wildcard rather than a
+   // named parameter. Express has already decoded the wildcard; decoding again
+   // throws on a bare %.
    app.get(
       `${pkg}/skills`,
       apiRoute((req) =>
@@ -719,32 +720,46 @@ function registerPackageRoutes(
    );
    app.get(
       `${pkg}/workflows/:workflowName`,
-      apiRoute((req) => {
-         const skills = req.query.skills ?? "full";
-         if (skills !== "full" && skills !== "summary") {
-            throw new BadRequestError(
-               `'skills' must be 'full' or 'summary', got ${JSON.stringify(skills)}.`,
-            );
-         }
-         return skillController.getWorkflow(
+      apiRoute((req) =>
+         skillController.getWorkflow(
             req.params.environmentName,
             req.params.packageName,
             req.params.workflowName,
-            skills,
-            skillSetParam(req),
+            skillsViewParam(req),
             versionRefOf(req),
-         );
-      }),
+         ),
+      ),
    );
    app.get(
-      `${pkg}/workflows/:workflowName/skills/*`,
+      `${pkg}/skill-sets`,
       apiRoute((req) =>
-         skillController.getWorkflowSkillFile(
+         skillController.listSkillSets(
             req.params.environmentName,
             req.params.packageName,
-            req.params.workflowName,
+            versionRefOf(req),
+         ),
+      ),
+   );
+   app.get(
+      `${pkg}/skill-sets/:skillSetName`,
+      apiRoute((req) =>
+         skillController.getSkillSet(
+            req.params.environmentName,
+            req.params.packageName,
+            req.params.skillSetName,
+            skillsViewParam(req),
+            versionRefOf(req),
+         ),
+      ),
+   );
+   app.get(
+      `${pkg}/skill-sets/:skillSetName/skills/*`,
+      apiRoute((req) =>
+         skillController.getSkillSetFile(
+            req.params.environmentName,
+            req.params.packageName,
+            req.params.skillSetName,
             wildcardParam(req) ?? "",
-            skillSetParam(req),
             versionRefOf(req),
          ),
       ),

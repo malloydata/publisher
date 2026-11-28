@@ -71,6 +71,8 @@ const sha256 = (data: string | Buffer) =>
    createHash("sha256").update(data).digest("hex");
 
 type PackageWarning = components["schemas"]["PackageWarning"];
+type SkillSetFile = components["schemas"]["SkillSetFile"];
+type SkillSetAsset = components["schemas"]["SkillSetAsset"];
 
 /** `PackageWarning.code` of a workflow the manifest declares and this server refuses; `subject` is its name. */
 export const WORKFLOW_NOT_SERVED = "workflow-not-served";
@@ -82,6 +84,8 @@ export const SKILL_SHADOWED = "skill-shadowed";
 export const SKILL_FILE_SKIPPED = "skill-file-skipped";
 /** `PackageWarning.code` of any other finding of a skill set; `subject` is the set's name. */
 export const SKILL_FINDING = "skill-finding";
+/** The walk failed, so no skill set or workflow is served until the package reloads. */
+export const SKILL_SETS_UNAVAILABLE = "skill-sets-unavailable";
 
 const warning = (
    code: string,
@@ -325,7 +329,8 @@ type AssetRead =
 
 /** Whether `get_skill` can answer with this text: it travels JSON-escaped inside a payload that is escaped again in the reply. An estimate made at load, which leaves out the reply's own envelope. */
 function fitsReply(text: string): boolean {
-   // Escaping grows a character at most sevenfold, so a short text needs no measuring.
+   // Escaping never shortens a text and grows a character at most sevenfold, so a long one is over and a short one under with no measuring.
+   if (text.length > FCJ_MAX_CHARS) return false;
    return (
       text.length <= Math.floor(FCJ_MAX_CHARS / 7) - 1 ||
       JSON.stringify(JSON.stringify(text)).length <= FCJ_MAX_CHARS
@@ -1382,17 +1387,11 @@ export interface SkillSet {
    description?: string;
    /** The skill names this set may serve in place of a bundled skill, sorted. */
    overrides: string[];
-   /** sha256 over what the set serves: each file's path and as-written sha256, each skill's applied `.skillignore` sha256 and the `overrides`. It covers every skill in the set, one that another set shadows in a workflow included, and not the set's name, path or description. */
+   /** sha256 over what the set serves: each file's path and as-written sha256, each skill's applied `.skillignore` sha256 and the `overrides`. It covers every skill in the set and not the set's name, path or description. */
    digest: string;
    skills: SetSkill[];
    /** Each finding as it is published, once per set. */
    findings: PackageWarning[];
-}
-
-/** A set as a workflow serves it: a skill name an earlier set of the workflow holds is served from that set only. */
-export interface WorkflowSet {
-   set: SkillSet;
-   skills: SetSkill[];
 }
 
 /** One workflow as the manifest declares it, resolved to what a caller adopts. */
@@ -1400,9 +1399,9 @@ export interface PackageWorkflow {
    name: string;
    description?: string;
    instructions: { path: string; text: string };
-   /** In the order the manifest lists them. */
-   sets: WorkflowSet[];
-   /** A skill name two of its sets both hold, served from the first-listed set when the workflow is read whole; a read of one set serves that set's copy, so it has none of these. */
+   /** Every listed set, whole, in the order the manifest lists them. */
+   sets: SkillSet[];
+   /** A skill name two of its sets both hold: both sets are served whole, and an installer keeps the first-listed set's copy. */
    shadowing: PackageWarning[];
    definitionSha: string;
 }
@@ -1467,16 +1466,52 @@ export const emptyWorkflows = (): ServedWorkflows => ({
    skillsDirNotRead: false,
 });
 
-/** A skill's inline files as a workflow serves them: `<skill>/<file>` with its text as written, a SKILL.md with its parsed name and description. */
-export function servedInline(skill: ReadSkill) {
-   return skill.inline.map((f) => ({
-      relative_filepath: `${skill.dirName}/${f.relative}`,
-      file_contents: f.text,
-      ...(f.relative === SKILL_MD && {
-         name: skill.meta.name,
-         description: skill.meta.description,
-      }),
-   }));
+/** What a set's replies are cut from, sorted by path: its inline files in each view, and the files its skills list. */
+export interface SkillSetRows {
+   full: SkillSetFile[];
+   summary: SkillSetFile[];
+   assets: SkillSetAsset[];
+}
+
+/** The rows of `set`: each inline file as `<skill>/<file>` with its text as written and its size on disk, a SKILL.md with its parsed name and description (a description it does not have is left off). */
+export function skillSetRows(set: SkillSet): SkillSetRows {
+   const files = set.skills
+      .flatMap((skill) =>
+         skill.inline.map((f) => ({
+            relative_filepath: `${skill.dirName}/${f.relative}`,
+            text: f.text,
+            bytes: skill.catalog.files[f.relative]!.size,
+            ...(f.relative === SKILL_MD && {
+               name: skill.meta.name,
+               ...(skill.meta.description !== "" && {
+                  description: skill.meta.description,
+               }),
+            }),
+         })),
+      )
+      .sort((a, b) => compareText(a.relative_filepath, b.relative_filepath));
+   return {
+      full: files.map(({ relative_filepath, text, name, description }) => ({
+         relative_filepath,
+         file_contents: text,
+         ...(name !== undefined && { name }),
+         ...(description !== undefined && { description }),
+      })),
+      summary: files.map(({ relative_filepath, name, description, bytes }) => ({
+         relative_filepath,
+         ...(name !== undefined && { name }),
+         ...(description !== undefined && { description }),
+         bytes,
+      })),
+      assets: set.skills
+         .flatMap((skill) => skill.listed)
+         .map(({ relative_filepath, bytes, sha256 }) => ({
+            relative_filepath,
+            bytes,
+            sha256,
+         }))
+         .sort((a, b) => compareText(a.relative_filepath, b.relative_filepath)),
+   };
 }
 
 /** Charges a set's listed files to the package's budget, once per path: false, with nothing recorded, when they would take it over its cap, which refuses the set whole. */
@@ -1654,13 +1689,14 @@ function readSkillSet(
       if (advertised && !fitsReply(skill.inline[0]!.text)) {
          ctx.warnings.push(unreturnableWarning(`${skill.rel}/${SKILL_MD}`));
       }
-      if (
-         bundled.has(skill.dirName) &&
-         !decl.overrides.includes(skill.dirName)
-      ) {
+      // Both names: the folder's is what an installer writes, and the frontmatter's is what `get_skill` serves it as.
+      const clash = [skill.dirName, skill.meta.name].find(
+         (name) => bundled.has(name) && !decl.overrides.includes(name),
+      );
+      if (clash !== undefined) {
          ctx.warnings.push(
             finding(
-               `Package skill '${skill.rel}' is named like a bundled skill. Fix: add '${skill.dirName}' to 'skillSets.${decl.name}.overrides' if it is meant to replace the bundled one, or rename the skill`,
+               `Package skill '${skill.rel}' is named like a bundled skill. Fix: add '${clash}' to 'skillSets.${decl.name}.overrides' if it is meant to replace the bundled one, or rename the skill`,
             ),
          );
       }
@@ -2099,7 +2135,14 @@ function unavailableWorkflows(
       ...emptyWorkflows(),
       contentShas: new Map(),
       watched,
-      warnings: refusals,
+      warnings: [
+         ...refusals,
+         {
+            code: SKILL_SETS_UNAVAILABLE,
+            message: `Skill sets and workflows could not be read: ${reason}. None is served until the package reloads. Fix: correct the cause named here, then reload the package.`,
+            severity: "warn",
+         },
+      ],
       unavailable: {
          reason,
          declared: names?.workflows ?? [],
@@ -2332,24 +2375,23 @@ function walkPackageWorkflows(
       if (!decl) return;
       const shadowing: PackageWarning[] = [];
       const holder = new Map<string, string>();
-      const sets = decl.sets.map((setName): WorkflowSet => {
+      const sets = decl.sets.map((setName) => {
          const set = result.sets.get(setName)!;
-         const skills = set.skills.filter((skill) => {
+         for (const skill of set.skills) {
             const first = holder.get(skill.dirName);
             if (first === undefined) {
                holder.set(skill.dirName, setName);
-               return true;
+               continue;
             }
             shadowing.push(
                warning(
                   SKILL_SHADOWED,
                   name,
-                  `Workflow '${name}' lists skill '${skill.dirName}' in both '${first}' and '${setName}'; the copy in '${first}', listed first, is the one served. Fix: rename one of the two skills, or list only one of the sets.`,
+                  `Workflow '${name}' lists skill '${skill.dirName}' in both '${first}' and '${setName}'; both sets are served whole and an installer keeps the copy in '${first}', listed first. Fix: rename one of the two skills, or list only one of the sets.`,
                ),
             );
-            return false;
-         });
-         return { set, skills };
+         }
+         return set;
       });
       result.workflows.set(name, {
          name,
@@ -2368,7 +2410,7 @@ function walkPackageWorkflows(
                description: decl.description,
             }),
             instructions: decl.instructions.sha,
-            skillSets: sets.map(({ set }) => ({
+            skillSets: sets.map((set) => ({
                name: set.name,
                digest: set.digest,
             })),
@@ -2388,13 +2430,8 @@ interface SkillSetWire extends Omit<SkillSet, "skills"> {
    skills: ReadSkill[];
 }
 
-interface WorkflowSetWire {
-   set: SkillSetWire;
-   skills: ReadSkill[];
-}
-
 interface PackageWorkflowWire extends Omit<PackageWorkflow, "sets"> {
-   sets: WorkflowSetWire[];
+   sets: SkillSetWire[];
 }
 
 /** A walk as it crosses the worker boundary: structured clone keeps the maps and every shared skill, but not `served`, a function, which {@link adoptWorkflows} rebuilds, and no content sha, which the worker hashed into the source pin. */
@@ -2435,10 +2472,7 @@ export function workflowsToWire(walk: PackageWorkflows): PackageWorkflowsWire {
             name,
             {
                ...workflow,
-               sets: workflow.sets.map(({ set, skills }) => ({
-                  set: setOf(set),
-                  skills: skills.map(skillOf),
-               })),
+               sets: workflow.sets.map(setOf),
             },
          ]),
       ),
@@ -2476,10 +2510,7 @@ export function adoptWorkflows(
             name,
             {
                ...workflow,
-               sets: workflow.sets.map(({ set, skills }) => ({
-                  set: setOf(set),
-                  skills: skills.map(skillOf),
-               })),
+               sets: workflow.sets.map(setOf),
             },
          ]),
       ),
