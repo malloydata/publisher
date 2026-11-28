@@ -11,7 +11,23 @@ Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, `@ma
 
 The `Release (NPM + Docker)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
 
-For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased] — an entry file that reaches a stored base through an import serves it
+For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
+
+One step is a human's: someone has to open `release/v<version>` as a PR into `main` and merge it. `main` requires a pull request, so the release cannot land it itself, and the job summary prints the link. Until it merges the headings on `main` still read `[Unreleased]` and the next release would ship them twice, so the `Release sync` check (`release-sync.yml`) fails on `main` and on every pull request until it does. Whoever cuts the release owns that PR; the `publisher-release` skill makes it a step.
+
+Both steps handle several sections, which matters because unrelated narratives accumulate between releases: they are separate entries in the same release rather than alternatives. That is precisely what the old manual process got wrong. It also simply stopped happening — 0.0.243 through 0.0.247 each shipped with none of their narrative, and the pages were backfilled by hand afterwards.
+
+Give the heading a title — `## [Unreleased] — what changed`, with an em dash, a colon or a hyphen. The version is already the release's own title, so the marker is stripped and the title is what appears on the page; a bare `## [Unreleased]` has nothing to put there and fails CI on the PR that writes it.
+
+Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
+
+## [Unreleased] — a null test through a string-keyed join is served from storage, and a nondeterministic join key is no longer served wrong
+
+**[fix] A source whose row filter tests a string for null through a join is served from its stored table.** For example, `pipeline_now is deals extend { where: is_open }`, where `is_open is first_close.close_type is null` is read through a join on a string key, over a stored query-shaped source. It answered live with `served_copy_not_served` ("the query's source scopes its rows by a column a stored table does not compare as its source does"). The collation check treated every non-string field of a query-shaped source as one it could not follow, including a dimension declared in the source's own `extend { … }`, whose expression reads columns it does judge. It now follows such a field. **Who is affected:** stored query-shaped sources filtered by a dimension their `extend` declares. **What to do:** nothing.
+
+**[fix] A string join key under a nondeterministic collation is no longer served wrong.** When a row filter is read through a join whose `on:` compares strings, the join's keys decide which rows match. Under a nondeterministic collation, such as a case-insensitive ICU one, the warehouse matches keys that differ only by case, and a stored copy compares bytes. That key's collation was never checked, so such a query could be served from storage with different rows than live. The join's keys are now judged with the rest of the row filter: a deterministic collation compares as bytes do and is served, and a nondeterministic one answers live. A stored source whose join keys read the source warehouse is now also refused when the package is planned, rather than failing when it is built. **Who is affected:** row filters read through a join on a key under a nondeterministic collation, which is rare; such queries now answer live. **What to do:** nothing.
+
+## [Unreleased] — an entry file that reaches a stored base through an import serves it
 
 **[fix] A stored source is served from its table through an entry file that reaches it only through a file it imports.** Take `#(materialize) activity_events` in `activity.malloy`, `org_activity is activity_events extend { … }` in `eng.malloy`, and an `index.malloy` that imports only `eng.malloy`. That is the usual shape of a published surface. Malloy imports are not transitive, and an extension of a table-backed source records no link to its base, so `index.malloy`'s compile held nothing that pointed back to `activity_events`.
 
@@ -25,16 +41,6 @@ The served copy now finds such a base the way it finds a kept block's base: from
 - **A source the entry file declares itself that joins such an extension** can now be warned `served-copy-not-served` (`cross_connection_join`) when the stored table is in a storage destination its own connection cannot reach. That source answers live, as it always did.
 
 **Who is affected:** packages whose `index.malloy` imports the files that extend a stored source, but not the file that stores it. **What to do:** nothing; the workaround of importing every file into `index.malloy` is no longer needed.
-
-## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
-
-One step is a human's: someone has to open `release/v<version>` as a PR into `main` and merge it. `main` requires a pull request, so the release cannot land it itself, and the job summary prints the link. Until it merges the headings on `main` still read `[Unreleased]` and the next release would ship them twice, so the `Release sync` check (`release-sync.yml`) fails on `main` and on every pull request until it does. Whoever cuts the release owns that PR; the `publisher-release` skill makes it a step.
-
-Both steps handle several sections, which matters because unrelated narratives accumulate between releases: they are separate entries in the same release rather than alternatives. That is precisely what the old manual process got wrong. It also simply stopped happening — 0.0.243 through 0.0.247 each shipped with none of their narrative, and the pages were backfilled by hand afterwards.
-
-Give the heading a title — `## [Unreleased] — what changed`, with an em dash, a colon or a hyphen. The version is already the release's own title, so the marker is stripped and the title is what appears on the page; a bare `## [Unreleased]` has nothing to put there and fails CI on the PR that writes it.
-
-Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
 ## [Unreleased] — an inherited `where:` that cannot be verified says so
 
