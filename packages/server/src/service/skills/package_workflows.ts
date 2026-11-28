@@ -8,8 +8,8 @@ import type { SkillCatalogEntry } from "./build_skills_bundle";
 import { parseFrontmatter } from "./frontmatter";
 import {
    ASSET_MAX_DEPTH,
-   ASSET_MAX_ENTRIES,
    ASSET_PATH_MAX_CHARS,
+   builtInExcluded,
    capText,
    decodeText,
    isInlineMarkdown,
@@ -21,6 +21,7 @@ import {
    readFilled,
    readUnfollowedFlags,
    REFERENCE_DIRS,
+   REFERENCE_MAX_EXAMINED,
    SKILL_MD,
    skillFiles,
    underAssets,
@@ -569,7 +570,6 @@ function scanSkills(
       isSkill: false,
    };
    const { packageRoot } = scan;
-   const manifestEntries = { left: ASSET_MAX_ENTRIES };
    const unserved = (message: string) => {
       scan.warnings.push(message);
    };
@@ -687,7 +687,7 @@ function scanSkills(
       for (const w of found.warnings) {
          scan.warnings.push(`Package skill '${rel}': ${w}.`);
       }
-      const nested = skillManifest(packageRoot, skillDir, manifestEntries);
+      const nested = skillManifest(packageRoot, skillDir);
       scan.skills.push({
          dirName: entry.name,
          rel,
@@ -703,7 +703,7 @@ function scanSkills(
             manifestRefusal: `'${rel}/${displayPath(nested.found)}' is a publisher.json, which would make its directory a second package root; remove it or rename it`,
          }),
          ...(nested.unchecked && {
-            manifestRefusal: `'${rel}' could not be checked for a publisher.json within the ${ASSET_MAX_ENTRIES}-entry budget its set shares; remove files from it or move it to another skill set`,
+            manifestRefusal: `'${rel}' has more than ${REFERENCE_MAX_EXAMINED} entries under assets/ to check for a publisher.json; remove files from it`,
          }),
       });
    }
@@ -1263,22 +1263,24 @@ function manifestAt(
 /**
  * The path, relative to the skill directory, of the first publisher.json inside
  * a skill: in the directory, in its `reference/` or `references/`, or anywhere
- * below its `assets/`. `unchecked` when the search ran out of `entries` before
- * it could tell, which the caller treats as a find, since a manifest it did not
- * reach is still one. It reads the real tree,
- * folders a `.skillignore` ignores included: that file decides what a skill is
- * made of, never what may sit in it. It follows a link only to a directory
- * inside the package, reads a reference folder or a linked `assets/` for at
- * most `REFERENCE_MAX_EXAMINED` entries, and bounds what it walks under
- * `assets/` the way skillFiles does, taking from `entries`, which the caller
- * shares across the set, so a link cannot make it scan the filesystem, list a
- * huge directory whole, or report on files outside the package.
+ * below its `assets/`. `unchecked` when the skill holds more than
+ * `REFERENCE_MAX_EXAMINED` entries under `assets/` to look through, which the
+ * caller treats as a find, since a manifest it did not reach is still one. It
+ * reads the real tree, folders a `.skillignore` ignores included: that file
+ * decides what a skill is made of, never what may sit in it. It descends what
+ * skillFiles descends otherwise (no dot name, `node_modules`, `__pycache__` or
+ * path over `ASSET_PATH_MAX_CHARS`), so a skill is never set aside for files
+ * nothing serves. It follows a link only to a directory inside the package and
+ * reads a reference folder or a linked `assets/` for at most
+ * `REFERENCE_MAX_EXAMINED` entries, so a link cannot make it scan the
+ * filesystem, list a huge directory whole, or report on files outside the
+ * package.
  */
 function skillManifest(
    packageRoot: string,
    skillDir: string,
-   entries: { left: number },
 ): { found?: string; unchecked?: true } {
+   const entries = { left: REFERENCE_MAX_EXAMINED };
    let unchecked = false;
    const below = (
       dir: string,
@@ -1297,12 +1299,17 @@ function skillManifest(
          return undefined;
       }
       for (const entry of found.sort((a, b) => compareText(a.name, b.name))) {
-         if (entry.name.startsWith(".")) continue;
+         const relative = `${rel}/${entry.name}`;
+         if (
+            builtInExcluded(entry.name, entry.isDirectory()) ||
+            relative.length > ASSET_PATH_MAX_CHARS
+         ) {
+            continue;
+         }
          if (entries.left-- <= 0) {
             unchecked = true;
             return undefined;
          }
-         const relative = `${rel}/${entry.name}`;
          if (isManifest(entry.name)) return relative;
          if (entry.isDirectory() && depth < ASSET_MAX_DEPTH) {
             const deeper = below(

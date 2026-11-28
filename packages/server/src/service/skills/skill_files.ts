@@ -152,7 +152,7 @@ function shown(pattern: string): string {
 }
 
 /** Dot names are where harness config lives, so no `.skillignore` rule can bring one back. */
-function builtInExcluded(name: string, isDirectory: boolean): boolean {
+export function builtInExcluded(name: string, isDirectory: boolean): boolean {
    if (name.startsWith(".")) return true;
    const lower = name.toLowerCase();
    return isDirectory

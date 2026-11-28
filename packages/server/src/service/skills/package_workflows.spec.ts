@@ -15,7 +15,7 @@ import {
    MANIFEST_DECLARATION_MAX_BYTES,
 } from "../package_revision";
 import { advertisedSkills, skillSetView } from "./package_skills";
-import { ASSET_MAX_ENTRIES } from "./skill_files";
+import { ASSET_PATH_MAX_CHARS, REFERENCE_MAX_EXAMINED } from "./skill_files";
 import {
    adoptWorkflows,
    emptyWorkflows,
@@ -2381,47 +2381,69 @@ describe("readPackageWorkflows", () => {
       });
    });
 
-   describe("a publisher.json past the set's entry budget", () => {
-      /** `count` files under `skill`'s assets/, which a nested-manifest search reads one entry each. */
-      const fill = (skill: string, count: number) => {
-         writeSkill(MAIN, skill);
+   describe("the search for a nested publisher.json", () => {
+      /** `count` empty files in `dir` under `skill`, written without a mkdir each. */
+      const fillDir = (skill: string, dir: string, count: number) => {
+         const abs = path.join(pkg, MAIN, skill, dir);
+         fs.mkdirSync(abs, { recursive: true });
          for (let i = 0; i < count; i++) {
-            write(
-               `${MAIN}/${skill}/assets/f${String(i).padStart(4, "0")}.txt`,
+            fs.writeFileSync(
+               path.join(abs, `f${String(i).padStart(5, "0")}.txt`),
                "x",
             );
          }
       };
+      const names = (result: PackageWorkflows) =>
+         result.sets.get(HOUSE)!.skills.map((s) => s.dirName);
+      const refusals = (result: PackageWorkflows) =>
+         result.warnings.filter((w) => w.message.includes("not served:"));
 
-      it("sets the skill aside, naming the budget, rather than serve what cannot be ruled out", () => {
-         writeSkill(MAIN, "plain");
-         fill("big", ASSET_MAX_ENTRIES + 5);
-         // Past the budget, where the search stops: a publisher.json it never reached.
-         write(`${MAIN}/big/assets/zz/publisher.json`, "{}");
+      it("serves every skill of a set whatever its neighbours hold", () => {
+         writeSkill(MAIN, "a-charts");
+         write(`${MAIN}/a-charts/assets/chart.js`, "x");
+         fillDir("a-charts", "assets/vendor/node_modules", 1200);
+         writeSkill(MAIN, "b-glossary");
+         writeSkill(MAIN, "c-report");
+         write(`${MAIN}/c-report/assets/logo.txt`, "x");
          const result = read(undefined, { house: { path: MAIN } });
-         expect(result.sets.get(HOUSE)!.skills.map((s) => s.dirName)).toEqual([
-            "plain",
-         ]);
-         expectWarning(
-            result.warnings,
-            SKILL_FINDING,
-            HOUSE,
-            `Package skill '${MAIN}/big' is not served: '${MAIN}/big' could not be checked for a publisher.json within the ${ASSET_MAX_ENTRIES}-entry budget its set shares`,
-         );
+         expect(names(result)).toEqual(["a-charts", "b-glossary", "c-report"]);
+         expect(refusals(result)).toEqual([]);
       });
 
-      it("charges the budget to the set, so a later skill is set aside once an earlier one spent it", () => {
-         fill("aaa", ASSET_MAX_ENTRIES);
-         fill("zzz", 1);
+      it("does not read what the walk never reads: node_modules, and a path over its length cap", () => {
+         writeSkill(MAIN, "a-vendored");
+         write(`${MAIN}/a-vendored/assets/chart.js`, "x");
+         fillDir(
+            "a-vendored",
+            "assets/node_modules",
+            REFERENCE_MAX_EXAMINED + 5,
+         );
+         writeSkill(MAIN, "b-long");
+         fillDir(
+            "b-long",
+            `assets/${"d".repeat(ASSET_PATH_MAX_CHARS)}`,
+            REFERENCE_MAX_EXAMINED + 5,
+         );
          const result = read(undefined, { house: { path: MAIN } });
-         expect(result.sets.get(HOUSE)!.skills.map((s) => s.dirName)).toEqual([
-            "aaa",
-         ]);
+         expect(names(result)).toEqual(["a-vendored", "b-long"]);
+         expect(refusals(result)).toEqual([]);
+      });
+
+      it("sets only the skill that outgrows the search aside, naming it and the cap, rather than serve what cannot be ruled out", () => {
+         writeSkill(MAIN, "a-big");
+         fillDir("a-big", "assets", REFERENCE_MAX_EXAMINED + 1);
+         // Past the cap, where the search stops: a publisher.json it never reached.
+         write(`${MAIN}/a-big/assets/zz/publisher.json`, "{}");
+         writeSkill(MAIN, "b-plain");
+         write(`${MAIN}/b-plain/assets/logo.txt`, "x");
+         const result = read(undefined, { house: { path: MAIN } });
+         expect(names(result)).toEqual(["b-plain"]);
+         expect(refusals(result)).toHaveLength(1);
          expectWarning(
             result.warnings,
             SKILL_FINDING,
             HOUSE,
-            `Package skill '${MAIN}/zzz' is not served: '${MAIN}/zzz' could not be checked`,
+            `Package skill '${MAIN}/a-big' is not served: '${MAIN}/a-big' has more than ${REFERENCE_MAX_EXAMINED} entries under assets/ to check for a publisher.json`,
          );
       });
    });
@@ -2922,7 +2944,7 @@ describe("readPackageWorkflows", () => {
             write(`${ASSETS}/z.txt`, "x");
          };
 
-         it("walks exactly 1,000 entries per skill set, and sets the skill aside, serving the workflow, past that", () => {
+         it("walks exactly 1,000 entries per skill set and stays served past that", () => {
             fillEntries(998);
             const atCap = read({ analyst: analyst() });
             expect(listed(atCap)).toEqual([
@@ -2934,13 +2956,11 @@ describe("readPackageWorkflows", () => {
             write(`${ASSETS}/zz.txt`, "x");
             const over = read({ analyst: analyst() });
             expect(over.workflows.has("analyst")).toBe(true);
-            expect(listed(over)).toEqual([]);
-            expect(
-               warned(
-                  over,
-                  `'${CONVENTIONS}' could not be checked for a publisher.json within the 1000-entry budget`,
-               ),
-            ).toBe(true);
+            expect(listed(over)).toEqual([
+               `${LISTED}/a.txt`,
+               `${LISTED}/z.txt`,
+            ]);
+            expect(warned(over, "zz.txt", "1000 entries")).toBe(true);
          });
 
          it("lists a large file with a NUL in its head, and hashes it without reading it as text", () => {

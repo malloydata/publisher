@@ -796,7 +796,7 @@ describe("package workflows", () => {
          expect(await used("agents")).toBe(2);
       });
 
-      it("warns of a root skills/ directory no set is declared at, with its code, and counts it once per load", async () => {
+      it("warns of a root skills/ directory no declared skill set is at or under, with its code, and counts it once per load", async () => {
          write(
             "skills/old/SKILL.md",
             "---\nname: old\ndescription: d\n---\n\nbody\n",
@@ -1313,7 +1313,7 @@ describe("package workflows", () => {
          expect(read.message).toContain("binary");
       });
 
-      it("keeps a workflow served, with its skill set aside, when assets/ holds more than 1,000 entries", async () => {
+      it("keeps a workflow served when assets/ holds more than 1,000 entries", async () => {
          write(`${ASSETS}/a.txt`, "x");
          for (let i = 0; i < 1000; i++) {
             fs.mkdirSync(
@@ -1323,16 +1323,14 @@ describe("package workflows", () => {
          }
          write(`${ASSETS}/z.txt`, "x");
          const pkg = await load();
-         const set = pkg.getWorkflow("analyst")!.skill_sets[0]!;
-         expect(set.assets ?? []).toEqual([]);
-         expect(set.skills).toEqual([]);
          expect(
-            warningsOf(pkg).some((m) =>
-               m.includes(
-                  "could not be checked for a publisher.json within the 1000-entry budget",
-               ),
-            ),
-         ).toBe(true);
+            pkg
+               .getWorkflow("analyst")!
+               .skill_sets[0]!.assets!.map((a) => a.relative_filepath),
+         ).toEqual([`${LISTED}/a.txt`]);
+         expect(warningsOf(pkg).some((m) => m.includes("1000 entries"))).toBe(
+            true,
+         );
       });
 
       it("refuses a listed asset once its directory is swapped for a link", async () => {

@@ -277,7 +277,7 @@ describe("publisher_deprecated_usage_total", () => {
       expect(await used("agents")).toBe(1);
    });
 
-   it("counts a package whose root skills/ directory no workflow lists, once per call", async () => {
+   it("counts a package whose root skills/ directory no declared skill set is at or under, once per call", async () => {
       recordSkillsDirNotRead();
       recordSkillsDirNotRead();
       expect(await used("skills_dir")).toBe(2);
