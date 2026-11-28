@@ -170,7 +170,21 @@ export function getMalloyErrorDetails(
 
       // What Publisher's own errors say they are, read as data; then what a
       // Malloy message says, read as text (malloy_error_text.ts).
-      if (error instanceof AccessDeniedError && error.source !== undefined) {
+      if (
+         error instanceof AccessDeniedError &&
+         error.source !== undefined &&
+         error.inheritedFilter !== undefined
+      ) {
+         // Not a gate: the model's own inherited `where:` could not be
+         // verified, so givens do not help and the query text is not at fault.
+         refined = true;
+         suggestions = [
+            `Suggestion: This is not a permission rule, and supplying givens or rewriting the query will not help. A where: that source '${error.source}' inherits could not be verified on it (reason: ${error.inheritedFilter}). Report it to the model's author: the server log names the filter and the source that declares it. Other sources in the package may answer.`,
+         ];
+      } else if (
+         error instanceof AccessDeniedError &&
+         error.source !== undefined
+      ) {
          // A gate's denial (`reason: ACCESS_DENIED`): the error names only the
          // source (gate logic is never leaked, nor which gate refused), and the
          // advice is about access, not syntax.

@@ -191,10 +191,12 @@ describe("S4: an inherited where: through an entry file that imports both the ba
             live[`${model} rebound`],
             served[`${model} rebound`],
          ]) {
-            expect(answer(o)).toEqual({
-               servedBy: "error",
-               rows: 'Access denied for source "rebound_deals".',
-            });
+            const got = answer(o);
+            expect(got.servedBy).toBe("error");
+            expect(got.rows).toStartWith(
+               'Access denied for source "rebound_deals": ',
+            );
+            expect(got.rows).toContain("reason: redefined_field");
          }
       });
    }

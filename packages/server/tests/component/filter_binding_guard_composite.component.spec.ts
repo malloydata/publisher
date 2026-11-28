@@ -158,7 +158,7 @@ async function count(model: Model, queryText: string): Promise<unknown> {
 }
 
 async function expectDenied(model: Model, queryText: string): Promise<void> {
-   const debug = spyOn(logger, "debug");
+   const debug = spyOn(logger, "info");
    try {
       let served: unknown = "<not served>";
       try {
@@ -169,7 +169,7 @@ async function expectDenied(model: Model, queryText: string): Promise<void> {
             debug.mock.calls.some(
                (call) =>
                   String(call[0]) ===
-                  "Inherited source filter binding check failed; denying",
+                  "Inherited where: could not be verified; denying",
             ),
          ).toBe(true);
          return;
@@ -408,7 +408,7 @@ describe("filter binding: a where: declared on a composite member", () => {
       await withModel(async (model) => {
          await expect(
             count(model, "run: large_fake -> { aggregate: n }"),
-         ).rejects.toThrow('Access denied for source "large_fake".');
+         ).rejects.toThrow(/^Access denied for source "large_fake": /);
       });
    });
 
