@@ -26,7 +26,6 @@ import {
 import fs from "fs/promises";
 import os from "os";
 import path from "path";
-import { pathToFileURL } from "url";
 import {
    BYPASS_AUTHORIZE_HEADER,
    BYPASS_AUTHORIZE_SECRET_ENV,
@@ -39,7 +38,7 @@ import {
    ModelCompilationError,
 } from "../../../src/errors";
 import { logger } from "../../../src/logger";
-import { Model, ModelPolicy } from "../../../src/service/model";
+import { Model } from "../../../src/service/model";
 import {
    installSettings,
    withSettings,
@@ -1954,53 +1953,8 @@ source: plain is duckdb.table('customers') extend {
       );
    });
 
-   // As a Package serves it: the inherited-filter guard resolves a base an
-   // import leaves out of the entry's compile through each file's own
-   // compile, and denies a filter it cannot place on the declaration that
-   // wrote it.
-   async function runPackaged(
-      entry: string,
-      query: string,
-      givens: Record<string, GivenValue>,
-   ) {
-      const files = [
-         "og_base.malloy",
-         "og_gate.malloy",
-         "og_hub.malloy",
-         "og_entry.malloy",
-         "og_alias.malloy",
-      ];
-      const byUrl = new Map(
-         await Promise.all(
-            files.map(
-               async (f) =>
-                  [
-                     pathToFileURL(path.join(TEST_PKG_DIR, f)).toString(),
-                     (await loadModel(f)).getModelDef(),
-                  ] as const,
-            ),
-         ),
-      );
-      const model = await Model.create(
-         "test-pkg",
-         TEST_PKG_DIR,
-         entry,
-         getConnections(),
-         {
-            policy: ModelPolicy.fixed({
-               siblingModelDefResolver: (url) => byUrl.get(url),
-            }),
-         },
-      );
-      return model.runQuery(
-         unrecordedAudit(),
-         { query, givens, responseShape: "full" },
-         QueryPrivileges.of({}),
-      );
-   }
-
    async function expectUnknownHide(query: string, entry = "og_entry.malloy") {
-      const err = await runPackaged(entry, query, {
+      const err = await runGated(entry, query, {
          HIDE: "us-west",
       }).catch((e: unknown) => e);
       // MalloyError is what the HTTP layer maps to 400.
