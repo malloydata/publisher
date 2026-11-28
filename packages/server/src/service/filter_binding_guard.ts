@@ -1224,6 +1224,30 @@ function findFilterOrigin(
       seen.add(next);
       current = next;
    }
+   if (origin !== struct) {
+      // The walk ends at the last ancestor this compile holds. One that did
+      // not write the condition inherited it from a base in a file this model
+      // does not import (Malloy imports are not transitive): compared against
+      // it, a redefinition it shares with `struct` (a bare rename of an
+      // extension that redefines the field) would prove nothing. The
+      // condition is checked against the declaration that wrote it, or denied.
+      const at = firstFieldUsageLocation(condition);
+      const wrote = (s: SourceDef) =>
+         !!at &&
+         !!s.location &&
+         locationContains(s.location as DocumentLocationLike, at);
+      if (!wrote(origin)) {
+         const owner =
+            (modelDef && at && findConditionOriginByLocation(modelDef, at)) ||
+            findSiblingDeclaringSource(at, resolveSibling);
+         if (owner && siblingCandidateOwnsCondition(owner, condition)) {
+            return { origin: owner, inlineBase: false };
+         }
+         throw new Error(
+            "a row-security filter's declaring source could not be resolved",
+         );
+      }
+   }
    if (origin === struct) {
       // An inline `X extend { where: }` keeps X's location; `source: a is X` gets its own. Same-location aliases are one declaration, so the first stands in.
       const sameLocationBase = (
