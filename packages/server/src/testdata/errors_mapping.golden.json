@@ -2254,6 +2254,44 @@
       ]
     }
   },
+  "UpstreamContractInsufficientError": {
+    "class": "UpstreamContractInsufficientError",
+    "http": {
+      "status": 500,
+      "json": {
+        "code": 500,
+        "message": "Internal server error."
+      },
+      "logged": true,
+      "logs": [
+        [
+          "error",
+          "Unhandled internal error"
+        ]
+      ]
+    },
+    "mcp": {
+      "message": "An unexpected internal error occurred during executeQuery.: 'web_sessions' compares strings over its stored upstreams, and the table of 'ga4_events' records none",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: 'web_sessions' compares strings over its stored upstreams, and the table of 'ga4_events' records none",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "PublisherConfigError": {
     "class": "PublisherConfigError",
     "http": {

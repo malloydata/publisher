@@ -23,6 +23,7 @@ import {
    TableOwnershipError,
    ContractCaptureFailedError,
    SchemaIncompatibleError,
+   UpstreamContractInsufficientError,
 } from "../../../errors";
 import { logger } from "../../../logger";
 import type {
@@ -773,8 +774,12 @@ export function recordInstructedBuildFailure(
       // A bounded code beside the prose, for a refusal a client branches on.
       ...(buildErr instanceof TableOwnershipError ||
       buildErr instanceof ContractCaptureFailedError ||
-      buildErr instanceof SchemaIncompatibleError
+      buildErr instanceof SchemaIncompatibleError ||
+      buildErr instanceof UpstreamContractInsufficientError
          ? { code: buildErr.code }
+         : {}),
+      ...(buildErr instanceof UpstreamContractInsufficientError
+         ? { staleUpstreams: [...buildErr.staleUpstreams] }
          : {}),
    };
    // Deprecated mirror into `entries` for consumers that read the failure

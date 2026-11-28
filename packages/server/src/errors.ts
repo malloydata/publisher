@@ -1265,6 +1265,32 @@ export class SchemaIncompatibleError extends Error {
 }
 
 /**
+ * A chained build compares strings over a stored upstream whose table records
+ * no column contract (built before contracts were recorded), so it cannot
+ * tell whether the destination compares those strings as the source does.
+ * The source fails with SourceFailure code `upstream_contract_insufficient`
+ * (non-terminal, not a refusal), naming the upstreams to rebuild in
+ * `staleUpstreams`; once they are rebuilt, it builds.
+ */
+export class UpstreamContractInsufficientError extends Error {
+   get kind(): "upstream_contract_insufficient" {
+      return "upstream_contract_insufficient";
+   }
+
+   /** The SourceFailure `code`. */
+   readonly code = "upstream_contract_insufficient";
+
+   constructor(
+      message: string,
+      /** The upstreams to rebuild, by content address (`sourceEntityId`). */
+      readonly staleUpstreams: readonly string[],
+   ) {
+      super(message);
+      this.name = "UpstreamContractInsufficientError";
+   }
+}
+
+/**
  * The config file exists but cannot be read (malformed JSON, a rejected shape,
  * an unset `${VAR}`). Unlike an absent file, which falls back to the bundled
  * default, this must not degrade to serving nothing while reporting healthy.
@@ -1834,6 +1860,7 @@ interface ErrorByKind {
    chained_shape_not_carried: ChainedShapeNotCarriedError;
    contract_capture_failed: ContractCaptureFailedError;
    schema_incompatible: SchemaIncompatibleError;
+   upstream_contract_insufficient: UpstreamContractInsufficientError;
    publisher_config: PublisherConfigError;
    server_configuration: ServerConfigurationError;
    frozen_config: FrozenConfigError;
@@ -1926,6 +1953,7 @@ const ERROR_CLASSES: {
    chained_shape_not_carried: ChainedShapeNotCarriedError,
    contract_capture_failed: ContractCaptureFailedError,
    schema_incompatible: SchemaIncompatibleError,
+   upstream_contract_insufficient: UpstreamContractInsufficientError,
    publisher_config: PublisherConfigError,
    server_configuration: ServerConfigurationError,
    frozen_config: FrozenConfigError,
@@ -2477,6 +2505,7 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
    chained_shape_not_carried: UNHANDLED,
    contract_capture_failed: UNHANDLED,
    schema_incompatible: UNHANDLED,
+   upstream_contract_insufficient: UNHANDLED,
    publisher_config: UNHANDLED,
    write_verify: UNHANDLED,
    unknown: UNHANDLED,

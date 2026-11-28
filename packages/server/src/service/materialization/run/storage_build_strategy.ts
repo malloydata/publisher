@@ -31,6 +31,7 @@ import {
    ConnectionNotFoundError,
    MaterializationEligibilityError,
    SchemaIncompatibleError,
+   UpstreamContractInsufficientError,
 } from "../../../errors";
 import { logger } from "../../../logger";
 import { errorCodeOf } from "../../../error_code";
@@ -452,6 +453,16 @@ function refuseAfterStackFailure(
       sourceConnection,
       destinationConnection,
    );
+   // An upstream with no recorded contract: kept as its type, which names
+   // the upstreams to rebuild, so the run reports it retryable, not refused.
+   if (err instanceof UpstreamContractInsufficientError) {
+      recordChainedStorageBuild("strict_refused");
+      throw new UpstreamContractInsufficientError(
+         `Failed to materialize chained source '${persistSource.name}' ` +
+            `into storage destination '${destinationName}': ${safeDetail}`,
+         err.staleUpstreams,
+      );
+   }
    // An INFRA failure (attach, CTAS, destination down) throws as one; a
    // missing upstream or an uncarried shape is refused below as its type.
    // Neither is ever answered by recomputing the upstreams from raw.
@@ -664,6 +675,42 @@ function stackCollationRefusal(
       for (const id of sourceIDs) contracts.set(id, contract);
    }
    return stringReadsRefusal(stringReads, contracts);
+}
+
+/**
+ * Throws {@link UpstreamContractInsufficientError} when a build that compares
+ * strings over its stored upstreams reads one whose table records no column
+ * contract (built before contracts were recorded): the contract is what
+ * judges those strings, so the upstream needs rebuilding first, which a
+ * caller can do (`staleUpstreams`), rather than the source being refused.
+ */
+function assertUpstreamContracts(
+   sourceName: string,
+   stringReads: StringReads | undefined,
+   upstreams: readonly {
+      sourceIDs: readonly string[];
+      entry: ManifestEntry | undefined;
+   }[],
+): void {
+   if (
+      stringReads === undefined ||
+      "refused" in stringReads ||
+      stringReads.reads.length === 0
+   ) {
+      return;
+   }
+   const stale = upstreams.filter(
+      (u) => u.entry !== undefined && !parseContract(u.entry.contract),
+   );
+   if (stale.length === 0) return;
+   const names = stale.map((u) => `'${u.entry!.sourceName ?? "?"}'`).join(", ");
+   throw new UpstreamContractInsufficientError(
+      `'${sourceName}' compares strings over its stored upstreams, judged by ` +
+         `each upstream's recorded column contract, and the table of ${names} ` +
+         `records none (built before contracts were recorded): rebuild it, ` +
+         `and this source builds over it`,
+      stale.map((u) => u.entry!.sourceEntityId),
+   );
 }
 
 /**
@@ -1154,6 +1201,9 @@ export class StorageBuildStrategy
       if (!environment.chainBuildText) {
          throw refused("this host compiles no served copy to build it over");
       }
+      assertUpstreamContracts(persistSource.name, params.stringReads, [
+         { sourceIDs: [base.baseSourceID], entry: base.entry },
+      ]);
       const collation = stackCollationRefusal(params.stringReads, [
          { sourceIDs: [base.baseSourceID], entry: base.entry },
       ]);
@@ -1338,13 +1388,16 @@ export class StorageBuildStrategy
       const read = upstreams.filter((b) =>
          (b.sourceIDs ?? []).some((id) => stops.some((p) => p.sourceID === id)),
       );
-      const collation = stackCollationRefusal(
+      const readEntries = read.map((b) => ({
+         sourceIDs: b.sourceIDs ?? [],
+         entry: currentEntries[b.virtualHandle],
+      }));
+      assertUpstreamContracts(
+         persistSource.name,
          options.stringReads,
-         read.map((b) => ({
-            sourceIDs: b.sourceIDs ?? [],
-            entry: currentEntries[b.virtualHandle],
-         })),
+         readEntries,
       );
+      const collation = stackCollationRefusal(options.stringReads, readEntries);
       // No build over the parents gives live's rows: refused, never
       // recomputed from raw.
       if (collation !== undefined) {
@@ -1491,6 +1544,7 @@ export class StorageBuildStrategy
          addresses.push(address);
          judged.push({ sourceIDs: [u.sourceID], entry });
       }
+      assertUpstreamContracts(persistSource.name, params.stringReads, judged);
       const collation = stackCollationRefusal(params.stringReads, judged);
       if (collation !== undefined) {
          const unstored = unstoredReadRefusal(params.stringReads);
