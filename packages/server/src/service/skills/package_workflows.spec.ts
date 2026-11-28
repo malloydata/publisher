@@ -2382,21 +2382,29 @@ describe("readPackageWorkflows", () => {
    });
 
    describe("the search for a nested publisher.json", () => {
-      /** `count` empty files in `dir` under `skill`, written without a mkdir each. */
-      const fillDir = (skill: string, dir: string, count: number) => {
-         const abs = path.join(pkg, MAIN, skill, dir);
+      /** `count` empty files named `f<n><ext>` in `dir` under `skill` of `setPath`, written without a mkdir each. */
+      const fillDir = (
+         skill: string,
+         dir: string,
+         count: number,
+         ext = ".txt",
+         setPath = MAIN,
+      ) => {
+         const abs = path.join(pkg, setPath, skill, dir);
          fs.mkdirSync(abs, { recursive: true });
          for (let i = 0; i < count; i++) {
             fs.writeFileSync(
-               path.join(abs, `f${String(i).padStart(5, "0")}.txt`),
+               path.join(abs, `f${String(i).padStart(5, "0")}${ext}`),
                "x",
             );
          }
       };
-      const names = (result: PackageWorkflows) =>
-         result.sets.get(HOUSE)!.skills.map((s) => s.dirName);
+      const names = (result: PackageWorkflows, set = HOUSE) =>
+         result.sets.get(set)!.skills.map((s) => s.dirName);
       const refusals = (result: PackageWorkflows) =>
-         result.warnings.filter((w) => w.message.includes("not served:"));
+         result.warnings.filter((w) => w.message.includes("search budget of"));
+      const OVER = `has more entries under assets/ to check for a publisher.json than the set's search budget of ${REFERENCE_MAX_EXAMINED} entries has left`;
+      const SPENT = `could not be checked for a publisher.json: the set's search budget of ${REFERENCE_MAX_EXAMINED} entries was already spent on earlier skills`;
 
       it("serves every skill of a set whatever its neighbours hold", () => {
          writeSkill(MAIN, "a-charts");
@@ -2410,7 +2418,7 @@ describe("readPackageWorkflows", () => {
          expect(refusals(result)).toEqual([]);
       });
 
-      it("does not read what the walk never reads: node_modules, and a path over its length cap", () => {
+      it("does not descend what the walk never descends: node_modules, and a path over its length cap", () => {
          writeSkill(MAIN, "a-vendored");
          write(`${MAIN}/a-vendored/assets/chart.js`, "x");
          fillDir(
@@ -2429,21 +2437,81 @@ describe("readPackageWorkflows", () => {
          expect(refusals(result)).toEqual([]);
       });
 
-      it("sets only the skill that outgrows the search aside, naming it and the cap, rather than serve what cannot be ruled out", () => {
-         writeSkill(MAIN, "a-big");
-         fillDir("a-big", "assets", REFERENCE_MAX_EXAMINED + 1);
-         // Past the cap, where the search stops: a publisher.json it never reached.
-         write(`${MAIN}/a-big/assets/zz/publisher.json`, "{}");
-         writeSkill(MAIN, "b-plain");
-         write(`${MAIN}/b-plain/assets/logo.txt`, "x");
+      it("counts the names it skips, since it listed them, and sets the skill aside past the bound", () => {
+         writeSkill(MAIN, "a-pyc");
+         // Each directory is within the listing bound; together they are past the set's.
+         fillDir(
+            "a-pyc",
+            "assets/p1",
+            Math.ceil(REFERENCE_MAX_EXAMINED * 0.6),
+            ".pyc",
+         );
+         fillDir(
+            "a-pyc",
+            "assets/p2",
+            Math.ceil(REFERENCE_MAX_EXAMINED * 0.6),
+            ".pyc",
+         );
          const result = read(undefined, { house: { path: MAIN } });
-         expect(names(result)).toEqual(["b-plain"]);
+         expect(names(result)).toEqual([]);
+         expectWarning(
+            result.warnings,
+            SKILL_FINDING,
+            HOUSE,
+            `Package skill '${MAIN}/a-pyc' is not served: '${MAIN}/a-pyc' ${OVER}`,
+         );
+      });
+
+      it("sets aside the skill that outgrows the set's budget with its own message, and each later skill with something to search with the spent one, in its own set only", () => {
+         writeSkill(MAIN, "a-big");
+         // One directory past the listing bound, which the search cannot list whole.
+         fillDir("a-big", "assets", REFERENCE_MAX_EXAMINED + 1);
+         writeSkill(MAIN, "b-bare");
+         writeSkill(MAIN, "c-late");
+         write(`${MAIN}/c-late/assets/logo.txt`, "x");
+         writeSkill(SECOND, "solo");
+         write(`${SECOND}/solo/assets/logo.txt`, "x");
+         const result = read(undefined, {
+            house: { path: MAIN },
+            extra: { path: SECOND },
+         });
+         expect(names(result)).toEqual(["b-bare"]);
+         expect(names(result, EXTRA)).toEqual(["solo"]);
+         expect(refusals(result)).toHaveLength(2);
+         expectWarning(
+            result.warnings,
+            SKILL_FINDING,
+            HOUSE,
+            `Package skill '${MAIN}/a-big' is not served: '${MAIN}/a-big' ${OVER}`,
+         );
+         expectWarning(
+            result.warnings,
+            SKILL_FINDING,
+            HOUSE,
+            `Package skill '${MAIN}/c-late' is not served: '${MAIN}/c-late' ${SPENT}`,
+         );
+         expect(
+            result.warnings.some((w) =>
+               w.message.includes(`'${MAIN}/c-late' ${SPENT}; remove files`),
+            ),
+         ).toBe(false);
+      });
+
+      it("charges the budget to the set, so skills that each fit still run it out together", () => {
+         writeSkill(MAIN, "a-one");
+         fillDir("a-one", "assets", 6000);
+         writeSkill(MAIN, "a-two");
+         fillDir("a-two", "assets", REFERENCE_MAX_EXAMINED - 6000);
+         writeSkill(MAIN, "b-next");
+         write(`${MAIN}/b-next/assets/logo.txt`, "x");
+         const result = read(undefined, { house: { path: MAIN } });
+         expect(names(result)).toEqual(["a-one", "a-two"]);
          expect(refusals(result)).toHaveLength(1);
          expectWarning(
             result.warnings,
             SKILL_FINDING,
             HOUSE,
-            `Package skill '${MAIN}/a-big' is not served: '${MAIN}/a-big' has more than ${REFERENCE_MAX_EXAMINED} entries under assets/ to check for a publisher.json`,
+            `Package skill '${MAIN}/b-next' is not served: '${MAIN}/b-next' ${SPENT}`,
          );
       });
    });

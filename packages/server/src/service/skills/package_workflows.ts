@@ -570,6 +570,8 @@ function scanSkills(
       isSkill: false,
    };
    const { packageRoot } = scan;
+   // One budget for every skill's search in this set, so the time a set can cost is bounded whatever its skills hold.
+   const manifestEntries = { left: REFERENCE_MAX_EXAMINED };
    const unserved = (message: string) => {
       scan.warnings.push(message);
    };
@@ -687,7 +689,7 @@ function scanSkills(
       for (const w of found.warnings) {
          scan.warnings.push(`Package skill '${rel}': ${w}.`);
       }
-      const nested = skillManifest(packageRoot, skillDir);
+      const nested = skillManifest(packageRoot, skillDir, manifestEntries);
       scan.skills.push({
          dirName: entry.name,
          rel,
@@ -702,8 +704,11 @@ function scanSkills(
          ...(nested.found !== undefined && {
             manifestRefusal: `'${rel}/${displayPath(nested.found)}' is a publisher.json, which would make its directory a second package root; remove it or rename it`,
          }),
-         ...(nested.unchecked && {
-            manifestRefusal: `'${rel}' has more than ${REFERENCE_MAX_EXAMINED} entries under assets/ to check for a publisher.json; remove files from it`,
+         ...(nested.unchecked === "over" && {
+            manifestRefusal: `'${rel}' has more entries under assets/ to check for a publisher.json than the set's search budget of ${REFERENCE_MAX_EXAMINED} entries has left; remove files from it`,
+         }),
+         ...(nested.unchecked === "spent" && {
+            manifestRefusal: `'${rel}' could not be checked for a publisher.json: the set's search budget of ${REFERENCE_MAX_EXAMINED} entries was already spent on earlier skills`,
          }),
       });
    }
@@ -1263,52 +1268,55 @@ function manifestAt(
 /**
  * The path, relative to the skill directory, of the first publisher.json inside
  * a skill: in the directory, in its `reference/` or `references/`, or anywhere
- * below its `assets/`. `unchecked` when the skill holds more than
- * `REFERENCE_MAX_EXAMINED` entries under `assets/` to look through, which the
- * caller treats as a find, since a manifest it did not reach is still one. It
+ * below its `assets/`. `unchecked` when the search could not finish, which the
+ * caller treats as a find, since a manifest it did not reach is still one: `over`
+ * when this skill ran `entries`, the set's budget, out (or holds a directory
+ * past the listing bound), `spent` when earlier skills had spent it already. It
  * reads the real tree, folders a `.skillignore` ignores included: that file
  * decides what a skill is made of, never what may sit in it. It descends what
- * skillFiles descends otherwise (no dot name, `node_modules`, `__pycache__` or
- * path over `ASSET_PATH_MAX_CHARS`), so a skill is never set aside for files
- * nothing serves. It follows a link only to a directory inside the package and
- * reads a reference folder or a linked `assets/` for at most
- * `REFERENCE_MAX_EXAMINED` entries, so a link cannot make it scan the
- * filesystem, list a huge directory whole, or report on files outside the
- * package.
+ * skillFiles descends otherwise (no `node_modules`, `__pycache__` or path over
+ * `ASSET_PATH_MAX_CHARS`), so a skill is never set aside for files nothing
+ * serves, but every entry it lists counts, a skipped one included. It follows a
+ * link only to a directory inside the package and lists each directory, a
+ * linked `assets/` among them, for at most `REFERENCE_MAX_EXAMINED` entries, so
+ * a link cannot make it scan the filesystem, list a huge directory whole, or
+ * report on files outside the package.
  */
 function skillManifest(
    packageRoot: string,
    skillDir: string,
-): { found?: string; unchecked?: true } {
-   const entries = { left: REFERENCE_MAX_EXAMINED };
-   let unchecked = false;
+   entries: { left: number },
+): { found?: string; unchecked?: "over" | "spent" } {
+   const result: { unchecked?: "over" | "spent" } = {};
+   let charged = 0;
    const below = (
       dir: string,
       rel: string,
       depth: number,
    ): string | undefined => {
-      let found: fs.Dirent[];
+      let listed: ReturnType<typeof listBounded>;
       try {
          const inside = insidePackage(packageRoot, dir);
          if (inside === undefined) return undefined;
-         // Only assets/ itself can be a link here (a linked entry is never descended); it may lead anywhere in the package.
-         found = fs.lstatSync(dir).isSymbolicLink()
-            ? listBounded(inside, () => false).entries
-            : fs.readdirSync(inside, { withFileTypes: true });
+         // assets/ itself can be a link leading anywhere in the package; a linked entry below it is never descended.
+         listed = listBounded(inside, () => false);
       } catch {
          return undefined;
       }
-      for (const entry of found.sort((a, b) => compareText(a.name, b.name))) {
+      for (const entry of listed.entries.sort((a, b) =>
+         compareText(a.name, b.name),
+      )) {
+         if (entries.left-- <= 0) {
+            result.unchecked = charged > 0 ? "over" : "spent";
+            return undefined;
+         }
+         charged++;
          const relative = `${rel}/${entry.name}`;
          if (
             builtInExcluded(entry.name, entry.isDirectory()) ||
             relative.length > ASSET_PATH_MAX_CHARS
          ) {
             continue;
-         }
-         if (entries.left-- <= 0) {
-            unchecked = true;
-            return undefined;
          }
          if (isManifest(entry.name)) return relative;
          if (entry.isDirectory() && depth < ASSET_MAX_DEPTH) {
@@ -1317,9 +1325,12 @@ function skillManifest(
                relative,
                depth + 1,
             );
-            if (deeper !== undefined || unchecked) return deeper;
+            if (deeper !== undefined || result.unchecked !== undefined) {
+               return deeper;
+            }
          }
       }
+      if (listed.cut) result.unchecked = "over";
       return undefined;
    };
    for (const place of ["", ...REFERENCE_DIRS]) {
@@ -1331,7 +1342,7 @@ function skillManifest(
       if (found !== undefined) return { found: path.posix.join(place, found) };
    }
    const found = below(path.join(skillDir, "assets"), "assets", 1);
-   return found !== undefined ? { found } : unchecked ? { unchecked } : {};
+   return found !== undefined ? { found } : result;
 }
 
 /** Read a Markdown file a workflow serves as its instructions, capped at 16 KiB. */
