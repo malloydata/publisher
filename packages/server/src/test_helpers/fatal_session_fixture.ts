@@ -15,7 +15,7 @@
  *   disposed with its transaction open after its metadata connection died. The
  *   conninfo is in the environment, out of `ps`.
  */
-import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { attachDuckLakeReadWrite } from "../service/connection";
@@ -102,6 +102,8 @@ async function local() {
          out.later = await refusal(session);
       });
       out.disposed = true;
+      // Whether the catalog file kept its write-ahead log instead of checkpointing on close.
+      out.walKept = existsSync(join(dir, "catalog.ducklake.wal"));
       return out;
    }
 
@@ -126,12 +128,17 @@ async function attachPostgres() {
    const connectionString = process.env.FATAL_FIXTURE_CONNINFO;
    if (!connectionString) throw new Error("FATAL_FIXTURE_CONNINFO is not set");
    const made = createIsolatedBuildSession("fatal_fixture_pg");
-   await attachDuckLakeReadWrite(made.session, "lake", {
-      catalog: {
-         postgresConnection: { connectionString },
-         metadataSchema: "lake",
-      },
-   } as Parameters<typeof attachDuckLakeReadWrite>[2]);
+   try {
+      await attachDuckLakeReadWrite(made.session, "lake", {
+         catalog: {
+            postgresConnection: { connectionString },
+            metadataSchema: "lake",
+         },
+      } as Parameters<typeof attachDuckLakeReadWrite>[2]);
+   } catch (error) {
+      await made.dispose();
+      throw error;
+   }
    return made;
 }
 

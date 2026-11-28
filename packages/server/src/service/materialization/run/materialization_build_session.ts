@@ -52,7 +52,10 @@ import {
 import { logger } from "../../../logger";
 import { errorCodeOf } from "../../../error_code";
 import { errMessage } from "../../../utils";
-import { tokenizeDuckDBSQL } from "../../duckdb_lockdown";
+import {
+   runAsInternalStatement,
+   tokenizeDuckDBSQL,
+} from "../../duckdb_lockdown";
 import {
    quoteIdentifier,
    quoteManifestTablePath,
@@ -357,8 +360,17 @@ function isRollback(sql: string): boolean {
    );
 }
 
+/** An error DuckDB answered a statement with, as opposed to one raised before it reached native code. */
+const DUCKDB_ERROR = /^[A-Za-z ]+ Error:/;
+
 /** A statement DuckDB refused to parse, so nothing of it ran. */
 const PARSER_ERROR = /^Parser Error:/;
+
+/** Asks whether a transaction is open: a BEGIN inside one fails, and with none open the pair leaves none. */
+const TRANSACTION_PROBE = "BEGIN; ROLLBACK";
+
+/** After a fatal error, keeps a local DuckDB-file catalog's write-ahead log instead of checkpointing possibly broken in-memory state into it on close. */
+const NO_SHUTDOWN_CHECKPOINT = "PRAGMA disable_checkpoint_on_shutdown";
 
 /**
  * The connection of a build-scoped session. It opens its instance with
@@ -370,11 +382,11 @@ const PARSER_ERROR = /^Parser Error:/;
  * every transaction on the session: after a fatal error, an error that aborts
  * the open transaction, or a cancel, every statement but a rollback is refused.
  * The check, the statement and the latch run under one hold of the statement
- * gate, so no other statement interleaves. The gaps: DuckDB's own default, a
- * Binder or Catalog error mid-script leaves the earlier statements committable;
- * and a DuckLake catalog kept in a local DuckDB file is still checkpointed on
- * close after a fatal error (production catalogs keep their metadata in
- * Postgres). Revisit both on DuckDB >= 2.0.1.
+ * gate, so no other statement interleaves. After a fatal error it also turns
+ * off the checkpoint on close, so a DuckLake catalog kept in a local DuckDB
+ * file keeps its write-ahead log. The one gap is DuckDB's own default: a Binder
+ * or Catalog error mid-script leaves the earlier statements committable.
+ * Revisit both on DuckDB >= 2.0.1.
  */
 export class IsolatedSessionConnection extends DuckDBConnection {
    /** The first INTERNAL or FATAL error: permanent. */
@@ -388,6 +400,11 @@ export class IsolatedSessionConnection extends DuckDBConnection {
    /** The first fatal error the session latched. */
    get fatal(): Error | undefined {
       return this.fatalError;
+   }
+
+   /** Whether the native connection exists: false until the instance is up, and for good if it failed to open. */
+   get opened(): boolean {
+      return this.connection !== null;
    }
 
    /** Refuse everything but a rollback from now on, and interrupt the statement in flight ({@link interruptOnAbort}). */
@@ -407,16 +424,18 @@ export class IsolatedSessionConnection extends DuckDBConnection {
       const rollback = isRollback(sql);
       return withStatementGate(this, async () => {
          if (!rollback) this.refuseIfEnded();
-         let ran = true;
+         let answered = true;
          try {
             return await super.runDuckDBQuery(sql);
          } catch (err) {
-            ran = !PARSER_ERROR.test(errMessage(err));
+            const message = errMessage(err);
+            answered =
+               DUCKDB_ERROR.test(message) && !PARSER_ERROR.test(message);
             await this.latch(err, rollback);
             throw err;
          } finally {
-            // DuckDB clears the transaction before it rolls back, so even a failed rollback leaves none open; a parse error ran nothing.
-            if (rollback && ran) this.abortedBy = undefined;
+            // DuckDB clears the transaction before it rolls back, so even a failed rollback leaves none open; a refusal or a parse error never reached it.
+            if (rollback && answered) this.abortedBy = undefined;
          }
       });
    }
@@ -449,7 +468,7 @@ export class IsolatedSessionConnection extends DuckDBConnection {
    private async latch(err: unknown, rollback: boolean): Promise<void> {
       const error = err instanceof Error ? err : new Error(String(err));
       if (FATAL_ERROR.test(error.message)) {
-         this.fatalError ??= error;
+         await this.latchFatal(error);
       } else if (
          !rollback &&
          !this.cancelled &&
@@ -459,17 +478,34 @@ export class IsolatedSessionConnection extends DuckDBConnection {
       }
    }
 
+   /** The first fatal error is permanent; it also turns off the checkpoint on close. */
+   private async latchFatal(error: Error): Promise<void> {
+      if (this.fatalError) return;
+      this.fatalError = error;
+      try {
+         await runAsInternalStatement(NO_SHUTDOWN_CHECKPOINT, () =>
+            super.runDuckDBQuery(NO_SHUTDOWN_CHECKPOINT),
+         );
+      } catch {
+         // Best effort: the session is already refusing everything.
+      }
+   }
+
    /**
-    * Whether a transaction is open, asked of DuckDB: a BEGIN inside one fails
-    * and leaves it untouched, and with none open the pair leaves none. Any
-    * other failure counts as open, so the next rollback clears it.
+    * Whether a transaction is open, asked of DuckDB as Publisher's own
+    * statement (a locked instance admits it). A fatal error from the probe is
+    * latched; any failure counts as open, so the next rollback clears it.
     */
    private async transactionIsOpen(): Promise<boolean> {
       this.probing = true;
       try {
-         await super.runDuckDBQuery("BEGIN; ROLLBACK");
+         await runAsInternalStatement(TRANSACTION_PROBE, () =>
+            super.runDuckDBQuery(TRANSACTION_PROBE),
+         );
          return false;
-      } catch {
+      } catch (err) {
+         const error = err instanceof Error ? err : new Error(String(err));
+         if (FATAL_ERROR.test(error.message)) await this.latchFatal(error);
          return true;
       } finally {
          this.probing = false;
@@ -553,6 +589,8 @@ export function createIsolatedBuildSession(sessionName: string): {
    }
    const dispose = async () => {
       await rollbackBeforeDisconnect(session, sessionName);
+      // An open still in flight would assign its connection after the close, and leak it; it never rejects.
+      await session.connecting;
       // close() leaves the native ClientContext, with its attaches and credentials, alive until disconnected.
       try {
          await session.close();
@@ -599,6 +637,8 @@ async function rollbackBeforeDisconnect(
          fatalType,
       });
    }
+   // No native connection (never opened, or its open failed) means no transaction, and a ROLLBACK would only raise the open's error.
+   if (!session.opened) return;
    try {
       // Queues behind a statement still in flight; no isolated session streams, which is what would hold the gate.
       await session.runRawSQL("ROLLBACK");

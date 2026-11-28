@@ -24,6 +24,7 @@ import {
 import { storageDestinationRoot } from "../../connection_config";
 import { logger } from "../../../logger";
 import { installDuckDBInstanceSharing } from "../../duckdb_instance_sharing";
+import { lockDownDuckDBSession } from "../../duckdb_lockdown";
 import type { components } from "../../../api";
 import {
    buildDownstreamIntoStorage,
@@ -1632,6 +1633,7 @@ describe("IsolatedSessionConnection", () => {
          insertAfterFatal?: string;
          later: { message: string | null; causeIsInternal: boolean };
          disposed: boolean;
+         walKept: boolean;
       };
       const result = JSON.parse(line!.slice("RESULT ".length)) as {
          propagated: Scenario;
@@ -1648,9 +1650,12 @@ describe("IsolatedSessionConnection", () => {
       expect(propagated.later.message).toContain("fatal DuckDB error");
       expect(propagated.later.causeIsInternal).toBe(true);
       expect(propagated.disposed).toBe(true);
+      // The catalog is a DuckDB file: a fatal error turns the checkpoint on close off, so its write-ahead log stays.
+      expect(propagated.walKept).toBe(true);
       expect(swallowed.insertAfterFatal).toContain("fatal DuckDB error");
       expect(swallowed.transaction).toContain("fatal DuckDB error");
       expect(swallowed.disposed).toBe(true);
+      expect(swallowed.walKept).toBe(true);
       // Neither run's insert committed.
       expect(result.unchanged).toBe(3);
    }, 130_000);
@@ -1847,6 +1852,111 @@ describe("IsolatedSessionConnection", () => {
          expect(await count(session)).toBe(4);
       } finally {
          await dispose();
+      }
+   });
+
+   /** Runs `fn` with the base connection's statement runner replaced by `replace`, which sees each statement and may answer it. */
+   async function withBaseRunner<T>(
+      replace: (
+         sql: string,
+         run: () => Promise<unknown>,
+      ) => Promise<unknown> | undefined,
+      fn: () => Promise<T>,
+   ): Promise<T> {
+      const base = DuckDBConnection.prototype as unknown as {
+         runDuckDBQuery(this: unknown, sql: string): Promise<unknown>;
+      };
+      const original = base.runDuckDBQuery;
+      base.runDuckDBQuery = function (this: unknown, sql: string) {
+         return (
+            replace(sql, () => original.call(this, sql)) ??
+            original.call(this, sql)
+         );
+      };
+      try {
+         return await fn();
+      } finally {
+         base.runDuckDBQuery = original;
+      }
+   }
+
+   it("latches a fatal error the transaction probe itself raises, and refuses everything but a rollback after it", async () => {
+      const { session, dispose } = createIsolatedBuildSession("probe_fatal");
+      try {
+         await withBaseRunner(
+            (sql) =>
+               sql === "BEGIN; ROLLBACK"
+                  ? Promise.reject(new Error("INTERNAL Error: x"))
+                  : undefined,
+            () => errorOf(session.runSQL("SELECT CAST('x' AS INTEGER)")),
+         );
+         expect(session.fatal?.message).toContain("INTERNAL Error: x");
+         expect((await errorOf(session.runSQL("SELECT 1")))?.message).toContain(
+            "fatal DuckDB error",
+         );
+         // A rollback still runs; DuckDB answers it as there is nothing to roll back.
+         expect((await errorOf(session.runSQL("ROLLBACK")))?.message).toContain(
+            "no transaction is active",
+         );
+      } finally {
+         await dispose();
+      }
+   });
+
+   it("asks its transaction probe as Publisher's own statement, which a locked instance admits", async () => {
+      const { session, dispose } = createIsolatedBuildSession("probe_locked");
+      try {
+         await lockDownDuckDBSession(session);
+         expect(
+            (await errorOf(session.runSQL("SELECT CAST('x' AS INTEGER)")))
+               ?.message,
+         ).toContain("Conversion Error");
+         // Refused as open if the lockdown had refused the probe's two statements.
+         expect((await session.runSQL("SELECT 1 AS one")).rows).toEqual([
+            { one: 1 },
+         ]);
+      } finally {
+         await dispose();
+      }
+   });
+
+   it("keeps an aborted transaction latched through a rollback that never reached DuckDB", async () => {
+      const { dir, session, dispose } = await seededLake();
+      try {
+         await session.runSQL("BEGIN TRANSACTION");
+         await session.runSQL("INSERT INTO lake.t VALUES (4)");
+         await errorOf(session.runSQL("INSERT INTO lake.t VALUES (NULL)"));
+         const refused = await withBaseRunner(
+            (sql) =>
+               sql === "ROLLBACK"
+                  ? Promise.reject(new Error("Connection not open"))
+                  : undefined,
+            () => errorOf(session.runSQL("ROLLBACK")),
+         );
+         expect(refused?.message).toBe("Connection not open");
+         expect((await errorOf(session.runSQL("COMMIT")))?.message).toContain(
+            "transaction was aborted",
+         );
+         await session.runSQL("ROLLBACK");
+         expect(await count(session)).toBe(3);
+      } finally {
+         await dispose();
+      }
+      expect(await countInFreshSession(dir)).toBe(3);
+   });
+
+   it("runs no statement and logs no warning to dispose a session that never opened", async () => {
+      const { session, dispose } = createIsolatedBuildSession("never_opened");
+      const raw = spyOn(session, "runRawSQL");
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         expect(session.opened).toBe(false);
+         await dispose();
+         expect(raw).not.toHaveBeenCalled();
+         expect(warn).not.toHaveBeenCalled();
+      } finally {
+         raw.mockRestore();
+         warn.mockRestore();
       }
    });
 
