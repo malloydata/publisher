@@ -500,7 +500,7 @@ conductor. Do not:
 ## Prime directives
 
 - Improve edits the model repo and nothing else: a `.malloy` file, or a package
-  skill in one of the skill sets of the package's `default` workflow. No
+  skill in the package's `default` skill set. No
   question text, qids, or expected values in any name, doc, or comment.
 - **You are measuring a model, not reviewing this harness.** Read a script when
   a number you have to report cannot be explained otherwise, and stop there. Do

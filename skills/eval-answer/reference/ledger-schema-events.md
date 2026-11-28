@@ -213,7 +213,7 @@ Written by `eval-loop`, one per acceptance check decision, BEFORE any checkpoint
 |---|---|
 | `issue_ids` | |
 | `decision` | `accepted` / `rejected`. |
-| `class` | `docs` / `definition` / `skill` / `retrieval` / `justified`. `skill` is an edit to a package skill in a skill set of the package's `default` workflow; it never takes the documentation shortcut in the acceptance check. |
+| `class` | `docs` / `definition` / `skill` / `retrieval` / `justified`. `skill` is an edit to a package skill in the package's `default` skill set; it never takes the documentation shortcut in the acceptance check. |
 | `baselineRunId` / `finalRunIds` | Plural: acceptance needs two independent runs. |
 | `regressions` | Case ids whose verdict got worse vs baseline. Must be empty to accept. |
 | `holdoutDelta` | Confident-verdict delta on the holdout slice. |

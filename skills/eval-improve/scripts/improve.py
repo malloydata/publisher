@@ -195,7 +195,7 @@ MAKING YOUR EDIT REACH THE SERVER
 After each edit run `bash ./sync_and_reload.sh`. It prints `sourceContentSha`.
 If that value does not change, your edit did NOT reach the server and every
 probe you run afterwards is testing the old model. This covers a package skill
-in a workflow's skill set as well as a .malloy file: both are part of the hash.
+in a skill set as well as a .malloy file: both are part of the hash.
 
 One edit for the cluster's shared root cause, not one per case.
 

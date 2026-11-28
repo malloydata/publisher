@@ -49,8 +49,7 @@ class InstallPackageSkills(unittest.TestCase):
         self.package = self.tmp / "pkg"
         (self.package).mkdir()
         (self.package / "publisher.json").write_text("{}")
-        self.pkg_skills = (self.package / "workflows" / "default"
-                           / "skill_sets" / "house")
+        self.pkg_skills = self.package / "skill_sets" / "house"
         write_skill(self.pkg_skills, "house-conventions", "OURS")
         evals = self.package / "evals" / "set-a"
         evals.mkdir(parents=True)
@@ -194,12 +193,13 @@ class ResolveArm(unittest.TestCase):
     def setUp(self) -> None:
         self.tmp = pathlib.Path(tempfile.mkdtemp(prefix="arm-test-"))
         self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
-        # The package's default workflow lists one skill set, as a migrated
-        # package does.
+        # The package's `default` set is declared at a folder whose name is
+        # not `default`, so a reader that took the folder for the set's name
+        # (or the set's name for its folder) finds nothing.
         self.pkg = self.tmp / "pkg"
-        self.pkg_skills = self.pkg / "workflows" / "default" / "skill_sets" / "house"
+        self.pkg_skills = self.pkg / "skill_sets" / "house"
         write_skill(self.pkg_skills, "house", "OURS")
-        self.manifest(["workflows/default/skill_sets/house"])
+        self.manifest("skill_sets/house")
         # Stub the HTTP layer: nothing here may reach a network.
         self.served_dir = self.pkg
         for name, fake in (
@@ -213,10 +213,13 @@ class ResolveArm(unittest.TestCase):
     def serve(self, names: list[str]) -> None:
         self.served_names = names
 
-    def manifest(self, sets: list[str]) -> None:
+    def manifest(self, default_path: str | None, **others: str) -> None:
+        """Declare the `default` set at `default_path` and each `others` set at its path."""
+        sets = {name: {"path": path} for name, path in others.items()}
+        if default_path is not None:
+            sets["default"] = {"path": default_path}
         (self.pkg / "publisher.json").write_text(json.dumps(
-            {"name": "pkg",
-             "workflows": {"default": {"skillSets": sets}}}))
+            {"name": "pkg", "skillSets": sets}))
 
     def args(self, mode: str, override=None) -> argparse.Namespace:
         return argparse.Namespace(
@@ -232,7 +235,7 @@ class ResolveArm(unittest.TestCase):
         self.assertEqual(a.package_skills_dirs, [self.pkg_skills])
         self.assertRegex(a.package_skills_sha, r"^[0-9a-f]{64}$")
 
-    def test_install_reads_the_default_workflows_sets_from_the_manifest(self):
+    def test_install_reads_the_default_sets_path_from_the_manifest(self):
         # No --package-skills-dir: the served copy's publisher.json decides,
         # and there is no folder called `skills` anywhere in it.
         self.serve(["house"])
@@ -241,31 +244,32 @@ class ResolveArm(unittest.TestCase):
         self.assertEqual(a.package_skills_dirs, [self.pkg_skills])
         self.assertEqual(a.package_skill_names, ["house"])
 
-    def test_install_reads_every_set_in_the_order_listed(self):
-        write_skill(self.pkg / "workflows" / "weekly" / "skill_sets" / "extra",
-                    "extra")
-        self.manifest(["workflows/default/skill_sets/house",
-                       "workflows/weekly/skill_sets/extra"])
-        self.serve(["extra", "house"])
+    def test_install_reads_only_the_default_set(self):
+        # A named set a workflow lists is not what the server advertises to
+        # every session, so it is not what the install arm may copy.
+        write_skill(self.pkg / "skill_sets" / "analyst", "extra")
+        self.manifest("skill_sets/house", analyst="skill_sets/analyst")
+        self.serve(["house"])
         a = self.args("install")
         rb.resolve_package_skills(a)
-        self.assertEqual(a.package_skill_names, ["extra", "house"])
-        self.assertEqual([p.name for p in a.package_skills_dirs],
-                         ["house", "extra"])
+        self.assertEqual(a.package_skill_names, ["house"])
+        self.assertEqual(a.package_skills_dirs, [self.pkg_skills])
 
-    def test_a_root_skills_dir_listed_as_a_set_is_read(self):
+    def test_a_root_skills_dir_declared_as_default_is_read(self):
         write_skill(self.pkg / "skills", "legacy")
-        self.manifest(["skills"])
+        self.manifest("skills")
         self.serve(["legacy"])
         a = self.args("install")
         rb.resolve_package_skills(a)
         self.assertEqual(a.package_skill_names, ["legacy"])
 
     def test_a_default_the_server_refuses_installs_and_pins_nothing(self):
-        # The server refuses the whole workflow for one missing set, so it
-        # serves no package skills; the valid set beside it must not leak
-        # into the install arm or the pin.
-        self.manifest(["workflows/default/skill_sets/house", "nope"])
+        # The server refuses a set whose declaration is bad (an empty
+        # description, say) and serves no package skills, though its folder
+        # holds one; that skill must not leak into the install arm or the pin.
+        (self.pkg / "publisher.json").write_text(json.dumps(
+            {"name": "pkg", "skillSets": {
+                "default": {"path": "skill_sets/house", "description": ""}}}))
         self.serve([])
         with self.assertRaises(SystemExit):
             rb.resolve_package_skills(self.args("install"))
@@ -281,16 +285,16 @@ class ResolveArm(unittest.TestCase):
         self.assertIn("someone-elses", str(raised.exception))
 
     def test_install_refuses_a_set_that_holds_no_skills(self):
-        empty = self.pkg / "workflows" / "default" / "skill_sets" / "empty"
+        empty = self.pkg / "skill_sets" / "empty"
         empty.mkdir()
-        self.manifest(["workflows/default/skill_sets/empty"])
+        self.manifest("skill_sets/empty")
         self.serve([])
         with self.assertRaises(SystemExit):
             rb.resolve_package_skills(self.args("install"))
 
     def test_the_tool_arm_pins_the_sha_of_the_default_sets(self):
         # The pin that tells two runs apart by guidance must not go null for
-        # a package laid out as workflows.
+        # a package whose skills live in a named set folder.
         self.serve(["house"])
         a = self.args("tool")
         rb.resolve_package_skills(a)
@@ -315,7 +319,7 @@ class ResolveArm(unittest.TestCase):
         rb.resolve_package_skills(a)
         self.assertIsNone(a.package_skills_sha)
 
-    def test_a_package_with_no_default_workflow_has_nothing_to_install(self):
+    def test_a_package_with_no_default_set_has_nothing_to_install(self):
         (self.pkg / "publisher.json").write_text('{"name": "pkg"}')
         self.serve([])
         with self.assertRaises(SystemExit):
@@ -386,7 +390,7 @@ class ResolveArm(unittest.TestCase):
         (pkg / "evals").mkdir(parents=True)
         (pkg / "house").symlink_to(pkg / "evals", target_is_directory=True)
         (pkg / "publisher.json").write_text(json.dumps(
-            {"workflows": {"default": {"skillSets": ["house"]}}}))
+            {"skillSets": {"default": {"path": "house"}}}))
         self.served_dir = pkg
         with self.assertRaises(SystemExit):
             rb.resolve_package_skills(self.args("tool"))
@@ -398,7 +402,7 @@ class ResolveArm(unittest.TestCase):
         (pkg / "evals" / "house").mkdir(parents=True)
         (pkg / "sets").symlink_to(pkg / "evals", target_is_directory=True)
         (pkg / "publisher.json").write_text(json.dumps(
-            {"workflows": {"default": {"skillSets": ["sets/house"]}}}))
+            {"skillSets": {"default": {"path": "sets/house"}}}))
         self.served_dir = pkg
         with self.assertRaises(SystemExit):
             rb.resolve_package_skills(self.args("tool"))
