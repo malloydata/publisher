@@ -6,13 +6,15 @@
 // afterwards land in the cast columns. Each delta
 // is computed by the warehouse, uncast, so it relies on DuckDB converting the
 // warehouse's types on INSERT, which is what these tests pin.
-import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { afterEach, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { deltaStatements } from "./incremental_apply";
-import { createTableWithDeclaredTypes } from "./materialization_build_session";
+import {
+   createTableWithDeclaredTypes,
+   IsolatedSessionConnection,
+} from "./materialization_build_session";
 
 const DECLARED = [
    { name: "id", type: "number" },
@@ -27,7 +29,7 @@ const SEED = `SELECT * FROM (VALUES
    (3, TIMESTAMP '2026-02-20 00:00:00', 1)
 ) AS t(id, d, flag)`;
 
-let open: { conn: DuckDBConnection; dir: string } | undefined;
+let open: { conn: IsolatedSessionConnection; dir: string } | undefined;
 
 afterEach(async () => {
    if (!open) return;
@@ -37,11 +39,11 @@ afterEach(async () => {
    open = undefined;
 });
 
-async function lake(): Promise<DuckDBConnection> {
+async function lake(): Promise<IsolatedSessionConnection> {
    const dir = mkdtempSync(join(tmpdir(), "ducklake-types-"));
    // File-backed host: db-duckdb shares one in-memory instance between
    // connections, where another file's `lake` may still be attached.
-   const conn = new DuckDBConnection(
+   const conn = new IsolatedSessionConnection(
       "ducklake_types",
       join(dir, "host.duckdb"),
    );
@@ -57,7 +59,7 @@ async function lake(): Promise<DuckDBConnection> {
    return conn;
 }
 
-async function rows(conn: DuckDBConnection): Promise<unknown[]> {
+async function rows(conn: IsolatedSessionConnection): Promise<unknown[]> {
    const result = await conn.runSQL(
       "SELECT id, CAST(d AS VARCHAR) AS d, flag FROM lake.t ORDER BY id",
    );
@@ -204,7 +206,7 @@ describe("a delta into a table the build cast", () => {
       (4, TIMESTAMP '2026-02-25 00:00:00', 0)
    ) AS w(id, d, flag)`;
 
-   async function seeded(): Promise<DuckDBConnection> {
+   async function seeded(): Promise<IsolatedSessionConnection> {
       const conn = await lake();
       await createTableWithDeclaredTypes(conn, "lake.t", SEED, {
          columns: DECLARED,
@@ -340,7 +342,9 @@ describe("a Postgres build keeps a binary or interval column's warehouse type", 
 // replacement drops the layout, so the delta that follows writes unpartitioned
 // files.
 describe("a table an earlier partition= build laid out", () => {
-   async function laidOutFiles(conn: DuckDBConnection): Promise<string[]> {
+   async function laidOutFiles(
+      conn: IsolatedSessionConnection,
+   ): Promise<string[]> {
       const files = await conn.runSQL(
          "SELECT data_file FROM ducklake_list_files('lake', 't')",
       );

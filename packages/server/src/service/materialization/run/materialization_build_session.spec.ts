@@ -22,13 +22,19 @@ import {
    MaterializationEligibilityError,
 } from "../../../errors";
 import { storageDestinationRoot } from "../../connection_config";
+import { logger } from "../../../logger";
+import { installDuckDBInstanceSharing } from "../../duckdb_instance_sharing";
+import { lockDownDuckDBSession } from "../../duckdb_lockdown";
 import type { components } from "../../../api";
 import {
    buildDownstreamIntoStorage,
    buildSourceIntoStorage,
    type BuildSessionDeps,
    createIsolatedBuildSession,
+   type IsolatedSessionConnection,
    createTableAndDescribe,
+   inTransaction,
+   interruptOnAbort,
    partitionKeySql,
    partitionOrderSql,
    passthroughSourceType,
@@ -38,6 +44,8 @@ import {
    oneFileModel,
    assertSingleSelect,
 } from "./materialization_build_session";
+import { applyDeltaScript } from "./incremental_apply";
+import { sessionRunner } from "./incremental_storage";
 import { dropStorageTable, dropStorageTableSql } from "./storage_admin";
 import { identifier } from "../../malloy_text";
 import { declarableColumns } from "../stored_column_types";
@@ -864,7 +872,7 @@ describe("createTableAndDescribe (schema read-back window)", () => {
             }
             return { rows: [] };
          },
-      } as unknown as DuckDBConnection;
+      } as unknown as IsolatedSessionConnection;
       return { session, issued };
    };
 
@@ -907,7 +915,7 @@ describe("createTableAndDescribe (schema read-back window)", () => {
                rows: [{ column_name: "a", column_type: "VARCHAR" }],
             };
          },
-      } as unknown as DuckDBConnection;
+      } as unknown as IsolatedSessionConnection;
 
       const schema = await createTableAndDescribe(
          session,
@@ -985,7 +993,7 @@ describe("writePartitionedTable", () => {
             issued.push(sql.trim());
             return { rows: [] };
          },
-      } as unknown as DuckDBConnection;
+      } as unknown as IsolatedSessionConnection;
       return { session, issued };
    };
 
@@ -1505,5 +1513,584 @@ describe("a build that also reads another destination", () => {
       await assertSingleSelect(
          "WITH t AS (SELECT 1 AS x) SELECT x FROM t ORDER BY x",
       );
+   });
+});
+
+describe("IsolatedSessionConnection", () => {
+   const dirs: string[] = [];
+   afterEach(() => {
+      for (const dir of dirs.splice(0)) {
+         rmSync(dir, { recursive: true, force: true });
+      }
+   });
+
+   const tempDir = () => {
+      const dir = mkdtempSync(join(tmpdir(), "isolated-session-"));
+      dirs.push(dir);
+      return dir;
+   };
+
+   /** The lake's catalog and data live in `dir`, so a later session attaches the same tables. */
+   async function attachLake(
+      session: IsolatedSessionConnection,
+      dir: string,
+   ): Promise<void> {
+      await session.runSQL("INSTALL ducklake");
+      await session.runSQL("LOAD ducklake");
+      await session.runSQL(
+         `ATTACH 'ducklake:${join(dir, "catalog.ducklake")}' AS lake ` +
+            `(DATA_PATH '${join(dir, "data")}/', ENCRYPTED true, DATA_INLINING_ROW_LIMIT 0)`,
+      );
+   }
+
+   /** A lake with `lake.t(id NOT NULL)` holding 1, 2, 3, and the session that made it. */
+   async function seededLake() {
+      const dir = tempDir();
+      const made = createIsolatedBuildSession("isolated_lake");
+      await attachLake(made.session, dir);
+      await made.session.runSQL("CREATE TABLE lake.t(id INTEGER NOT NULL)");
+      await made.session.runSQL("INSERT INTO lake.t VALUES (1), (2), (3)");
+      return { dir, ...made };
+   }
+
+   const count = async (session: IsolatedSessionConnection) =>
+      Number(
+         (
+            (await session.runSQL("SELECT count(*) AS n FROM lake.t"))
+               .rows[0] as { n: unknown }
+         ).n,
+      );
+
+   /** What a fresh session on the same lake counts. */
+   async function countInFreshSession(dir: string): Promise<number> {
+      const fresh = createIsolatedBuildSession("isolated_fresh");
+      try {
+         await attachLake(fresh.session, dir);
+         return await count(fresh.session);
+      } finally {
+         await fresh.dispose();
+      }
+   }
+
+   const errorOf = (p: Promise<unknown>) =>
+      p.then(
+         () => undefined,
+         (e: unknown) => e as Error,
+      );
+
+   it("opens its instance with invalidation off, keeping the thread cap and lockdown Publisher adds", async () => {
+      installDuckDBInstanceSharing();
+      const { session, dispose } = createIsolatedBuildSession("isolated_opts");
+      try {
+         const setting = async (name: string) =>
+            String(
+               (
+                  (
+                     await session.runSQL(
+                        `SELECT current_setting('${name}') AS v`,
+                     )
+                  ).rows[0] as { v: unknown }
+               ).v,
+            );
+         expect(await setting("disable_database_invalidation")).toBe("true");
+         // The cap the spec preload (duckdb_test_threads.ts) puts on every instance.
+         expect(await setting("threads")).toBe(
+            process.env.PUBLISHER_TEST_DUCKDB_THREADS ?? "2",
+         );
+         expect(await setting("secret_directory")).toContain(
+            "no-persistent-secrets",
+         );
+      } finally {
+         await dispose();
+      }
+   });
+
+   it("fails a fatal error's transaction and survives it: the process lives, a swallowed error cannot commit", async () => {
+      const child = spawnSync(
+         process.execPath,
+         [
+            join(
+               import.meta.dir,
+               "../../../test_helpers/fatal_session_fixture.ts",
+            ),
+         ],
+         {
+            cwd: join(import.meta.dir, "../../../.."),
+            encoding: "utf8",
+            timeout: 120_000,
+         },
+      );
+      // Exit 134 is the abort of DuckDB 1.5's destructor, which the session contains.
+      expect({ status: child.status, stderr: child.stderr }).toMatchObject({
+         status: 0,
+      });
+      const line = child.stdout
+         .split("\n")
+         .find((l) => l.startsWith("RESULT "));
+      type Scenario = {
+         secondReadError: string;
+         transaction: string;
+         insertAfterFatal?: string;
+         later: { message: string | null; causeIsInternal: boolean };
+         disposed: boolean;
+         walKept: boolean;
+      };
+      const result = JSON.parse(line!.slice("RESULT ".length)) as {
+         propagated: Scenario;
+         swallowed: Scenario;
+         unchanged: number;
+      };
+      const { propagated, swallowed } = result;
+      // The canary: when the second read stops failing, DuckDB has fixed duckdb#24311 (v2.0.0).
+      expect(
+         propagated.secondReadError,
+         "The second read of a cached encrypted Parquet file no longer fails: DuckDB fixed duckdb#24311 (v2.0.0), so this trigger is gone. Point this containment test at another fatal trigger, and revisit IsolatedSessionConnection's invalidation override with the DuckDB 2.0 upgrade (the metadata cache stays off regardless: it measured no request savings)",
+      ).toContain("INTERNAL Error");
+      expect(propagated.transaction).toContain("INTERNAL Error");
+      expect(propagated.later.message).toContain("fatal DuckDB error");
+      expect(propagated.later.causeIsInternal).toBe(true);
+      expect(propagated.disposed).toBe(true);
+      // The catalog is a DuckDB file: a fatal error turns the checkpoint on close off, so its write-ahead log stays.
+      expect(propagated.walKept).toBe(true);
+      expect(swallowed.insertAfterFatal).toContain("fatal DuckDB error");
+      expect(swallowed.transaction).toContain("fatal DuckDB error");
+      expect(swallowed.disposed).toBe(true);
+      expect(swallowed.walKept).toBe(true);
+      // Neither run's insert committed.
+      expect(result.unchanged).toBe(3);
+   }, 130_000);
+
+   it("refuses the COMMIT after an ordinary error the body swallowed", async () => {
+      const { dir, session, dispose } = await seededLake();
+      try {
+         const error = await errorOf(
+            inTransaction(session, "lake.t", async () => {
+               await session.runSQL("INSERT INTO lake.t VALUES (4)");
+               await errorOf(
+                  session.runSQL("INSERT INTO lake.t VALUES (NULL)"),
+               );
+            }),
+         );
+         expect(error?.message).toContain("transaction was aborted");
+         expect(error?.cause).toBeInstanceOf(Error);
+         expect((error!.cause as Error).message).toContain("NOT NULL");
+         expect(await count(session)).toBe(3);
+      } finally {
+         await dispose();
+      }
+      expect(await countInFreshSession(dir)).toBe(3);
+   });
+
+   it("refuses the COMMIT after an ordinary error in a script sent as one statement, and a rollback restores the table", async () => {
+      const { dir, session, dispose } = await seededLake();
+      try {
+         const script = await errorOf(
+            session.runSQL(
+               "BEGIN; INSERT INTO lake.t VALUES (4); INSERT INTO lake.t VALUES (NULL); COMMIT",
+            ),
+         );
+         expect(script?.message).toContain("NOT NULL");
+         expect((await errorOf(session.runSQL("COMMIT")))?.message).toContain(
+            "transaction was aborted",
+         );
+         await session.runSQL("ROLLBACK");
+         expect(await count(session)).toBe(3);
+      } finally {
+         await dispose();
+      }
+      expect(await countInFreshSession(dir)).toBe(3);
+   });
+
+   it("keeps running after a delta script that failed before its BEGIN, and after a failed autocommit statement", async () => {
+      const { session, dispose } = await seededLake();
+      try {
+         await expect(
+            applyDeltaScript(sessionRunner(session), "duckdb", [
+               "CREATE TEMP TABLE stage AS SELECT CAST('x' AS INTEGER) AS id",
+               "BEGIN TRANSACTION",
+               "INSERT INTO lake.t SELECT id FROM stage",
+               "COMMIT",
+            ]),
+         ).rejects.toThrow("Conversion Error");
+         await session.runSQL("INSERT INTO lake.t VALUES (4)");
+         expect(
+            (await errorOf(session.runSQL("INSERT INTO lake.t VALUES (NULL)")))
+               ?.message,
+         ).toContain("NOT NULL");
+         await session.runSQL("INSERT INTO lake.t VALUES (5)");
+         expect(await count(session)).toBe(5);
+      } finally {
+         await dispose();
+      }
+   });
+
+   it("latches on a BEGIN inside a transaction, until a rollback", async () => {
+      const { session, dispose } = await seededLake();
+      try {
+         await session.runSQL("BEGIN TRANSACTION");
+         expect((await errorOf(session.runSQL("BEGIN")))?.message).toContain(
+            "within a transaction",
+         );
+         expect(
+            (await errorOf(session.runSQL("INSERT INTO lake.t VALUES (4)")))
+               ?.message,
+         ).toContain("transaction was aborted");
+         await session.runSQL("ROLLBACK");
+         await session.runSQL("INSERT INTO lake.t VALUES (4)");
+         expect(await count(session)).toBe(4);
+      } finally {
+         await dispose();
+      }
+   });
+
+   it.each([
+      // Not a rollback to the session: refused like any statement.
+      ["ROLLBACK WORK WORK", "transaction was aborted"],
+      ["ROLLBACK TRANSACTION WORK", "transaction was aborted"],
+      ["ROLLBACK; ROLLBACK", "transaction was aborted"],
+      // Shaped like one, but DuckDB refuses to parse it, so nothing rolled back.
+      ["ROLLBACK /* unterminated", "Parser Error"],
+   ])(
+      "keeps an aborted transaction latched through %j",
+      async (sql, message) => {
+         const { dir, session, dispose } = await seededLake();
+         try {
+            await session.runSQL("BEGIN TRANSACTION");
+            await session.runSQL("INSERT INTO lake.t VALUES (4)");
+            await errorOf(session.runSQL("INSERT INTO lake.t VALUES (NULL)"));
+            expect((await errorOf(session.runSQL(sql)))?.message).toContain(
+               message,
+            );
+            expect(
+               (await errorOf(session.runSQL("COMMIT")))?.message,
+            ).toContain("transaction was aborted");
+            await session.runSQL("ROLLBACK");
+            expect(await count(session)).toBe(3);
+         } finally {
+            await dispose();
+         }
+         expect(await countInFreshSession(dir)).toBe(3);
+      },
+   );
+
+   it("runs the statements queued behind one that was interrupted, and one issued after them", async () => {
+      const { session, dispose } = createIsolatedBuildSession("late_row");
+      try {
+         // Setup done first, so the timed interrupt can only land on the long read.
+         await session.runSQL("SELECT 0");
+         const long = errorOf(
+            session.runSQL(
+               "SELECT count(*) FROM range(1000000000000) a WHERE a.range % 7 = 3",
+            ),
+         );
+         const queued = session.runSQL("SELECT 1 AS one");
+         // A statement-scoped interrupt, as the late-row check's, not a cancel.
+         setTimeout(() => session.interrupt(), 200);
+         expect((await queued).rows).toEqual([{ one: 1 }]);
+         // Not refused: an interrupt outside a transaction aborts nothing.
+         const next = await errorOf(session.runSQL("SELECT 2 AS two"));
+         expect(next).toBeUndefined();
+         expect((await long)?.message).toMatch(/interrupt/i);
+         expect((await session.runSQL("SELECT 3 AS three")).rows).toEqual([
+            { three: 3 },
+         ]);
+      } finally {
+         await dispose();
+      }
+   }, 30_000);
+
+   it("refuses a COMMIT queued behind a write that failed", async () => {
+      const { dir, session, dispose } = await seededLake();
+      try {
+         await session.runSQL("BEGIN TRANSACTION");
+         await session.runSQL("INSERT INTO lake.t VALUES (4)");
+         const failed = errorOf(
+            session.runSQL("INSERT INTO lake.t VALUES (NULL)"),
+         );
+         const commit = errorOf(session.runSQL("COMMIT"));
+         expect((await failed)?.message).toContain("NOT NULL");
+         expect((await commit)?.message).toContain("transaction was aborted");
+         await session.runSQL("ROLLBACK");
+         expect(await count(session)).toBe(3);
+      } finally {
+         await dispose();
+      }
+      expect(await countInFreshSession(dir)).toBe(3);
+   });
+
+   it("is not interrupted while it asks DuckDB whether a transaction is open", async () => {
+      const { session, dispose } = await seededLake();
+      try {
+         // Counted on the native handle: an interrupt this early lands before DuckDB starts the probe, so the outcome alone can't tell.
+         const native = (
+            session as unknown as { connection: { interrupt(): void } }
+         ).connection;
+         const nativeInterrupt = native.interrupt;
+         let interrupts = 0;
+         native.interrupt = function (this: unknown) {
+            interrupts++;
+            return nativeInterrupt.call(this);
+         };
+         const probe = Object.getPrototypeOf(session) as {
+            transactionIsOpen(): Promise<boolean>;
+         };
+         const original = probe.transactionIsOpen;
+         probe.transactionIsOpen = function (this: typeof session) {
+            const asked = original.call(this);
+            // An abandoned statement's abort lands while the probe runs.
+            this.interrupt();
+            return asked;
+         };
+         try {
+            await errorOf(session.runSQL("INSERT INTO lake.t VALUES (NULL)"));
+         } finally {
+            probe.transactionIsOpen = original;
+            native.interrupt = nativeInterrupt;
+         }
+         expect(interrupts).toBe(0);
+         await session.runSQL("INSERT INTO lake.t VALUES (4)");
+         expect(await count(session)).toBe(4);
+      } finally {
+         await dispose();
+      }
+   });
+
+   /** Runs `fn` with the base connection's statement runner replaced by `replace`, which sees each statement and may answer it. */
+   async function withBaseRunner<T>(
+      replace: (
+         sql: string,
+         run: () => Promise<unknown>,
+      ) => Promise<unknown> | undefined,
+      fn: () => Promise<T>,
+   ): Promise<T> {
+      const base = DuckDBConnection.prototype as unknown as {
+         runDuckDBQuery(this: unknown, sql: string): Promise<unknown>;
+      };
+      const original = base.runDuckDBQuery;
+      base.runDuckDBQuery = function (this: unknown, sql: string) {
+         return (
+            replace(sql, () => original.call(this, sql)) ??
+            original.call(this, sql)
+         );
+      };
+      try {
+         return await fn();
+      } finally {
+         base.runDuckDBQuery = original;
+      }
+   }
+
+   it("latches a fatal error the transaction probe itself raises, and refuses everything but a rollback after it", async () => {
+      const { session, dispose } = createIsolatedBuildSession("probe_fatal");
+      try {
+         await withBaseRunner(
+            (sql) =>
+               sql === "BEGIN; ROLLBACK"
+                  ? Promise.reject(new Error("INTERNAL Error: x"))
+                  : undefined,
+            () => errorOf(session.runSQL("SELECT CAST('x' AS INTEGER)")),
+         );
+         expect(session.fatal?.message).toContain("INTERNAL Error: x");
+         expect((await errorOf(session.runSQL("SELECT 1")))?.message).toContain(
+            "fatal DuckDB error",
+         );
+         // A rollback still runs; DuckDB answers it as there is nothing to roll back.
+         expect((await errorOf(session.runSQL("ROLLBACK")))?.message).toContain(
+            "no transaction is active",
+         );
+      } finally {
+         await dispose();
+      }
+   });
+
+   it("asks its transaction probe as Publisher's own statement, which a locked instance admits", async () => {
+      const { session, dispose } = createIsolatedBuildSession("probe_locked");
+      try {
+         await lockDownDuckDBSession(session);
+         expect(
+            (await errorOf(session.runSQL("SELECT CAST('x' AS INTEGER)")))
+               ?.message,
+         ).toContain("Conversion Error");
+         // Refused as open if the lockdown had refused the probe's two statements.
+         expect((await session.runSQL("SELECT 1 AS one")).rows).toEqual([
+            { one: 1 },
+         ]);
+      } finally {
+         await dispose();
+      }
+   });
+
+   it("keeps an aborted transaction latched through a rollback that never reached DuckDB", async () => {
+      const { dir, session, dispose } = await seededLake();
+      try {
+         await session.runSQL("BEGIN TRANSACTION");
+         await session.runSQL("INSERT INTO lake.t VALUES (4)");
+         await errorOf(session.runSQL("INSERT INTO lake.t VALUES (NULL)"));
+         const refused = await withBaseRunner(
+            (sql) =>
+               sql === "ROLLBACK"
+                  ? Promise.reject(new Error("Connection not open"))
+                  : undefined,
+            () => errorOf(session.runSQL("ROLLBACK")),
+         );
+         expect(refused?.message).toBe("Connection not open");
+         expect((await errorOf(session.runSQL("COMMIT")))?.message).toContain(
+            "transaction was aborted",
+         );
+         await session.runSQL("ROLLBACK");
+         expect(await count(session)).toBe(3);
+      } finally {
+         await dispose();
+      }
+      expect(await countInFreshSession(dir)).toBe(3);
+   });
+
+   it("runs no statement and logs no warning to dispose a session that never opened", async () => {
+      const { session, dispose } = createIsolatedBuildSession("never_opened");
+      const raw = spyOn(session, "runRawSQL");
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         expect(session.opened).toBe(false);
+         await dispose();
+         expect(raw).not.toHaveBeenCalled();
+         expect(warn).not.toHaveBeenCalled();
+      } finally {
+         raw.mockRestore();
+         warn.mockRestore();
+      }
+   });
+
+   it.each([
+      ["a quoted value", "SELECT CAST('INTERNAL Error: x' AS INTEGER)"],
+      [
+         "a quoted value holding an apostrophe",
+         "SELECT CAST('a''INTERNAL Error: x' AS INTEGER)",
+      ],
+      ["a message from error()", "SELECT error('INTERNAL Error: x')"],
+   ])("does not read %s as a fatal DuckDB error", async (_label, sql) => {
+      const { session, dispose } =
+         createIsolatedBuildSession("isolated_quoted");
+      try {
+         const error = await errorOf(session.runSQL(sql));
+         expect(error?.message).toContain("INTERNAL Error: x");
+         expect(session.fatal).toBeUndefined();
+         expect((await session.runSQL("SELECT 1 AS one")).rows).toEqual([
+            { one: 1 },
+         ]);
+      } finally {
+         await dispose();
+      }
+   });
+
+   it.each([
+      ["ROLLBACK"],
+      ["rollback transaction"],
+      ["ROLLBACK WORK"],
+      ["ABORT"],
+      ["abort work"],
+      ["-- end it\n/* now */ Rollback ;"],
+   ])(
+      "lets %j clear an aborted transaction, and only a rollback does",
+      async (rollback) => {
+         const { session, dispose } = await seededLake();
+         try {
+            await session.runSQL("BEGIN TRANSACTION");
+            await errorOf(session.runSQL("INSERT INTO lake.t VALUES (NULL)"));
+            for (const sql of ["SELECT 1", "COMMIT", "ROLLBACK TO x"]) {
+               expect((await errorOf(session.runSQL(sql)))?.message).toContain(
+                  "transaction was aborted",
+               );
+            }
+            await session.runSQL(rollback);
+            expect(await count(session)).toBe(3);
+         } finally {
+            await dispose();
+         }
+      },
+   );
+
+   it("keeps an error DuckDB does not abort a transaction on, as a Catalog Error, from aborting it", async () => {
+      const { dir, session, dispose } = await seededLake();
+      try {
+         await inTransaction(session, "lake.t", async () => {
+            const probe = await errorOf(
+               session.runSQL("SELECT * FROM lake.missing"),
+            );
+            expect(probe?.message).toMatch(/^Catalog Error:/);
+            await session.runSQL("INSERT INTO lake.t VALUES (4)");
+         });
+         expect(await count(session)).toBe(4);
+      } finally {
+         await dispose();
+      }
+      expect(await countInFreshSession(dir)).toBe(4);
+   });
+
+   it("rolls back on dispose a transaction its owner left open, before it closes the session", async () => {
+      const { dir, session, dispose } = await seededLake();
+      const raw = spyOn(session, "runRawSQL");
+      const close = spyOn(session, "close");
+      try {
+         await session.runSQL("BEGIN TRANSACTION");
+         await session.runSQL("INSERT INTO lake.t VALUES (4)");
+         await dispose();
+         const rolledBack = raw.mock.calls.findIndex(
+            ([sql]) => sql === "ROLLBACK",
+         );
+         expect(rolledBack).toBeGreaterThanOrEqual(0);
+         expect(raw.mock.invocationCallOrder[rolledBack]).toBeLessThan(
+            close.mock.invocationCallOrder[0],
+         );
+      } finally {
+         raw.mockRestore();
+         close.mockRestore();
+      }
+      expect(await countInFreshSession(dir)).toBe(3);
+   });
+
+   it("refuses a stream once the session has ended", async () => {
+      const { session, dispose } = createIsolatedBuildSession("stream_refused");
+      try {
+         await errorOf(session.runSQL("SELECT CAST('x' AS INTEGER)"));
+         session.cancel();
+         const drain = async () => {
+            for await (const _row of session.runSQLStream("SELECT 1 AS one")) {
+               // Refused before any row.
+            }
+         };
+         expect(await errorOf(drain())).toBeInstanceOf(BuildCancelledError);
+      } finally {
+         await dispose();
+      }
+   });
+
+   it("rolls a cancelled build back in place, without a failed-rollback warning", async () => {
+      const { dir, session, dispose } = await seededLake();
+      const warn = spyOn(logger, "warn").mockImplementation(() => logger);
+      try {
+         const run = new AbortController();
+         const stop = interruptOnAbort(session, run.signal);
+         const error = await errorOf(
+            inTransaction(session, "lake.t", async () => {
+               await session.runSQL("INSERT INTO lake.t VALUES (4)");
+               run.abort();
+               await session.runSQL("INSERT INTO lake.t VALUES (5)");
+            }),
+         );
+         expect(error).toBeInstanceOf(BuildCancelledError);
+         expect(await errorOf(session.runRawSQL("SELECT 1"))).toBeInstanceOf(
+            BuildCancelledError,
+         );
+         stop();
+         expect(
+            warn.mock.calls.filter(([message]) =>
+               String(message).includes("Failed to roll back"),
+            ),
+         ).toEqual([]);
+      } finally {
+         warn.mockRestore();
+         await dispose();
+      }
+      expect(await countInFreshSession(dir)).toBe(3);
    });
 });

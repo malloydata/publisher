@@ -8,13 +8,15 @@
  * as DECIMAL(38,0), every digit kept. Run with `PUBLISHER_TEST_POSTGRES_URL`.
  */
 
-import { DuckDBConnection } from "@malloydata/db-duckdb";
 import { PostgresConnection } from "@malloydata/db-postgres";
 import { afterAll, beforeAll, describe, expect, it } from "bun:test";
 import { mkdtempSync, rmSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
-import { createTableWithDeclaredTypes } from "../../../src/service/materialization/run/materialization_build_session";
+import {
+   createTableWithDeclaredTypes,
+   IsolatedSessionConnection,
+} from "../../../src/service/materialization/run/materialization_build_session";
 
 const POSTGRES_URL = process.env.PUBLISHER_TEST_POSTGRES_URL;
 const SCHEMA = "p4_01_lake";
@@ -37,7 +39,7 @@ describe.skipIf(!POSTGRES_URL)(
    () => {
       let dir: string;
       let pg: PostgresConnection;
-      let conn: DuckDBConnection;
+      let conn: IsolatedSessionConnection;
       beforeAll(async () => {
          pg = new PostgresConnection({
             name: "pg",
@@ -46,7 +48,10 @@ describe.skipIf(!POSTGRES_URL)(
          await pg.runSQL(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
          await pg.runSQL(`CREATE SCHEMA ${SCHEMA}`);
          dir = mkdtempSync(join(tmpdir(), "p4-01-pg-lake-"));
-         conn = new DuckDBConnection("p4_01_pg_lake", join(dir, "h.duckdb"));
+         conn = new IsolatedSessionConnection(
+            "p4_01_pg_lake",
+            join(dir, "h.duckdb"),
+         );
          for (const sql of [
             "INSTALL ducklake",
             "LOAD ducklake",

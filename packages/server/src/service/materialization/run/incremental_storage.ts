@@ -25,6 +25,7 @@ import {
    type SqlRunner,
 } from "./incremental_apply";
 import {
+   type IsolatedSessionConnection,
    issuePassthroughRead,
    wrapPassthrough,
 } from "./materialization_build_session";
@@ -135,17 +136,13 @@ interface StorageDeltaTarget {
  * statements on the session are not refused: the abort ends one statement,
  * not the build.
  */
-export function sessionRunner(session: DuckDBConnection): SqlRunner {
+export function sessionRunner(session: IsolatedSessionConnection): SqlRunner {
    return async (sql, options) => {
       const signal = options?.abortSignal;
       if (!signal) return session.runSQL(sql);
       const interrupt = () => {
-         // The node-api connection is library-internal, as in dispose.
-         const connection = (
-            session as unknown as { connection?: { interrupt?: () => void } }
-         ).connection;
          try {
-            connection?.interrupt?.();
+            session.interrupt();
          } catch {
             // Best-effort: the statement then runs to its end.
          }
@@ -235,7 +232,7 @@ function describedTypes(
 
 export function storageDeltaTarget(params: {
    /** The build-scoped session: destination attached read-write, source federated. */
-   session: DuckDBConnection;
+   session: IsolatedSessionConnection;
    sourceType: FederatedSourceType;
    /** The per-engine passthrough handle `federateSourceForPassthrough` established. */
    handle: string;
@@ -431,7 +428,7 @@ export function storageDeltaTarget(params: {
  * projection names it.
  */
 export function stackedDeltaTarget(params: {
-   session: DuckDBConnection;
+   session: IsolatedSessionConnection;
    destinationName: string;
    destinationSchema?: string;
    physicalTableName: string;

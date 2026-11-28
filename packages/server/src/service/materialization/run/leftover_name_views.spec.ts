@@ -28,7 +28,10 @@ import {
    replaceOwnViewStatements,
 } from "./leftover_name_views";
 import { swapIntoPlace } from "./database_build_strategy";
-import { createTableAndDescribe } from "./materialization_build_session";
+import {
+   createTableAndDescribe,
+   IsolatedSessionConnection,
+} from "./materialization_build_session";
 import { formatPublishRejections } from "../../publish_checks";
 import { packageOwner } from "./table_mark_sql";
 import {
@@ -685,13 +688,13 @@ describe("leftover name= views, at a site", () => {
 
 describe("leftover name= views, in a storage destination", () => {
    let dir: string;
-   let session: WarehouseConnection;
+   let session: IsolatedSessionConnection;
    const lake = { name: "lake", type: "duckdb" } as never;
    const run = (sql: string) => session.runSQL(sql);
 
    beforeEach(async () => {
       dir = fs.mkdtempSync(path.join(os.tmpdir(), "leftover-lake-"));
-      session = new WarehouseConnection("session", ":memory:", dir);
+      session = new IsolatedSessionConnection("session", ":memory:", dir);
       await run(`ATTACH '${path.join(dir, "lake.duckdb")}' AS lake`);
       await run("CREATE TABLE lake.main.g1 AS SELECT 1 AS x");
       await run("CREATE TABLE lake.main.g2 AS SELECT 2 AS x");

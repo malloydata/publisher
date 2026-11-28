@@ -3,7 +3,6 @@
 
 import { Package } from "../package";
 import type { Connection as MalloyConnection } from "@malloydata/malloy";
-import { DuckDBConnection } from "@malloydata/db-duckdb";
 import type { DuckDBConnection as BuildSession } from "@malloydata/db-duckdb";
 import {
    afterAll,
@@ -46,6 +45,7 @@ import {
 } from "./plan/build_plan_compile";
 import { derivePackagePlan } from "./plan/build_plan";
 import {
+   createIsolatedBuildSession,
    createTableWithDeclaredTypes,
    issuePassthroughRead,
 } from "./run/materialization_build_session";
@@ -442,10 +442,12 @@ describe("a storage build's instruments", () => {
    });
 
    it("publisher_storage_column_type_mismatch_total: a declared-type cast that refuses a value", async () => {
-      const conn = new DuckDBConnection("metric_emission_cast", ":memory:");
+      const { session, dispose } = createIsolatedBuildSession(
+         "metric_emission_cast",
+      );
       try {
          await createTableWithDeclaredTypes(
-            conn,
+            session,
             "t",
             `SELECT 'open' AS flag`,
             {
@@ -453,7 +455,7 @@ describe("a storage build's instruments", () => {
             },
          );
       } finally {
-         await conn.close();
+         await dispose();
       }
       expect(
          await harness.collectAttributes(

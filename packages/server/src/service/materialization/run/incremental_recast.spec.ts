@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { DuckDBConnection } from "@malloydata/db-duckdb";
+import type { IsolatedSessionConnection } from "./materialization_build_session";
 import {
    FixedConnectionMap,
    InMemoryURLReader,
@@ -187,7 +187,7 @@ describe("storageRefreshFor re-seeds a table only a rebuild can retype", () => {
             return { rows: [] };
          },
       };
-      return { session: s as unknown as DuckDBConnection, issued };
+      return { session: s as unknown as IsolatedSessionConnection, issued };
    }
 
    async function refresh(

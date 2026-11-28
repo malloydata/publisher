@@ -82,10 +82,9 @@ describe("probing a stored table's shape", () => {
 describe("a failed delta script in DuckDB's own dialect", () => {
    it("leaves the session usable after a failed script, having applied nothing", async () => {
       // DuckDB does NOT abandon a failed script's transaction by itself: once
-      // BEGIN has opened one, every later statement is refused with "Current
-      // transaction is aborted" until something rolls back. So the rollback
-      // applyDeltaScript issues is what keeps the session — and, if this session
-      // ever becomes reusable, the build — alive.
+      // BEGIN has opened one, every later statement is refused until something
+      // rolls back. So the rollback applyDeltaScript issues is what keeps the
+      // session, and the build, alive.
       const name = await wideTable(1);
       const t = `${DEST}.${name}`;
       await session.runSQL(`INSERT INTO ${t} VALUES (1,10),(2,20)`);

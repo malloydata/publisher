@@ -1,7 +1,6 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import type { DuckDBConnection } from "@malloydata/db-duckdb";
 import { describe, expect, it } from "bun:test";
 
 import {
@@ -10,7 +9,10 @@ import {
    type IncrementalLineage,
    type RecordedBoundary,
 } from "./incremental_apply";
-import { pinSessionToUTC } from "./materialization_build_session";
+import {
+   type IsolatedSessionConnection,
+   pinSessionToUTC,
+} from "./materialization_build_session";
 import { storageDeltaTarget } from "./incremental_storage";
 import { fakeSource } from "../../../test_helpers/materialization_test_fixtures";
 
@@ -82,7 +84,7 @@ function fakeSession(answers: { columns?: string[]; nonEmpty?: boolean } = {}) {
          }
          return { rows: [] };
       },
-   } as unknown as DuckDBConnection;
+   } as unknown as IsolatedSessionConnection;
    return { session, seen };
 }
 

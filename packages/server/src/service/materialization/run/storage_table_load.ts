@@ -40,6 +40,7 @@ import {
    createLocalDataPaths,
    inTransaction,
    isCatalogDestination,
+   type IsolatedSessionConnection,
    lockDownDestinationSession,
    pinSessionToUTC,
    withIsolatedSession,
@@ -209,7 +210,7 @@ async function withLoadSession<T>(
       uris: readonly string[];
       extensions?: string[];
    },
-   fn: (session: DuckDBConnection) => Promise<T>,
+   fn: (session: IsolatedSessionConnection) => Promise<T>,
 ): Promise<T> {
    const { destinationName, destinationConnection, schemaName, tableName } =
       params;
@@ -482,7 +483,7 @@ const COPY_SOURCE_ALIAS = "__copy_source";
  * which needs a Postgres catalog, so a spec drives it on a file catalog.
  */
 export async function writeTableAs(
-   session: DuckDBConnection,
+   session: IsolatedSessionConnection,
    params: {
       destinationName: string;
       schemaName: string;
