@@ -307,6 +307,7 @@ describe("live reload of what a package's workflows serve", () => {
          fs.writeFileSync(kept, "x");
          await announcedFile(kept);
          expect([...new Set(announced)]).toEqual([skillignore, sentinel, kept]);
+         expect(announced.length).toBeLessThanOrEqual(3 * EVENTS_PER_SAVE);
          for (const spy of spies) {
             expect(
                spy.mock.calls.filter(([file]) =>

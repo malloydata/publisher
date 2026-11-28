@@ -194,6 +194,7 @@ export class WatchModeController {
             ?.workflowPaths() ?? [];
       // The per-file filter dropped what a newly declared set holds, and on macOS a save to a file nothing watches raises no directory event.
       const watchDeclared = (pkgName: string, declared: string[]) => {
+         if (declared.length === 0) return;
          const roots = declared.map((rel) =>
             path.join(watchPath, pkgName, ...rel.split("/")),
          );
