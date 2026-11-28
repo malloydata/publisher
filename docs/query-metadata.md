@@ -62,6 +62,11 @@ Most specific wins, property by property:
 4. **Source** — `#@ queryMetadata.<name>="<value>"`.
 5. **Request** — `queryMetadata` on a query or SQL request, plus `queryClass` to set `class`.
 
+`queryClass` is attribution, with one exception: a model query of class `index` on a source that
+declares a stored table of its own is answered only from that table, and refused with 409
+`INDEX_SOURCE_UNBUILT` while none is ready, rather than scanning the warehouse
+([api-overview](api-overview.md)).
+
 **Any source can be tagged, not only a persisted one.** `queryMetadata` is a sibling of `persist` in the `#@` namespace rather than a key inside it, so layer 4 applies to a source that is never materialized — its tags ride every query that reads it.
 
 **The `materialization.` spelling is deprecated at layers 2 and 3.** `materialization.queryMetadata` in `publisher.json`, `## materialization.queryMetadata.*` in a model file, and `materialization.queryMetadata` on the package API all still work. None was ever a build-only setting: the properties ride served queries too, so declaring them inside the build-policy block described a scope the feature does not have and sent authors hunting through build settings for a way to label their traffic.

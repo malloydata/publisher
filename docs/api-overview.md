@@ -127,6 +127,28 @@ A **403 with `reason: INHERITED_FILTER_UNVERIFIED`** is not a gate's: a `where:`
 inherits could not be verified on it, so the model needs fixing and givens do not help. The message
 names the reason class.
 
+A query sent with **`queryClass: index`** (the class a dimensional-index build sets) on a source that
+declares a stored table of its own (`#(materialize)` on the source, or its own `#@ persist`; not one
+it only inherits from a source it extends) is answered from that table or refused, never run live:
+an index query reads every distinct value of the source, a full scan of the warehouse table the
+stored one exists to spare. With no ready table of it bound, the answer is a **409 with
+`reason: INDEX_SOURCE_UNBUILT`** and an `unbuiltReason`: `unbuilt` (not built yet, or not bound to
+the version that answered) or `refused` (the build plan refuses to build it; the package's
+`refusedSources` says why). `building` and `failed` are reserved for a build's state, and a client
+reads an absent or unknown value as `unbuilt`. It is deferred, not wrong: retry once the table is
+built. The message names the source as you queried it, never a table, path or connection. The
+surface's 404s and the gates' 403s decide first, so a caller who may not query the source gets
+exactly the answer an `interactive` query gets. Any other class, and a source with no declaration
+of its own, is answered as before. One case still answers live: a table **is** bound but the
+served copy declines it for this query (a time zone it was not built in, past its freshness
+window, a column it left out), or a stored run fails and falls back to live.
+
+This is a cost guard on the run target's **own** declaration, not a guarantee for every spelling
+of the same data. An import rename (`import { pub is orders } from "…"`) keeps the source's
+identity and is refused like the source itself. These still run live, built or not: a rename in a
+model file (`source: renamed is orders`), an inline extension in the query
+(`run: orders extend { … } -> { index: * }`), and a `compose(…)` that resolves to a stored member.
+
 Starting a materialization (`POST …/packages/{pkg}/materializations`) answers, beside the version
 reasons:
 

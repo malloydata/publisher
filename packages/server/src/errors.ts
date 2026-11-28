@@ -154,6 +154,11 @@ export type ErrorReason =
    // 409: the package's build plan could not be derived at load; a reload
    // derives it again, a retry does not.
    | "BUILD_PLAN_UNAVAILABLE"
+   // 409: an index query (`queryClass: index`) on a source that declares a
+   // stored table with none ready; it is answered only from that table, so
+   // a retry once the table is built succeeds. The body's `unbuiltReason`
+   // says why it is not ready.
+   | "INDEX_SOURCE_UNBUILT"
    // 500: a version's build manifest was fetched or bound and failed; the
    // version keeps serving what it served before (ManifestBindFailedError).
    | "MANIFEST_BIND_FAILED"
@@ -455,6 +460,8 @@ export interface HttpErrorAnswer {
       reason?: ErrorReason;
       /** With `MATERIALIZATION_REFUSED`: the refusal's `RefusedSource.reason`. */
       refusalReason?: string;
+      /** With `INDEX_SOURCE_UNBUILT`: why the source's table is not ready. */
+      unbuiltReason?: IndexSourceUnbuiltReason;
       problems?: ReturnType<typeof toQueryTextProblem>[];
    };
 }
@@ -506,6 +513,8 @@ export function internalErrorToHttpError(
    const answer = httpError(status, message, errorReason(error));
    const refusalReason = row.refusalReason?.(error);
    if (refusalReason !== undefined) answer.json.refusalReason = refusalReason;
+   const unbuiltReason = row.unbuiltReason?.(error);
+   if (unbuiltReason !== undefined) answer.json.unbuiltReason = unbuiltReason;
    return headers ? { ...answer, headers } : answer;
 }
 
@@ -1489,6 +1498,60 @@ export class MaterializationNotFoundError extends Error {
    }
 }
 
+/**
+ * Why an index query's source has no ready stored table
+ * ({@link IndexSourceUnbuiltError}): `unbuilt` (none built yet, or none
+ * bound, the fallback when nothing more specific is known), `building` (a
+ * build is in progress), `failed` (its last build failed) or `refused` (the
+ * build plan refused the declaration). A client reads an absent value as
+ * `unbuilt`.
+ */
+export type IndexSourceUnbuiltReason =
+   | "unbuilt"
+   | "building"
+   | "failed"
+   | "refused";
+
+/** What each {@link IndexSourceUnbuiltReason} says, in the refusal's message. */
+const INDEX_SOURCE_UNBUILT_PHRASES: Record<IndexSourceUnbuiltReason, string> = {
+   unbuilt: "it has not been built yet, or is not bound to this version",
+   building: "a build of it is in progress",
+   failed: "its last build failed",
+   refused:
+      "this server's build plan refuses to build it (the package's refusedSources says why)",
+};
+
+/**
+ * An index query (`queryClass: index`) refused because the source it queries
+ * declares a stored table of its own (`#(materialize)`, or its own
+ * `#@ persist`) and no ready table of it is bound: an index query is answered
+ * from that table or not at all, never live against the warehouse. 409
+ * `INDEX_SOURCE_UNBUILT`, with `unbuiltReason`: the source's state refuses
+ * it, and the same query succeeds once the table is built. Raised only after
+ * every governance check has admitted the caller, so it never reveals a
+ * source the caller may not query. Names the source as the caller queried
+ * it, never a table, a path or a connection.
+ */
+export class IndexSourceUnbuiltError extends Error {
+   get kind(): "index_source_unbuilt" {
+      return "index_source_unbuilt";
+   }
+
+   constructor(
+      readonly sourceName: string,
+      readonly unbuiltReason: IndexSourceUnbuiltReason,
+   ) {
+      super(
+         `Source "${sourceName}" declares a stored table, and index queries on it are answered only from that table, which is not ready: ${INDEX_SOURCE_UNBUILT_PHRASES[unbuiltReason]}. ` +
+            `The query was not run against the warehouse. ` +
+            (unbuiltReason === "refused"
+               ? "It is answered once a change to the package or the server's settings lets the table be built."
+               : "Retry once the table is built."),
+      );
+      this.name = "IndexSourceUnbuiltError";
+   }
+}
+
 export class MaterializationConflictError extends Error {
    get kind(): "materialization_conflict" {
       return "materialization_conflict";
@@ -1843,6 +1906,7 @@ interface ErrorByKind {
    off_surface: OffSurfaceError;
    materialization_not_found: MaterializationNotFoundError;
    materialization_conflict: MaterializationConflictError;
+   index_source_unbuilt: IndexSourceUnbuiltError;
    materialized_table_drop_refused: MaterializedTableDropRefusedError;
    write_conflict: WriteConflictError;
    installed_from_location: InstalledFromLocationError;
@@ -1935,6 +1999,7 @@ const ERROR_CLASSES: {
    off_surface: OffSurfaceError,
    materialization_not_found: MaterializationNotFoundError,
    materialization_conflict: MaterializationConflictError,
+   index_source_unbuilt: IndexSourceUnbuiltError,
    materialized_table_drop_refused: MaterializedTableDropRefusedError,
    write_conflict: WriteConflictError,
    installed_from_location: InstalledFromLocationError,
@@ -2031,6 +2096,8 @@ export interface ErrorMapping<E> {
    reason?: ErrorReason | ((error: E) => ErrorReason | undefined);
    /** The HTTP body's `refusalReason`, beside `reason: MATERIALIZATION_REFUSED`. */
    refusalReason?: (error: E) => string | undefined;
+   /** The HTTP body's `unbuiltReason`, beside `reason: INDEX_SOURCE_UNBUILT`. */
+   unbuiltReason?: (error: E) => IndexSourceUnbuiltReason | undefined;
    /** Logged server-side by the HTTP mapping (unless the caller passed `log: false`). */
    log?: LogLine | ((error: E) => LogLine | undefined);
    /** The HTTP body also carries the compile problems. */
@@ -2402,6 +2469,23 @@ export const ERROR_TABLE: { [K in ErrorKind]: ErrorMapping<ErrorByKind[K]> } = {
       status: 409,
       reason: (error) => error.reason,
       mcp: { advice: "internal" },
+   },
+   index_source_unbuilt: {
+      status: 409,
+      reason: "INDEX_SOURCE_UNBUILT",
+      unbuiltReason: (error) => error.unbuiltReason,
+      // Deferred, not broken: the source's table is not ready. Advice that
+      // says so, not "internal", so an agent neither rewrites the query nor
+      // reports a server fault.
+      mcp: {
+         advice: "fixed",
+         suggestions: (error) => [
+            "The query is fine. Do not rewrite it: this source answers index queries only from its stored table, which is not ready.",
+            error.unbuiltReason === "refused"
+               ? "The package's build plan refuses to build that table (its refusedSources says why), so a retry fails the same way until the package or the server's settings change."
+               : "Retry once the source's table is built.",
+         ],
+      },
    },
    invalid_state_transition: { status: 409, mcp: { advice: "internal" } },
    write_conflict: {

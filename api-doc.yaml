@@ -2471,6 +2471,16 @@ paths:
         The version queried may be named in the body (`QueryRequest.versionId`), in the URL
         (`?versionId=`), or both. When both name a version and they differ, the request answers
         400 with `reason` VERSION_ID_INVALID; an empty value in either names none.
+
+        A query with `queryClass: index` on a source that declares a stored table of its own
+        (`#(materialize)` on the source, or its own `#@ persist`; not one it only inherits) is
+        answered from that table or refused: with no ready table of it bound, it answers 409 with
+        `reason` INDEX_SOURCE_UNBUILT and an `unbuiltReason`, and is never run live against the
+        warehouse. The 404s and 403s of the published surface and the source's gates decide first.
+        Any other class, and a source with no declaration of its own, is answered as before.
+        This is a cost guard on the run target's own declaration, not a guarantee for every
+        spelling: an import rename is refused like the source, but a rename in a model file, an
+        inline `extend` in the query, and a `compose(…)` resolving to a stored member run live.
       parameters:
         - name: environmentName
           in: path
@@ -2513,6 +2523,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
         "413":
@@ -4168,6 +4180,10 @@ components:
           * BUILD_PLAN_UNAVAILABLE: the package's build plan could not be
             derived when it loaded. Reload the package; retrying the read does
             not help.
+          * INDEX_SOURCE_UNBUILT: a query with `queryClass: index` on a source
+            that declares a stored table of its own, with no ready table of it
+            bound. Retry once the table is built; `unbuiltReason` says why it
+            is not ready.
       content:
         application/json:
           schema:
@@ -8516,7 +8532,9 @@ components:
       description: >-
         The class of work a statement belongs to, attached as the `class`
         query-metadata property: `interactive` (a user or application query),
-        `materialize` (a persist-source build), `index` (an index build or scan),
+        `materialize` (a persist-source build), `index` (an index build or scan; a model query of this class on a
+        source that declares a stored table of its own is answered only from
+        that table, else refused with 409 INDEX_SOURCE_UNBUILT),
         `ops` (platform maintenance). Attribution's primary axis — a backend bill
         separates traffic from builds only if every statement says which it is.
 
@@ -10207,6 +10225,16 @@ components:
             With `reason: MATERIALIZATION_REFUSED`: the refusal's bounded
             reason, from the same open set as `RefusedSource.reason`. Absent
             otherwise.
+        unbuiltReason:
+          type: string
+          description: >-
+            With `reason: INDEX_SOURCE_UNBUILT`: why the queried source's
+            stored table is not ready. `unbuilt` (none is built yet, or none
+            is bound to the version that answered), `building` (a build of it
+            is in progress), `failed` (its last build failed) or `refused`
+            (the package's build plan refuses to build it; `refusedSources`
+            says why). An open set: read an absent or unrecognized value as
+            `unbuilt`. Absent otherwise.
         reason:
           type: string
           description: |
@@ -10274,6 +10302,21 @@ components:
             (`redefined_field`, `unrecorded_join`, `unresolved_declaration`,
             `resolution_bound`), never the filter or the file; the server log
             names both.
+
+            INDEX_SOURCE_UNBUILT, on a 409 from a model query, means a query
+            with `queryClass: index` was refused because the source it queries
+            declares a stored table of its own (`#(materialize)`, or its own
+            `#@ persist`, not one it only inherits) and no ready table of it is
+            bound. An index query on such a source is answered from that table
+            or not at all, never run live against the warehouse; it is
+            deferred, not wrong, and the same query succeeds once the table is
+            built. The body's `unbuiltReason` says why the table is not ready.
+            Only `queryClass: index` is refused this way: the same query in any
+            other class is answered as before. Every governance check (the
+            package's published surface, `#(authorize)`, row-level gates)
+            decides first, so a caller who may not query the source gets that
+            404 or 403 instead, never this. The message names the source as
+            the caller queried it, never a table, a path or a connection.
 
             MATERIALIZATION_REFUSED means a valid materialization declaration
             this server will not build, and the body's `refusalReason` is the
@@ -10382,7 +10425,7 @@ components:
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND, RESULT_TRUNCATED,
             RESULT_SHAPE_MISMATCH, STORAGE_ACCESS_DENIED, PATH_ACCESS_DENIED, ACCESS_DENIED,
-            INHERITED_FILTER_UNVERIFIED,
+            INHERITED_FILTER_UNVERIFIED, INDEX_SOURCE_UNBUILT,
             MATERIALIZATION_REFUSED, TABLE_OWNED_ELSEWHERE,
             TABLE_OWNERSHIP_UNVERIFIED, TABLE_IN_USE, BUILD_INSTRUCTIONS_INVALID,
             MATERIALIZATION_CONFLICT, MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,

@@ -112,6 +112,12 @@ export interface MaterializedTableCatalog {
     * Absent when the verdicts are not known.
     */
    sourceVerdicts?: ReadonlyMap<string, LiveTableVerdict>;
+   /**
+    * The `sourceID`s of the declarations the plan refused to build
+    * (`BuildPlan.refusedSources`), for the index query guard's
+    * `unbuiltReason`. Absent when the plan is not known.
+    */
+   refused?: ReadonlySet<string>;
 }
 
 /** The key of {@link MaterializedTableCatalog.liveVerdicts}. */

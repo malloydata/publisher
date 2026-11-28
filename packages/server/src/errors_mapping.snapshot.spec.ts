@@ -38,6 +38,7 @@ import {
    InvalidQueryRequestError,
    InvalidStateTransitionError,
    MaterializationConflictError,
+   IndexSourceUnbuiltError,
    MaterializationEligibilityError,
    MaterializedTableDropRefusedError,
    TableOwnershipError,
@@ -465,6 +466,14 @@ const CASES: Array<[string, () => unknown]> = [
    [
       "MaterializationConflictError",
       () => new MaterializationConflictError("a build is running"),
+   ],
+   [
+      "IndexSourceUnbuiltError unbuilt",
+      () => new IndexSourceUnbuiltError("orders", "unbuilt"),
+   ],
+   [
+      "IndexSourceUnbuiltError refused",
+      () => new IndexSourceUnbuiltError("orders", "refused"),
    ],
    [
       "MaterializedTableDropRefusedError in use",

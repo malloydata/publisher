@@ -1327,6 +1327,24 @@ entry is `live` with that view's compile error. When the served copy cannot re-r
 all (the table lacks a column the source needs, say), every view of the source is `live`, each
 with the reason.
 
+### Index queries read the table or nothing
+
+A model query sent with `queryClass: index` (a dimensional-index build's scan of every distinct
+value) on a source that declares a stored table of its own (`#(materialize)` on the source, or its
+own `#@ persist`; an extension that only inherits one does not count) is never run live. With a
+table of it bound, it is answered as any query is. With none (not built yet, refused by the plan,
+withdrawn by a failed reload), it answers 409 `INDEX_SOURCE_UNBUILT` with `unbuiltReason`
+`unbuilt` or `refused`, after every surface and gate check has admitted the caller, and the index
+build retries once the table is built. A bound table the served copy declines for that query
+(another time zone, past its freshness window, a column left out) is still answered live, as is a
+stored run that fails and falls back. See [the API overview](api-overview.md).
+
+This is a cost guard on the run target's **own** declaration, not a guarantee for every spelling
+of the same data. An import rename (`import { pub is orders } from "…"`) keeps the source's
+identity and is refused like the source itself. These still run live, built or not: a rename in a
+model file (`source: renamed is orders`), an inline extension in the query
+(`run: orders extend { … } -> { index: * }`), and a `compose(…)` that resolves to a stored member.
+
 ## Freshness: a window and a fallback
 
 A stored table can say how old its data may be before a query stops reading it:
