@@ -26,6 +26,10 @@ import {
    type RowLevelGateRejectionCause,
 } from "./service/authorize";
 import { CANONICAL_AUTHORIZE_ROUTES } from "./service/authorize_routes";
+import {
+   INHERITED_FILTER_REASONS,
+   type InheritedFilterReason,
+} from "./service/inherited_filter_reasons";
 
 /** The caller-supplied request field a rejected annotation arrived in. */
 export type AuthorizeGuardField =
@@ -60,6 +64,13 @@ const admitAllCounter = lazyCounter(
       CANONICAL_AUTHORIZE_ROUTES.map((r) => `'${r}'`).join("|") +
       "). Not an error — `true` is the only spelling for an extension that deliberately re-opens a gated base — but it is the one declaration that turns a gate off, so a jump since the last publish is worth a look.",
 );
+const inheritedFilterUnverifiedCounter = lazyCounter(
+   "publisher_inherited_filter_unverified_total",
+   "Queries denied (403, reason INHERITED_FILTER_UNVERIFIED) because a `where:` the queried source inherits could not be verified to read the fields it was written against. Not a gate's denial: the model's own text. Label: reason (" +
+      // Derived from the union, not retyped beside it, so the two cannot drift.
+      INHERITED_FILTER_REASONS.map((r) => `'${r}'`).join("|") +
+      "). 'redefined_field' is a field the filter reads defined again on the way to the queried source; the others are a filter the check could not follow. The paired info log line names the model, source, filter and declaring source.",
+);
 const lockDecisionCounter = lazyCounter(
    "publisher_authorize_lock_total",
    "How a `#(authorize)` lock resolved a request. Labels: decision ('admitted'|'denied_by_lock'|'denied_unresolvable'), site ('entry_point'|'caller_join'). Both denials are a 403; 'denied_by_lock' is the gate refusing a caller it does not admit (routine), 'denied_unresolvable' is the fail-closed refusal when the gate could not be decided at all. site says whether the lock was on the query's own run target or on a source the caller's text joined.",
@@ -93,6 +104,13 @@ export type AuthorizeBypassEntryPoint = "source" | "runnable";
  * unlabelled by org / package / model / source (unbounded cardinality); those
  * are on the paired audit log line.
  */
+/** Record one query denied because an inherited `where:` could not be verified. */
+export function recordInheritedFilterUnverified(
+   reason: InheritedFilterReason,
+): void {
+   inheritedFilterUnverifiedCounter().add(1, { reason });
+}
+
 export function recordAuthorizeBypass(
    entryPoint: AuthorizeBypassEntryPoint,
 ): void {
