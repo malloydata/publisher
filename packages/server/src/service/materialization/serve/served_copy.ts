@@ -151,6 +151,13 @@ export interface Reroot {
     */
    keptBlocks?: string;
    /**
+    * The selective imports the kept blocks need in this file: a name a base
+    * declared in another file reads, which this file does not bind
+    * (kept_ancestors.ts, `keptRunImports`). Written once at the top of the
+    * file, ahead of every declaration.
+    */
+   keptImports?: readonly string[];
+   /**
     * A v1 query-shaped source's re-root: the
     * run it keeps is everything after its query, `include { … }` blocks
     * included, so the author's own `rename:`, `except:` and access
@@ -1681,7 +1688,8 @@ function withTypes(
    const flag = applied.some(hasHiddenColumns)
       ? SERVED_COPY_ACCESS_FLAG
       : SERVED_COPY_FLAG;
-   const prefix = `${head}${head ? "\n" : ""}${flag}\n`;
+   const imports = [...new Set(applied.flatMap((r) => r.keptImports ?? []))];
+   const prefix = `${head}${head ? "\n" : ""}${flag}\n${imports.map((line) => `${line}\n`).join("")}`;
    const out = `${prefix}${types}\n\n${rest}`;
    const restAt = i === 0 ? 0 : head.length + 1;
    const typeSpans: { start: number; end: number }[] = [];

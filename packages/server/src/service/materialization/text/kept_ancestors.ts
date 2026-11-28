@@ -26,6 +26,7 @@
 
 import { declarationSpans, declaredBaseName } from "./declaration_text";
 import { lexAll } from "../../malloy_lexer_core";
+import { doubleQuotedString, identifier } from "../../malloy_text";
 import { offsetOf } from "./malloy_lexer";
 import { detachedNode, type SourceMap, type SourceNode } from "./source_map";
 import {
@@ -334,20 +335,34 @@ function declaredIn(field: unknown, url: string, range: KeptRange): boolean {
  * the ancestor's declaration parses in its own file. `own` is the source's
  * own declaration range in `ownURL`. The walk stops at the first step the
  * text does not confirm, or a file it cannot read.
+ *
+ * Every kept run is compiled in the source's own file, so a run from
+ * another file is kept only where each name it reads binds there as it does
+ * in its own file ({@link keptRunImports}); a name the own file does not
+ * bind at all is brought by a selective import the re-root adds
+ * (`imports`, statements to write in the own file).
  */
 export function confirmedAncestors(
    fileText: (url: string) => string | undefined,
    ownURL: string,
    own: KeptRange,
    chain: readonly LocatedAncestor[],
-): (LocatedAncestor & { runText?: string })[] {
-   const out: (LocatedAncestor & { runText?: string })[] = [];
+): (LocatedAncestor & { runText?: string; imports?: string[] })[] {
+   const out: (LocatedAncestor & { runText?: string; imports?: string[] })[] =
+      [];
    let child = own;
    let childURL = ownURL;
+   const ownText = fileText(ownURL);
    for (const ancestor of chain) {
       const childText = fileText(childURL);
       const text = fileText(ancestor.url);
-      if (childText === undefined || text === undefined) break;
+      if (
+         ownText === undefined ||
+         childText === undefined ||
+         text === undefined
+      ) {
+         break;
+      }
       if (!namesAncestor(childText, child, ancestor)) break;
       const from = offsetOf(text, ancestor.range.start);
       const to = offsetOf(text, ancestor.range.end);
@@ -358,22 +373,24 @@ export function confirmedAncestors(
          spans.extendStart !== undefined
             ? text.slice(from + spans.extendStart, to).trimEnd()
             : undefined;
-      // Across files, the run is compiled in the importing file: only where
-      // each name it reads is provably the one its own file reads.
-      if (
-         ancestor.url !== childURL &&
-         !bindsAlikeAcrossFiles(
-            childText,
-            childURL,
+      let imports: string[] = [];
+      if (ancestor.url !== ownURL) {
+         const proven = keptRunImports(
+            ownText,
+            ownURL,
             text,
             ancestor.url,
             runText ?? "",
             fileText,
-         )
-      ) {
-         break;
+         );
+         if (!proven) break;
+         imports = proven;
       }
-      out.push({ ...ancestor, ...(runText !== undefined ? { runText } : {}) });
+      out.push({
+         ...ancestor,
+         ...(runText !== undefined ? { runText } : {}),
+         ...(imports.length > 0 ? { imports } : {}),
+      });
       child = ancestor.range;
       childURL = ancestor.url;
    }
@@ -382,88 +399,152 @@ export function confirmedAncestors(
 
 /**
  * Whether `runText`, written in the file at `ancestorURL`, reads every name
- * the same way compiled in the file at `childURL` (review).
+ * the same way compiled in the file at `ownURL`, and the selective imports
+ * that make it so; undefined when it is not proven (review).
  *
- * The guarantee is structural, from two conditions:
+ * Each file's top-level names are read exactly ({@link fileBindings}): the
+ * sources, queries and givens it declares, each a selective import binds,
+ * and each one a whole import's file declares itself (Malloy imports are not
+ * transitive, so a name that file imported in turn is not one of them). For
+ * every word of the run (a backticked name included):
  *
- *  - the child imports the ancestor's file whole (`import "<file>"`), never
- *    by a selective import, which may leave a name out for the child to
- *    declare itself. A whole import brings every name the ancestor's file
- *    declares, and Malloy refuses a file that declares again a name it
- *    imported, so each such name reads the ancestor's own source;
- *  - no word of the run is a name the ancestor's file imports: a selective
- *    import's local names, and for a whole import every name the imported
- *    file declares or imports, through its own whole imports in turn. A name
- *    the ancestor's file imported need not reach the child through the whole
- *    import, so the child could bind it itself; a run that reads none reads
- *    only names the ancestor's file declares. An imported file that cannot
- *    be read or lexed proves nothing.
+ *  - a name the ancestor's file binds must bind in the own file to the same
+ *    declaration (the same declaring file and declared name), or not at all,
+ *    and then the re-root imports it there selectively from the file that
+ *    declares it (`import { users } from "users.malloy"`, renamed as the
+ *    ancestor's file renames it). The own file declares or imports no such
+ *    name anywhere, so the import collides with nothing, and Malloy imports
+ *    are not transitive, so no file importing the own file sees it;
+ *  - any other word must bind to nothing in the own file either: a field
+ *    name the own file happened to declare as a source is refused rather
+ *    than reasoned about.
  *
- * A third check is defence in depth: no word of the run (a backticked name
- * included) is a name the child declares or imports selectively from
- * elsewhere.
- *
- * Unproven, the blocks are not carried and the source is served as before
- * (or answers live): a join in the run that bound to another source in the
- * child would read a table curation or a gate keeps from the caller.
+ * A file that does not lex, or that a whole import names and cannot be read,
+ * proves nothing. Unproven, the blocks are not carried and the source is
+ * served as before (or answers live): a join in the run that bound to
+ * another source in the own file would read a table curation or a gate
+ * keeps from the caller.
  */
-function bindsAlikeAcrossFiles(
-   childText: string,
-   childURL: string,
+function keptRunImports(
+   ownText: string,
+   ownURL: string,
    ancestorText: string,
    ancestorURL: string,
    runText: string,
    fileText: (url: string) => string | undefined,
-): boolean {
-   const childImports = topLevelImports(childText, childURL);
-   const ancestorImports = topLevelImports(ancestorText, ancestorURL);
-   if (!childImports || !ancestorImports) return false;
-   if (
-      !childImports.some((i) => i.whole && sameFile(i.resolved, ancestorURL))
-   ) {
-      return false;
-   }
+): string[] | undefined {
+   const theirs = fileBindings(ancestorText, ancestorURL, fileText);
+   const ours = fileBindings(ownText, ownURL, fileText);
+   if (!theirs || !ours) return undefined;
    const runTokens = lexAll(runText);
-   if (!runTokens) return false;
+   if (!runTokens) return undefined;
+   // A `%{ … }` embed in a SQL string reads Malloy names the lexer folds into
+   // the string's one token, so no check here can see them: a block that
+   // embeds is not carried across files (it answers live, as before).
+   if (runTokens.some((t) => !isName(t) && t.text.includes("%{"))) {
+      return undefined;
+   }
    const runWords = new Set(
       runTokens.flatMap((t) => (isName(t) ? [unquote(t.text)] : [])),
    );
-   const imported = namesImported(ancestorImports, fileText);
-   if (!imported) return false;
-   for (const name of imported) if (runWords.has(name)) return false;
-   const childNames = namesDeclaredOrImported(childText, childImports);
-   if (!childNames) return false;
-   for (const name of childNames) if (runWords.has(name)) return false;
-   return true;
+   const needed = new Map<string, string[]>();
+   for (const word of [...runWords].sort()) {
+      const want = theirs.get(word);
+      const have = ours.get(word);
+      if (!want) {
+         if (have) return undefined;
+         continue;
+      }
+      if (have) {
+         if (!sameFile(have.file, want.file) || have.name !== want.name) {
+            return undefined;
+         }
+         continue;
+      }
+      const list = needed.get(want.file) ?? [];
+      list.push(
+         want.name === word
+            ? identifier(word)
+            : `${identifier(word)} is ${identifier(want.name)}`,
+      );
+      needed.set(want.file, list);
+   }
+   return [...needed].map(
+      ([file, names]) =>
+         // malloy-text: each name was written by identifier() above.
+         `import { ${names.join(", ")} } from ${doubleQuotedString(relativeImportPath(ownURL, file))}`,
+   );
+}
+
+/** The declaration a top-level name reads: its declaring file and declared name. */
+interface Binding {
+   file: string;
+   name: string;
 }
 
 /**
- * Every name `imports` bring into a file: a selective import's local names,
- * and for a whole import each name the imported file declares or imports,
- * following its whole imports in turn (each file once). Undefined when an
- * imported file cannot be read or lexed.
+ * Every top-level name the file at `url` binds, to the declaration it reads
+ * ({@link keptRunImports}). Undefined when the file, or a file it imports
+ * whole, cannot be read or lexed, or one name binds two ways.
  */
-function namesImported(
-   imports: readonly FileImport[],
+function fileBindings(
+   text: string,
+   url: string,
    fileText: (url: string) => string | undefined,
-): Set<string> | undefined {
-   const names = new Set<string>();
-   const seen = new Set<string>();
-   const pending = [...imports];
-   while (pending.length > 0) {
-      const next = pending.pop()!;
-      for (const name of next.names) names.add(name);
-      if (!next.whole || seen.has(next.resolved)) continue;
-      seen.add(next.resolved);
-      const text = fileText(next.resolved);
-      if (text === undefined) return undefined;
-      const own = topLevelImports(text, next.resolved);
-      const declared = own && namesDeclaredOrImported(text, own);
-      if (!own || !declared) return undefined;
-      for (const name of declared) names.add(name);
-      pending.push(...own);
+): Map<string, Binding> | undefined {
+   const imports = topLevelImports(text, url);
+   const declared = namesDeclaredOrImported(text, []);
+   if (!imports || !declared) return undefined;
+   const out = new Map<string, Binding>();
+   const bind = (local: string, b: Binding): boolean => {
+      const had = out.get(local);
+      if (had && (!sameFile(had.file, b.file) || had.name !== b.name)) {
+         return false;
+      }
+      out.set(local, b);
+      return true;
+   };
+   for (const name of declared)
+      if (!bind(name, { file: url, name })) return undefined;
+   for (const i of imports) {
+      if (!i.whole) {
+         for (const p of i.pairs) {
+            if (!bind(p.local, { file: i.resolved, name: p.original })) {
+               return undefined;
+            }
+         }
+         continue;
+      }
+      const imported = fileText(i.resolved);
+      const own =
+         imported === undefined
+            ? undefined
+            : namesDeclaredOrImported(imported, []);
+      if (!own) return undefined;
+      for (const name of own) {
+         if (!bind(name, { file: i.resolved, name })) return undefined;
+      }
    }
-   return names;
+   return out;
+}
+
+/** `to` as an import path in the file at `from`: relative when both are files. */
+function relativeImportPath(from: string, to: string): string {
+   try {
+      const a = new URL(from);
+      const b = new URL(to);
+      if (a.protocol !== b.protocol || a.host !== b.host) return b.href;
+      const dir = a.pathname.split("/").slice(0, -1);
+      const target = b.pathname.split("/");
+      let k = 0;
+      while (k < dir.length && k < target.length - 1 && dir[k] === target[k])
+         k++;
+      const up = dir.length - k;
+      const rest = target.slice(k).join("/");
+      return up === 0 ? rest : `${"../".repeat(up)}${rest}`;
+   } catch {
+      return to;
+   }
 }
 
 /** A top-level `import` of a file: its path resolved, and whether it is whole. */
@@ -472,6 +553,8 @@ interface FileImport {
    whole: boolean;
    /** A selective import's local names. */
    names: string[];
+   /** A selective import's names, each local and as its file declares it. */
+   pairs: { local: string; original: string }[];
 }
 
 /** The file's top-level imports, or undefined when the text does not lex. */
@@ -483,23 +566,39 @@ function topLevelImports(text: string, url: string): FileImport[] | undefined {
       const t = tokens[k];
       if (t.kind !== "word" || t.text !== "import" || t.depth !== 0) continue;
       const names: string[] = [];
+      const pairs: { local: string; original: string }[] = [];
       let whole = true;
       let j = k + 1;
       if (tokens[j]?.text === "{") {
          whole = false;
          // `{ a, b is c }`: each local name is the word before `is`, or the
-         // word alone.
+         // word alone; the declared name is the word after `is`, or the same.
          j++;
          let expectName = true;
+         let renaming = false;
          for (; j < tokens.length && tokens[j].text !== "}"; j++) {
             const w = tokens[j];
             if (w.text === ",") {
                expectName = true;
+               renaming = false;
                continue;
             }
             if (expectName && isName(w)) {
                names.push(unquote(w.text));
+               pairs.push({
+                  local: unquote(w.text),
+                  original: unquote(w.text),
+               });
                expectName = false;
+               continue;
+            }
+            if (w.kind === "word" && w.text === "is") {
+               renaming = true;
+               continue;
+            }
+            if (renaming && isName(w) && pairs.length > 0) {
+               pairs[pairs.length - 1].original = unquote(w.text);
+               renaming = false;
             }
          }
          j++;
@@ -517,7 +616,7 @@ function topLevelImports(text: string, url: string): FileImport[] | undefined {
       } catch {
          return undefined;
       }
-      out.push({ resolved, whole, names });
+      out.push({ resolved, whole, names, pairs });
    }
    return out;
 }

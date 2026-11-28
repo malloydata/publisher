@@ -17,9 +17,14 @@
  *   it holds names a `COLLATE` (the source's own text is scanned per query,
  *   with no read);
  * - BigQuery: each connection's catalog for every table a source of the
- *   model reads, through every join: the projects' collated datasets, the
- *   tables' types, and the collated columns of each table in a collated
- *   dataset, as `BigQueryCatalog` reads them.
+ *   model reads, through every join, as `BigQueryCatalog` reads them: the
+ *   project-wide region reads first (the projects' collated datasets, the
+ *   tables' types, then each collated dataset's tables). When those are
+ *   refused the caller (a dataset-scoped account) and the tables span at
+ *   most `MAX_DATASET_READS` datasets, each dataset's own
+ *   `INFORMATION_SCHEMA` instead, which a dataset's READER may read, as a
+ *   `storage=` build reads it. Author SQL, which may read any dataset, and a
+ *   view are proved only project-wide.
  *
  * A field past the join bound, one Malloy cannot select alone (a measure),
  * and anything a read failed on is absent, which a lookup reads as unknown:
@@ -48,11 +53,15 @@ import {
 } from "../domain/collation";
 import { DUCKDB_COLLATE_DEFINITIONS } from "../domain/collation";
 import { collationReaderOf } from "./collation";
+import type { BigQueryBuildUnread } from "../domain/collation";
 import {
    BigQueryCatalog,
+   MAX_DATASET_READS,
    type PlacedTable,
    placeTable,
    sqlProjects,
+   TABLE_TYPES,
+   withJobContext,
 } from "./collation/bigquery";
 import type { CatalogIO } from "./collation/catalog_io";
 import {
@@ -82,8 +91,16 @@ export interface RecordedBigQuery {
    readonly projects: readonly string[];
    /** Each project's collated datasets; undefined: not read or not provable. */
    readonly collated: ReadonlyMap<string, ReadonlySet<string> | undefined>;
-   /** Every table's type by `project.dataset.name`, as `tableTypes` read it. */
-   readonly types: ReadonlyMap<string, string> | "no_region" | undefined;
+   /**
+    * Every table's type by `project.dataset.name`, as `tableTypes` read it;
+    * `per_dataset`: every table's dataset was read in its own catalog
+    * instead, so `datasets` holds every table the model reads, by type.
+    */
+   readonly types:
+      | ReadonlyMap<string, string>
+      | "no_region"
+      | "per_dataset"
+      | undefined;
    /** The datasets read table by table; undefined: the read failed. */
    readonly datasets: ReadonlyMap<
       string,
@@ -254,6 +271,15 @@ const compiled = new WeakMap<
    Map<string, Promise<{ sql: string; column: string }[] | undefined>[]>
 >();
 
+/**
+ * Why a bind's BigQuery catalog read could not prove what it read, and where:
+ * a comparison over it answers live. Told, never logged here: the caller logs
+ * it, with no driver text in it.
+ */
+export type CapabilityUnread = BigQueryBuildUnread & {
+   readonly connectionName: string;
+};
+
 /** What reading a model's capabilities goes through. */
 interface CapabilityReadArgs {
    readonly modelDef: ModelDef;
@@ -263,6 +289,10 @@ interface CapabilityReadArgs {
    readonly connection: (name: string) => Promise<Connection>;
    /** A value for each given that has no default, for the probe compiles. */
    readonly givens?: Record<string, unknown>;
+   /** Told each BigQuery catalog read that failed or saw too little. */
+   readonly onUnread?: (unread: CapabilityUnread) => void;
+   /** `MAX_DATASET_READS`, which a spec lowers. */
+   readonly datasetReadLimit?: number;
 }
 
 /**
@@ -299,6 +329,7 @@ export async function readStringCapabilities(
                dialect,
                name,
                named.filter(([, s]) => s.connection === name).map(([, s]) => s),
+               args,
             ),
          );
       } catch {
@@ -326,6 +357,7 @@ async function connectionCapability(
    dialect: string,
    name: string,
    structs: readonly SourceShape[],
+   args: Pick<CapabilityReadArgs, "onUnread" | "datasetReadLimit">,
 ): Promise<ConnectionCapability> {
    const reader = collationReaderOf(dialect);
    if (reader?.scope === "column") {
@@ -356,14 +388,33 @@ async function connectionCapability(
       };
    }
    if (reader?.scope === "dataset") {
+      const tell = (unread: BigQueryBuildUnread) => {
+         try {
+            args.onUnread?.({
+               connectionName: name,
+               ...withJobContext(unread, io),
+            });
+         } catch {
+            // A listener's failure is not the read's.
+         }
+      };
       return {
          dialect,
-         catalog: await recordBigQuery(io, name, structs).catch(() => ({
-            projects: [],
-            collated: new Map(),
-            types: undefined,
-            datasets: new Map(),
-         })),
+         catalog: await recordBigQuery(
+            io,
+            name,
+            structs,
+            tell,
+            args.datasetReadLimit ?? MAX_DATASET_READS,
+         ).catch(() => {
+            tell({ reason: "read_failed" });
+            return {
+               projects: [],
+               collated: new Map(),
+               types: undefined,
+               datasets: new Map(),
+            };
+         }),
       };
    }
    return { dialect };
@@ -408,22 +459,33 @@ export function irSql(node: unknown, out: string[] = [], depth = 0): string[] {
    return out;
 }
 
-/** What `catalog` reads for every table `structs` read, through every join. */
+/**
+ * What `catalog` reads for every table `structs` read, through every join:
+ * the project-wide region reads, or, when those are refused the caller and
+ * the tables are all placed in at most `datasetReadLimit` datasets, each
+ * dataset's own catalog. Each read
+ * that fails or sees too little is told to `tell`; what it did not read is
+ * absent, which a lookup reads as unknown.
+ */
 async function recordBigQuery(
    io: CatalogIO,
    name: string,
    structs: readonly SourceShape[],
+   tell: (unread: BigQueryBuildUnread) => void,
+   datasetReadLimit: number,
 ): Promise<RecordedBigQuery> {
    const catalog = new BigQueryCatalog(new Map(), io, name);
    const { job } = catalog;
-   const projects = new Set(job.projects);
+   // The projects an unplaced read (author SQL) may read.
+   const unplaced = new Set<string>();
    const placed: PlacedTable[] = [];
    for (const struct of structs) {
       // One stage with no join usage recorded reads every join it reaches.
       const tables = queryTableReads(struct, [{}]);
       if (tables === undefined) {
+         for (const p of job.projects) unplaced.add(p);
          for (const p of sqlProjects(irSql(struct).join("\n"))) {
-            projects.add(p);
+            unplaced.add(p);
          }
          continue;
       }
@@ -432,15 +494,28 @@ async function recordBigQuery(
          const p = placeTable(t.table, job.projects);
          if (p === undefined) continue;
          placed.push(p);
-         for (const project of p.projects) projects.add(project);
       }
    }
+   // The project-wide region views first: two queries per project and
+   // region, however many datasets the tables are in.
    const collated = new Map<string, ReadonlySet<string> | undefined>();
-   for (const project of projects) {
+   for (const project of new Set([
+      ...job.projects,
+      ...unplaced,
+      ...placed.flatMap((t) => t.projects),
+   ])) {
       collated.set(project, await catalog.collatedDatasets(project));
    }
    const types =
       placed.length > 0 ? await catalog.tableTypes(placed) : new Map();
+   // Each unread project of `projects`, told.
+   const tellUnread = (projects: Iterable<string>) => {
+      for (const project of new Set(projects)) {
+         if (collated.get(project) === undefined) {
+            tell({ reason: "project_unread", project });
+         }
+      }
+   };
    const datasets = new Map<
       string,
       | ReadonlyMap<
@@ -449,17 +524,70 @@ async function recordBigQuery(
         >
       | undefined
    >();
+   const readDataset = async (t: PlacedTable) => {
+      if (datasets.has(t.dataset)) return;
+      const listed = await catalog.datasetTables(t.dataset).catch(() => {
+         tell({
+            reason: "dataset_unread",
+            project: t.projects[0],
+            dataset: t.datasetName,
+         });
+         return undefined;
+      });
+      datasets.set(t.dataset, listed);
+   };
+   const wideProved =
+      types !== undefined &&
+      placed.every((t) =>
+         t.projects.every((p) => collated.get(p) !== undefined),
+      );
+   if (
+      !wideProved &&
+      catalog.projectReadDenied &&
+      placed.length > 0 &&
+      new Set(placed.map((t) => t.dataset)).size <= datasetReadLimit
+   ) {
+      // Refused the region views (a dataset-scoped account): every placed
+      // table's dataset in its own catalog, which a dataset's READER may
+      // read. A view and author SQL stay proved project-wide only.
+      const unprovable = new Set(unplaced);
+      for (const t of placed) {
+         await readDataset(t);
+         const listed = datasets.get(t.dataset);
+         if (listed === undefined) continue;
+         const table = listed.get(t.name);
+         const where = {
+            project: t.projects[0],
+            dataset: t.datasetName,
+            table: t.name,
+         };
+         if (table === undefined) {
+            tell({ reason: "dataset_table_not_listed", ...where });
+         } else if (!TABLE_TYPES.has(table.type)) {
+            // A view's columns carry no collation of what it reads: proved
+            // only by its whole project holding no collated column.
+            for (const p of t.projects) unprovable.add(p);
+         }
+      }
+      tellUnread(unprovable);
+      return {
+         projects: job.projects,
+         collated,
+         types: "per_dataset",
+         datasets,
+      };
+   }
+   tellUnread(collated.keys());
+   if (types === undefined) {
+      tell({ reason: "table_types_unread", project: placed[0]?.projects[0] });
+   }
    for (const t of placed) {
-      if (datasets.has(t.dataset)) continue;
       const inCollated = t.projects.some((p) => {
          const d = collated.get(p);
          return d === undefined || d.has(t.datasetName);
       });
       if (types !== "no_region" && !inCollated) continue;
-      datasets.set(
-         t.dataset,
-         await catalog.datasetTables(t.dataset).catch(() => undefined),
-      );
+      await readDataset(t);
    }
    return { projects: job.projects, collated, types, datasets };
 }

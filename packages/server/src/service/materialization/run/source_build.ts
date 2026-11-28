@@ -1192,7 +1192,9 @@ export function logBigQueryBuildUnread(
          connectionName: source.connectionName,
          reason: unread.reason,
          ...(unread.project !== undefined ? { project: unread.project } : {}),
-         location: unread.location ?? "per-dataset",
+         ...(unread.location !== undefined
+            ? { location: unread.location }
+            : {}),
          ...(unread.dataset !== undefined ? { dataset: unread.dataset } : {}),
          ...(unread.table !== undefined ? { table: unread.table } : {}),
          ...(unread.tableType !== undefined
