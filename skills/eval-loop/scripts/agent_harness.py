@@ -51,6 +51,7 @@ import shutil
 import subprocess
 import tempfile
 import sys
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import Any, Iterable
@@ -82,6 +83,9 @@ ALWAYS_BLOCKED = (
     "PushNotification", "ScheduleWakeup", "Workflow", "DesignSync",
     "EnterWorktree", "ExitWorktree", "TaskOutput", "TaskStop",
     "ShareOnboardingGuide", "ReportFindings",
+    # A newer CLI built-in; it alone flagged the
+    # first gtm-engine platform smoke as contaminated.
+    "PublishPlugin",
     # Granted whenever an MCP server advertises resources (the hosted server
     # does); seen 2026-09-01 on the first platform smoke, where they alone
     # flagged the attempt contaminated.
@@ -253,18 +257,42 @@ def run_cli(cmd: list[str], *, cwd: str, timeout: int,
     text, stderr, attempt, wall = "", "", 1, 0.0
     for attempt in range(1, retries + 2):
         t0 = time.time()
+        # Read stdout as it streams and stamp each
+        # line with seconds since spawn (`_t` on the event), so an attempt can
+        # report when its first get_context / execute_query happened. Same
+        # timeout and failure semantics as the subprocess.run it replaces.
+        stamped: list[tuple[float, str]] = []
         try:
-            p = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True,
-                               timeout=timeout, env=env)
-            stdout, stderr = p.stdout, p.stderr
-        except subprocess.TimeoutExpired:
-            stdout, stderr = "", f"timeout after {timeout}s"
+            p = subprocess.Popen(cmd, cwd=cwd, stdout=subprocess.PIPE,
+                                 stderr=subprocess.PIPE, text=True, env=env)
+            err_chunks: list[str] = []
+
+            def _pump_out() -> None:
+                for raw in p.stdout:
+                    stamped.append((round(time.time() - t0, 2), raw))
+
+            def _pump_err() -> None:
+                err_chunks.append(p.stderr.read())
+
+            threads = [threading.Thread(target=f, daemon=True)
+                       for f in (_pump_out, _pump_err)]
+            for th in threads:
+                th.start()
+            try:
+                p.wait(timeout=timeout)
+                for th in threads:
+                    th.join(timeout=10)
+                stderr = "".join(err_chunks)
+            except subprocess.TimeoutExpired:
+                p.kill()
+                p.wait()
+                stamped, stderr = [], f"timeout after {timeout}s"
         except OSError as exc:                      # claude not on PATH, etc.
-            stdout, stderr = "", str(exc)
+            stamped, stderr = [], str(exc)
         wall = round(time.time() - t0, 1)
 
         events, text = [], ""
-        for line in stdout.splitlines():
+        for t_line, line in stamped:
             line = line.strip()
             if not line.startswith("{"):
                 continue
@@ -272,6 +300,8 @@ def run_cli(cmd: list[str], *, cwd: str, timeout: int,
                 e = json.loads(line)
             except json.JSONDecodeError:
                 continue
+            if isinstance(e, dict):
+                e["_t"] = t_line
             events.append(e)
             if e.get("type") == "assistant":
                 for c in e["message"].get("content") or []:
