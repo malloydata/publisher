@@ -474,7 +474,7 @@ What it does not cover, so a multi-tenant deployment still has to:
   connection) runs only as a single SELECT, CTEs included, decided by DuckDB's parser: at the
   connection SQL routes, and, for a model, when the package loads (a `.sql()` source must be one
   SELECT and a raw SQL expression one expression of one SELECT, or the package does not load). What still writes inside a connection's roots is the operator's `setupSQL`
-  and Publisher's own work (a `#@ persist` build, a temporary table it creates around a caller's
+  and Publisher's own work (a materialization build, a temporary table it creates around a caller's
   SELECT).
 - **A single SELECT can still change state.** The gate decides by statement shape, so a SELECT
   that calls a function with a side effect is not refused: `checkpoint()`, `nextval()`, or a

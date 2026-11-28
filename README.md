@@ -56,8 +56,8 @@ but looks plausible — and the same question returns the same numbers tomorrow.
   decides what is even visible. Publisher is a microservice: run it locally with your own
   permissions, or inside your cloud behind the gateway that authenticates your users and sets those
   givens. The controls rely on that gateway (see [operating model](docs/security-posture.md#operating-model-a-microservice-behind-your-gateway)).
-- **Optimize** — one `#@ persist` annotation materializes an expensive source into a table and
-  `#@ preaggregate` rolls it up, rebuilt on demand or on a schedule.
+- **Optimize** — one `#(materialize)` annotation materializes an expensive source into a table and
+  `#(rollup)` rolls a measure up, rebuilt on demand or on a schedule.
 - **Run anywhere** — DuckDB built in for CSV, Parquet, JSON, and Excel; BigQuery, Snowflake, Postgres,
   Databricks, MotherDuck, and more by connection; `npx`, Docker, or Compose, in minutes.
 
@@ -233,12 +233,12 @@ The running server serves its full OpenAPI spec at `http://localhost:4000/api-do
 
 ### Optimize
 
-- **Materialize.** One `#@ persist` annotation turns an expensive source into a table, rebuilt on
+- **Materialize.** One `#(materialize)` annotation turns an expensive source into a table, rebuilt on
   demand, from the `malloy-pub` CLI, or on a cron with the opt-in scheduler —
   [docs/materialization.md](docs/materialization.md).
-- **Pre-aggregate.** `#@ preaggregate` rolls a measure up to a coarse grain so covered queries read a
+- **Roll up.** `#(rollup)` rolls a measure up to a coarse grain so covered queries read a
   small table instead of the fact table — [docs/preaggregation.md](docs/preaggregation.md).
-- **Store it where you like.** Persist into a [DuckLake](docs/ducklake.md) storage tier, attach a
+- **Store it where you like.** Materialize into a [DuckLake](docs/ducklake.md) storage tier, attach a
   DuckLake catalog read-only, and run offline or air-gapped —
   [docs/persist-storage-tutorial.md](docs/persist-storage-tutorial.md).
 - **Attribute every query.** [Query metadata](docs/query-metadata.md) tags each statement with a team,

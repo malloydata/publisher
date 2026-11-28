@@ -176,7 +176,7 @@ indexes them; as with `/compile`, admit that flag at the gateway only for that h
 The boundary checks the source a query **runs**. A query over an exported source that joins a
 hidden source still runs, and returns the joined fields.
 
-Materialization ignores the surface. A build compiles every model, so a hidden `#@ persist`
+Materialization ignores the surface. A build compiles every model, so a hidden `#(materialize)`
 intermediate is built, and an exported source that reads it reads the built table. See
 [materialization.md](materialization.md).
 

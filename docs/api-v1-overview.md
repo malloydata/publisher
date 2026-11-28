@@ -295,7 +295,7 @@ The spec's nouns are the vocabulary, and the Console and the docs follow them:
 | ---------------- | ------------------------------------------------------------------------------------------------------- |
 | environment      | a namespace for packages and connections                                                                |
 | connection       | a warehouse handle the models read                                                                      |
-| destination      | where `#@ persist storage=` builds write; set on the environment, never named by a model                 |
+| destination      | where `#(materialize) storage=` builds write; set on the environment, never named by a model                 |
 | package          | a record with pointers; its content is a version                                                        |
 | version          | an immutable snapshot of a package's content; `latest` is the package's pointer to one of them          |
 | stored version   | any version but `live`, the pseudo-version a live (watched) package serves                              |
