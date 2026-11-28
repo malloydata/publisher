@@ -1457,6 +1457,7 @@ export function assertInheritedSourceFiltersBind(
             : [];
          if (members.length > 0) {
             for (const member of members) {
+               declaring = member;
                assertFilterConditionBindsToDeclaringSource(
                   member,
                   struct,
@@ -1465,6 +1466,7 @@ export function assertInheritedSourceFiltersBind(
             }
             continue;
          }
+         declaring = undefined;
          throw new Error(
             "a row-security filter's declaring source could not be resolved",
          );
@@ -1846,7 +1848,6 @@ export class InheritedFilterUnverifiedError extends Error {
       condition: FilterCondition,
       declaring: SourceDef | undefined,
    ): InheritedFilterUnverifiedError {
-      if (err instanceof InheritedFilterUnverifiedError) return err;
       const message = err instanceof Error ? err.message : String(err);
       const at = firstFieldUsageLocation(condition);
       const sourceID = (declaring as { sourceID?: unknown } | undefined)

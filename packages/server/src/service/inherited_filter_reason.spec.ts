@@ -25,20 +25,45 @@ describe("the inherited-filter guard's reason classes", () => {
       expect(thrown.length).toBeGreaterThanOrEqual(10);
    });
 
-   it("classes each one", () => {
-      const classed = thrown.map((m) => [m, inheritedFilterReasonOf(m)]);
-      const expected = (m: string) =>
-         m.includes("resolves to a different field")
-            ? "redefined_field"
-            : m.includes("inputs are not recorded")
-              ? "unrecorded_join"
-              : m.includes("resolution bound")
-                ? "resolution_bound"
-                : "unresolved_declaration";
-      expect(classed).toEqual(thrown.map((m) => [m, expected(m)]));
-      for (const [, reason] of classed) {
+   // Each refusal's class, pinned: a message added to the guard that is not
+   // listed here fails, so its class is decided rather than defaulted.
+   const CLASSES: [string, string][] = [
+      [
+         ", which resolves to a different field on the executed source",
+         "redefined_field",
+      ],
+      [", whose ON or where: inputs are not recorded", "unrecorded_join"],
+      [
+         "a row-security filter's declaring source could not be resolved",
+         "unresolved_declaration",
+      ],
+      [
+         "a row-security gate's declaring source could not be resolved",
+         "unresolved_declaration",
+      ],
+      [
+         "a row-security gate's entry point could not be resolved",
+         "unresolved_declaration",
+      ],
+      ["a query source's base could not be resolved", "unresolved_declaration"],
+      ["field-usage closure exceeded the resolution bound", "resolution_bound"],
+      ["composite nesting exceeded the resolution bound", "resolution_bound"],
+      [
+         "row-security filter recursion exceeded the join-depth resolution bound",
+         "resolution_bound",
+      ],
+   ];
+
+   it("classes each one as pinned", () => {
+      for (const message of thrown) {
+         const listed = CLASSES.filter(([key]) => message.includes(key));
+         expect([message, listed.length]).toEqual([message, 1]);
+         expect([message, inheritedFilterReasonOf(message)]).toEqual([
+            message,
+            listed[0][1],
+         ]);
          expect(INHERITED_FILTER_REASONS as readonly string[]).toContain(
-            reason,
+            listed[0][1],
          );
       }
    });

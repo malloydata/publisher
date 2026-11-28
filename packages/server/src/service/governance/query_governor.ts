@@ -2807,6 +2807,14 @@ export class QueryGovernor {
          this.rowLevelFilteredRunnables.set(recompiled, rowLevel);
          return bound(recompiled);
       } catch (err) {
+         // The inherited-filter guard on the recompile already booked and
+         // logged its own denial, and says so to the caller: kept as it is.
+         if (
+            err instanceof AccessDeniedError &&
+            err.inheritedFilter !== undefined
+         ) {
+            throw err;
+         }
          recordRowLevelGateDecision("denied_by_gate", siteOf(rowLevel[0]));
          logger.debug("Row-level authorize attach failed; denying", {
             modelPath: this.modelPath,

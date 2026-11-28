@@ -5659,6 +5659,7 @@ components:
       enum:
         - INVALID_REQUEST
         - ACCESS_DENIED
+        - INHERITED_FILTER_UNVERIFIED
         - STORAGE_ACCESS_DENIED
         - PATH_ACCESS_DENIED
         - READ_ONLY
