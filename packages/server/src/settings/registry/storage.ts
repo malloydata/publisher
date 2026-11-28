@@ -120,8 +120,8 @@ export const storage = [
       type: oneOf(["off", "write-only", "on"]),
       default: "off",
       description:
-         "How #@ persist storage= is honored: off, write-only (build only) or on (build and serve).",
-      notes: "Controls the `#@ persist storage=<name>` materialization tier (materialize a source into a registered [storage destination](connections.md#storage-destinations) and serve it from there \u2014 a destination is declared alongside `connections`, not in it, and is not nameable from a model). `off`: a `storage=` source is skipped by the build and served live, with no error; it is never built in its own warehouse instead. `write-only`: materialize into the storage destination but still serve live (the measurement rung). `on`: build **and** serve from the storage table via the virtual-source transform. Read at startup. A kill switch: moving it **down** never fails a loaded package \u2014 a `storage=` source just reverts to serving live and surfaces as a package warning. See [persist-storage-tutorial.md](persist-storage-tutorial.md).",
+         "How #(materialize) storage= is honored: off, write-only (build only) or on (build and serve).",
+      notes: "Controls the `#(materialize) storage=\"<name>\"` materialization tier (materialize a source into a registered [storage destination](connections.md#storage-destinations) and serve it from there \u2014 a destination is declared alongside `connections`, not in it, and is not nameable from a model). `off`: a `storage=` source is skipped by the build and served live, with no error; it is never built in its own warehouse instead. `write-only`: materialize into the storage destination but still serve live (the measurement rung). `on`: build **and** serve from the storage table via the virtual-source transform. Read at startup. A kill switch: moving it **down** never fails a loaded package \u2014 a `storage=` source just reverts to serving live and surfaces as a package warning. See [persist-storage-tutorial.md](persist-storage-tutorial.md).",
       aliases: { env: ["PERSIST_STORAGE_MODE"] },
    }),
    setting({
