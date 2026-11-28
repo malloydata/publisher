@@ -43,10 +43,15 @@ import {
    variantsOf,
 } from "./query_serving";
 import type { components } from "../api";
-import { getMaxQueryRows, getMaxResponseBytes } from "../config";
+import {
+   getMaterializeEnabled,
+   getMaxQueryRows,
+   getMaxResponseBytes,
+} from "../config";
 import {
    AccessDeniedError,
    BadRequestError,
+   IndexSourceUnbuiltError,
    InvalidQueryRequestError,
    ModelCompilationError,
    PayloadTooLargeError,
@@ -140,6 +145,7 @@ import {
    runStatementCount,
 } from "./model_query_compile";
 import { quotedIdentifier } from "./malloy_text";
+import { unbuiltIndexSource } from "./index_query_guard";
 import type { QueryPrivileges, QueryRequest } from "./model_query_request";
 
 type ApiSource = components["schemas"]["Source"];
@@ -354,6 +360,13 @@ export class ModelServing {
          throw this.preparationError(ctx, error);
       }
       const governed = await this.govern(ctx, admitted, prepared, answer);
+      await this.refuseUnbuiltIndexSource(ctx, {
+         pinned,
+         prepared,
+         answer,
+         governed,
+         servedCopy,
+      });
       const ran = await this.execute(ctx, {
          pinned,
          viewManifest,
@@ -816,6 +829,88 @@ export class ModelServing {
          );
          throw settled.refusal;
       }
+   }
+
+   /**
+    * An index query (`queryClass: index`) the router sent live, on a source
+    * that declares a stored table of its own with none ready, is refused
+    * (409 `INDEX_SOURCE_UNBUILT`) rather than run against the warehouse: an
+    * index query reads every distinct value of the source, a full scan of
+    * a large table (`index_query_guard.ts`).
+    *
+    * AFTER govern, so curation's and the boundary's 404s, every gate's 403
+    * and the inherited-filter guard decide first, exactly as for any other
+    * query: a caller who may not query the source never learns it has a
+    * table. The governed runnable is then prepared, which runs no SQL, so a
+    * gate given the caller did not supply denies here as the run would
+    * (`failQuery`), not after the refusal.
+    *
+    * Not refused (answered as before): a stored answer (a); a source with
+    * no declaration of its own, or any other class (d). HELD (b): a ready
+    * table IS bound and the served copy declined it (a gate it cannot keep,
+    * a column left out, past its freshness window), or a stored run failed
+    * and degraded to live; each is still answered live, pinned by
+    * `index_source_unbuilt.component.spec.ts`.
+    */
+   private async refuseUnbuiltIndexSource(
+      ctx: QueryContext,
+      args: {
+         pinned: Pinned;
+         prepared: Prepared;
+         answer: Answer;
+         governed: Governed;
+         servedCopy: ServedCopyServe;
+      },
+   ): Promise<void> {
+      const { request } = ctx;
+      if (request.queryMetadataInput?.queryClass !== "index") return;
+      const { prepared, answer, governed } = args;
+      if (answer.leg !== "live") return;
+      const catalog = this.host
+         .servingHost(args.servedCopy)
+         .materializedTables();
+      const unbuilt = await unbuiltIndexSource({
+         runnable: prepared.liveRunnable,
+         modelDef: this.host.modelDef(),
+         pinned: args.pinned,
+         plan: catalog && {
+            plannedEntityId: (id) => catalog.planned.get(id)?.sourceEntityId,
+            refused: (id) => catalog.refused?.has(id) ?? false,
+         },
+         materializeEnabled: getMaterializeEnabled(),
+      });
+      if (!unbuilt) return;
+      try {
+         // Binds the givens, a grafted gate's among them; no SQL runs.
+         await governed.runnable.getPreparedResult({
+            givens: prepared.surfaceGivens,
+            buildManifest: EMPTY_BUILD_MANIFEST,
+         });
+      } catch (error) {
+         this.failQuery(ctx, governed, answer, error);
+      }
+      queryExecutionHistogram().record(
+         performance.now() - ctx.startTime,
+         this.queryMetricAttributes({
+            environment: request.queryMetadataInput?.environment,
+            queryName: request.queryName,
+            sourceName: request.sourceName,
+            status: "rejected",
+         }),
+      );
+      logger.info(
+         "Index query refused: its source's stored table is not ready",
+         {
+            packageName: this.host.packageName,
+            modelPath: this.host.modelPath,
+            source: unbuilt.sourceName,
+            unbuiltReason: unbuilt.unbuiltReason,
+         },
+      );
+      throw new IndexSourceUnbuiltError(
+         unbuilt.sourceName,
+         unbuilt.unbuiltReason,
+      );
    }
 
    // ---- Stage 5: run ----------------------------------------------------

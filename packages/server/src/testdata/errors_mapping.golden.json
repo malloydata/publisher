@@ -2831,6 +2831,78 @@
       ]
     }
   },
+  "IndexSourceUnbuiltError unbuilt": {
+    "class": "IndexSourceUnbuiltError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "Source \"orders\" declares a stored table, and index queries on it are answered only from that table, which is not ready: it has not been built yet, or is not bound to this version. The query was not run against the warehouse. Retry once the table is built.",
+        "reason": "INDEX_SOURCE_UNBUILT",
+        "unbuiltReason": "unbuilt"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Source \"orders\" declares a stored table, and index queries on it are answered only from that table, which is not ready: it has not been built yet, or is not bound to this version. The query was not run against the warehouse. Retry once the table is built.",
+      "suggestions": [
+        "The query is fine. Do not rewrite it: this source answers index queries only from its stored table, which is not ready.",
+        "Retry once the source's table is built."
+      ],
+      "reason": "INDEX_SOURCE_UNBUILT",
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Source \"orders\" declares a stored table, and index queries on it are answered only from that table, which is not ready: it has not been built yet, or is not bound to this version. The query was not run against the warehouse. Retry once the table is built.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
+  "IndexSourceUnbuiltError refused": {
+    "class": "IndexSourceUnbuiltError",
+    "http": {
+      "status": 409,
+      "json": {
+        "code": 409,
+        "message": "Source \"orders\" declares a stored table, and index queries on it are answered only from that table, which is not ready: this server's build plan refuses to build it (the package's refusedSources says why). The query was not run against the warehouse. It is answered once a change to the package or the server's settings lets the table be built.",
+        "reason": "INDEX_SOURCE_UNBUILT",
+        "unbuiltReason": "refused"
+      },
+      "logged": false,
+      "logs": []
+    },
+    "mcp": {
+      "message": "Source \"orders\" declares a stored table, and index queries on it are answered only from that table, which is not ready: this server's build plan refuses to build it (the package's refusedSources says why). The query was not run against the warehouse. It is answered once a change to the package or the server's settings lets the table be built.",
+      "suggestions": [
+        "The query is fine. Do not rewrite it: this source answers index queries only from its stored table, which is not ready.",
+        "The package's build plan refuses to build that table (its refusedSources says why), so a retry fails the same way until the package or the server's settings change."
+      ],
+      "reason": "INDEX_SOURCE_UNBUILT",
+      "logs": []
+    },
+    "mcpSetup": {
+      "message": "An unexpected internal error occurred during executeQuery (Setup).: Source \"orders\" declares a stored table, and index queries on it are answered only from that table, which is not ready: this server's build plan refuses to build it (the package's refusedSources says why). The query was not run against the warehouse. It is answered once a change to the package or the server's settings lets the table be built.",
+      "suggestions": [
+        "Try the request again later.",
+        "If the problem persists, check server logs or contact support."
+      ],
+      "logs": [
+        [
+          "error",
+          "[MCP Server Error] Error accessing package/model for query"
+        ]
+      ]
+    }
+  },
   "MaterializedTableDropRefusedError in use": {
     "class": "MaterializedTableDropRefusedError",
     "http": {

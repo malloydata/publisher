@@ -232,6 +232,13 @@ export class ServeVerdicts {
       const catalog: MaterializedTableCatalog = {
          planned,
          bound: bound ?? {},
+         ...(plan.buildPlan
+            ? {
+                 refused: new Set(
+                    Object.keys(plan.buildPlan.refusedSources ?? {}),
+                 ),
+              }
+            : {}),
          ...(liveVerdicts
             ? {
                  liveVerdicts: liveVerdicts.byTable,

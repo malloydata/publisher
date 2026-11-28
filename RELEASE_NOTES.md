@@ -36,6 +36,18 @@ Give the heading a title — `## [Unreleased] — what changed`, with an em dash
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
 
+## [Unreleased] — an index query on a source with a stored table reads the table or is refused
+
+**[new] An index query on a source that declares a stored table is answered from that table or refused, and is never run live against the warehouse.** A query sent with `queryClass: index` (the class a dimensional-index build sets) reads every distinct value of the source's dimensions. On a source that declares `#(materialize)`, or its own `#@ persist`, that is a full scan of the large warehouse table the stored one exists to spare, and until now it ran live whenever the stored table was not ready. A build scanning such tables could run into a warehouse's per-query byte limit, or simply pay for the scan. Now:
+
+- **A table of the source is bound:** the query is answered from it, as before.
+- **None is ready** (not built yet, not bound to the version that answered, or refused by the build plan): `409`, `reason: INDEX_SOURCE_UNBUILT`, with `unbuiltReason` `unbuilt` or `refused` (`building` and `failed` are reserved; read an absent value as `unbuilt`). The message names the source as the caller queried it, never a table, path or connection.
+- **The source declares nothing of its own** (a plain source, or an extension that only inherits its base's declaration), or **the query has any other class:** answered as before.
+
+The published surface's 404s, the gates' 403s and the inherited-filter check all decide first, so a caller who may not query the source gets exactly the answer an `interactive` query gets. One case is unchanged on purpose: a table is bound, but the served copy declines it for that query (a time zone it was not built in, past its freshness window, a column it left out), or a stored run fails and falls back. Those index queries are still answered live.
+
+**Who is affected:** clients that send `queryClass: index`. **What to do:** treat `INDEX_SOURCE_UNBUILT` as deferred and retry once the source's table is built. Nothing changes for other clients.
+
 ## [Unreleased] — an inherited `where:` that cannot be verified says so
 
 **[new] A query denied because a `where:` its source inherits could not be verified now answers with its own reason and says why.** Publisher checks, on every query, that a `where:` a source inherits from a source it is built from still reads the fields it was written against. Until now a failed check answered `403`, `reason: ACCESS_DENIED`, `Access denied for source "…"`, exactly like a gate's denial, and logged its reason only at debug level. An author whose model was denied this way could not tell it from a permission rule. The deny itself is unchanged, and it still fails closed with the same status. Two things change:
