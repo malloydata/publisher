@@ -266,7 +266,7 @@ every reload, in the same job that compiles its models, so the server's event lo
 for it. A load bound to a build manifest walks twice, both times in the worker. The walk counts
 against that job's timeout (`packageLoad.jobTimeoutMs`, 120 s). Every declared set is read once,
 however many workflows list it. The main thread pays only to receive the result and adopt it:
-rebuild each set's readers and hash the shas the worker shipped, reading no file. `bun run perf:skills-reload` in `packages/server` builds a package with the most
+rebuild each set's readers from the rows and shas the worker shipped, reading no file and hashing nothing. `bun run perf:skills-reload` in `packages/server` builds a package with the most
 sets it may declare (32), each spending every per-set cap, and times both sides. A package with up to 64 skills in each set
 costs more than the bench's, which keeps each set's 1,000 inline files in one skill. On a development
 machine with a warm page cache, the median of 3 reloads, in milliseconds:
@@ -280,7 +280,7 @@ machine with a warm page cache, the median of 3 reloads, in milliseconds:
 
 A walked file costs about 60 microseconds in the worker, so file count moves the time most. Keep a
 skill to the files an agent uses. The main thread's share is the structured-clone receive of the
-walk and one hash over the shipped shas, which grow with the number of files and inline Markdown
+walk and the adoption of its rows, which grow with the number of files and inline Markdown
 bytes, not with their content: about 20 ms at the most a package may declare.
 
 If the walk cannot finish (it throws, or a listed set or an instructions file exists but cannot be

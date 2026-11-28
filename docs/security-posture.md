@@ -137,7 +137,7 @@ Concretely:
   the `get_workflow` and `get_skill_set` descriptions and the bundled `malloy-run-workflow` skill state:
   write only `name` and `description` into the installed file's frontmatter, taken from the entry's
   fields, then the text after the file's own frontmatter, and name any other key the file carried to the
-  user. An installer that keeps the file's frontmatter gives up the bounded reader's protection, and the
+  user. An installer that keeps the file's frontmatter gives up the bounded reader's protection (the server's own size-capped, expansion-limited read of the frontmatter, whose `name` and `description` the installer writes instead of parsing the file's own), and the
   server cannot enforce the rule for it. Publisher itself runs nothing from a definition.
 - **A package's Malloy reads only its own package's files.** The same realpath rule bounds every
   file the compiler reads for a package's models (an `import`, a `.malloynb`, a data-styles

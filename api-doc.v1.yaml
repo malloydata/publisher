@@ -2212,7 +2212,7 @@ paths:
         "409":
           $ref: "#/components/responses/Conflict"
           description: "The version's skill sets and workflows could not be read when it loaded (a folder the server could not
-            list), so none is served until it reloads; the message names the cause."
+            list), so none is served until it reloads; the message names the cause. `reason`: `SKILL_SETS_UNAVAILABLE`."
         "410":
           $ref: "#/components/responses/Gone"
         "424":
@@ -2274,9 +2274,7 @@ paths:
           description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`."
         "409":
           $ref: "#/components/responses/Conflict"
-          description: "The version's skill sets and workflows could not be read when it loaded (a folder the server could not
-            list), so none is served until it reloads; the message names the cause. A name the `publisher.json` never declared is
-            still a 404."
+          description: "The version's skill sets and workflows could not be read when it loaded (a folder the server could not list), so none is served until it reloads; the message names the cause. `reason`: `SKILL_SETS_UNAVAILABLE`."
         "410":
           $ref: "#/components/responses/Gone"
         "424":
@@ -2346,12 +2344,10 @@ paths:
           description: "The request is malformed, or the Malloy or SQL in it was refused. `reason`: `INVALID_REQUEST`."
         "404":
           $ref: "#/components/responses/NotFound"
-          description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`."
+          description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`, `SKILL_SET_NOT_SERVED` (the manifest declares the set and Publisher refuses it, or refuses its whole declaration; the message is the refusal, the same text as the version's warning for it), `SKILL_SET_NOT_DECLARED`."
         "409":
           $ref: "#/components/responses/Conflict"
-          description: "The version's skill sets and workflows could not be read when it loaded (a folder the server could not
-            list), so none is served until it reloads; the message names the cause. A name the `publisher.json` never declared is
-            still a 404."
+          description: "The version's skill sets and workflows could not be read when it loaded (a folder the server could not list), so none is served until it reloads; the message names the cause. `reason`: `SKILL_SETS_UNAVAILABLE`. A name the `publisher.json` never declared is still a 404."
         "410":
           $ref: "#/components/responses/Gone"
         "424":
@@ -2419,12 +2415,10 @@ paths:
           description: "The request is malformed, or the Malloy or SQL in it was refused. `reason`: `INVALID_REQUEST`."
         "404":
           $ref: "#/components/responses/NotFound"
-          description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`."
+          description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`, `SKILL_SET_NOT_SERVED` (the manifest declares the set and Publisher refuses it, or refuses its whole declaration; the message is the refusal, the same text as the version's warning for it), `SKILL_SET_NOT_DECLARED`."
         "409":
           $ref: "#/components/responses/Conflict"
-          description: "The version's skill sets and workflows could not be read when it loaded (a folder the server could not
-            list), so none is served until it reloads; the message names the cause. A name the `publisher.json` never declared is
-            still a 404."
+          description: "The version's skill sets and workflows could not be read when it loaded (a folder the server could not list), so none is served until it reloads; the message names the cause. `reason`: `SKILL_SETS_UNAVAILABLE`. A name the `publisher.json` never declared is still a 404."
         "410":
           $ref: "#/components/responses/Gone"
         "424":
@@ -2494,12 +2488,10 @@ paths:
           description: "The request is malformed, or the Malloy or SQL in it was refused. `reason`: `INVALID_REQUEST`."
         "404":
           $ref: "#/components/responses/NotFound"
-          description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`."
+          description: "Something the request names does not exist. `reason`: `NOT_FOUND`, `VERSION_NOT_FOUND`, `WORKFLOW_NOT_SERVED` (the manifest declares the workflow and Publisher refuses it, or refuses its whole declaration; the message is the refusal, the same text as the version's warning for it), `WORKFLOW_NOT_DECLARED`."
         "409":
           $ref: "#/components/responses/Conflict"
-          description: "The version's skill sets and workflows could not be read when it loaded (a folder the server could not
-            list), so none is served until it reloads; the message names the cause. A name the `publisher.json` never declared is
-            still a 404."
+          description: "The version's skill sets and workflows could not be read when it loaded (a folder the server could not list), so none is served until it reloads; the message names the cause. `reason`: `SKILL_SETS_UNAVAILABLE`. A name the `publisher.json` never declared is still a 404."
         "410":
           $ref: "#/components/responses/Gone"
         "424":
@@ -5819,6 +5811,11 @@ components:
         - TABLE_OWNED_ELSEWHERE
         - TABLE_OWNERSHIP_UNVERIFIED
         - PACKAGE_FETCH_FAILED
+        - SKILL_SET_NOT_SERVED
+        - SKILL_SET_NOT_DECLARED
+        - WORKFLOW_NOT_SERVED
+        - WORKFLOW_NOT_DECLARED
+        - SKILL_SETS_UNAVAILABLE
 
     FieldKind:
       type: string
@@ -8164,8 +8161,9 @@ components:
             - bundled
             - package
             - skill-set
-          description: "Where this skill came from. `bundled`: shipped with this server. `package`: shipped by the version's
-            `default` skill set, replacing a bundled one of the same name because that set's `overrides` lists it. `skill-set`:
+          description: "Where this skill came from. `bundled`: shipped with this server. `package`: a skill of the version's
+            `default` skill set (one named like a bundled skill is served in its place only when that set's `overrides` lists
+            it). `skill-set`:
             a skill of a skill set, on `SkillSet.skills`."
         files:
           type: array

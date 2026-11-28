@@ -3182,7 +3182,7 @@ paths:
         skill sets (the walk threw, or a declared set exists but cannot be read,
         such as `EACCES` or `EIO`): the models still serve, the message carries
         the reason, and it lasts until the package reloads, so there is no
-        `Retry-After`. A name the manifest never declares is still a 404.
+        `Retry-After`.
 
         The REST half of the `get_skill_set` MCP tool.
       parameters:
@@ -3423,7 +3423,7 @@ paths:
         skill sets (the walk threw, or a declared set exists but cannot be read,
         such as `EACCES` or `EIO`): the models still serve, the message carries
         the reason, and it lasts until the package reloads, so there is no
-        `Retry-After`. A name the manifest never declares is still a 404.
+        `Retry-After`.
 
         The REST half of the `get_workflow` MCP tool.
       parameters:
@@ -4394,8 +4394,10 @@ components:
             derived when it loaded. Reload the package; retrying the read does
             not help.
           * SKILL_SETS_UNAVAILABLE: the package's skill sets could not be read
-            when it loaded, so its skill sets, workflows and skills are not
-            served. Reload the package; retrying the read does not help.
+            when it loaded, so its skill sets and workflows are not served,
+            nor are its own skills when it declares a `default` set (the
+            bundled skills still are). Reload the package; retrying the read
+            does not help.
       content:
         application/json:
           schema:
@@ -6474,10 +6476,11 @@ components:
             past its skill cap, a skill named like a bundled skill that the
             set's `overrides` does not list, or a bad `overrides` value
             (`subject` the set's name). Each finding of a set is published
-            once, however many workflows list it. All five are `warn`.
+            once, however many workflows list it.
             `skill-sets-unavailable`: the walk that reads the declared skill
             sets failed, so no skill set or workflow is served until the
-            package reloads (no `subject`; one per load).
+            package reloads (no `subject`; one per load). All six of these
+            are `warn`.
             `PACKAGE_AGENTS_NOT_READ`: the manifest declares `agents`,
             which is no longer read (one per load; the message says to
             declare `workflows`). `PACKAGE_SKILLS_DIR_NOT_READ`: the
@@ -6904,13 +6907,15 @@ components:
         name:
           type: string
           description: >-
-            A `SKILL.md`'s name, read by the bounded frontmatter reader. In
-            both views; absent when the file has none or it is not a string.
+            A `SKILL.md`'s name, which is its skill's folder name: no skill
+            whose frontmatter name differs from its folder is served. In both
+            views; absent on a file that is not a `SKILL.md`.
         description:
           type: string
           description: >-
-            A `SKILL.md`'s description, read as `name` is. In both views;
-            absent when the file has none or it is not a string.
+            A `SKILL.md`'s description, read by the bounded frontmatter
+            reader. In both views; absent on a file that is not a `SKILL.md`,
+            and on a `SKILL.md` whose frontmatter yields none.
         bytes:
           type: integer
           description: >-
@@ -10746,8 +10751,9 @@ components:
               * VERSION_NOT_FOUND (404): the package has no such version.
               * VERSION_ARCHIVED (410): the version is archived.
               * SKILL_SETS_UNAVAILABLE (409): the package's skill sets could
-                not be read when it loaded, so its skill sets, workflows and
-                skills are not served until it reloads.
+                not be read when it loaded, so its skill sets and workflows
+                are not served until it reloads, nor are its own skills when
+                it declares a `default` set (the bundled skills still are).
               * WORKFLOW_NOT_SERVED (404): the workflow routes name a workflow
                 the manifest declares and Publisher refuses, or any workflow
                 while the manifest's whole declaration is refused. The
