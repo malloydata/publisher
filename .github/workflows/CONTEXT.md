@@ -601,8 +601,8 @@ The removed jobs, with their guards, are in the history of `release.yml` and of
 **`@malloy-publisher/cli` (the `malloy-pub` binary) is versioned and published with sdk/app/server.**
 It was `@malloydata/publisher-cli` at `0.0.1`, never published; decision D6 renamed it into the
 `@malloy-publisher` scope and put `packages/cli/package.json` in `prepare`'s `PKGS`, so a release sets
-it to the same number as the other three. `npm-sdk.yml` builds and publishes it last, after the
-server. Its `build` is a single bundle (dependencies inlined) whose `prebuild` regenerates the API
+it to the same number as the other three. `npm-sdk.yml` checks and builds it before anything is
+published, and publishes it last, after the server. Its `build` is a single bundle (dependencies inlined) whose `prebuild` regenerates the API
 client from `api-doc.yaml`, so the client in the tarball always matches the server released beside
 it, and the tarball needs Node only, no Bun. `prepublishOnly` refuses to publish without
 `dist/index.js`, since `files` is `dist` alone and a missing build would otherwise ship an empty
@@ -618,25 +618,47 @@ already exists, so the first version cannot come from CI:
    **`release.yml`**, like sdk/app/server, for the reason under *Rules that bite* (`npm-sdk.yml` is
    the reusable workflow, not the caller npm matches). No environment, the same as the other three.
 
-**Until that is done the CLI step skips, and the release stays green.** Before publishing, the step
-asks `npm view @malloy-publisher/cli version`. On an E404 it emits a `CLI not published` warning
-naming the setup above and exits 0, so a release that lands before the setup still publishes
-sdk/app/server, cuts its tag and runs `publish-packages`, instead of failing `publish-npm` after
-three packages are on npm. The version bump does not depend on it: `prepare` sets
-`packages/cli/package.json` regardless, so the release branch and `main` stay lockstep even for a
-release that skipped the CLI. Read the run's annotations: a green release with that warning shipped
-no CLI. Any other `npm view` failure (registry down, auth) fails the step, since it cannot tell a
-missing package from an unreachable registry.
+**Everything but the publish happens before anything ships.** `npm-sdk.yml`'s *Check and build CLI
+package* step runs after the sdk and app builds and before the first `npm publish`. It asks npm about
+the package, builds it (`prebuild` fetches the OpenAPI generator and generates the client from
+`api-doc.yaml`), and sets `cli_action`. A registry error, a failed generator fetch or a broken
+`api-doc.yaml` therefore fails the job with nothing published. The only CLI work after sdk/app/server
+ship is the final *Publish CLI package* step, which runs only when `cli_action` is `publish`.
 
-**Once the package exists, a failed CLI publish is a real failure,** and it is the last step of the
-same job, so it fails `publish-npm`, and with it `gh-release` and `publish-packages`, after sdk, app
-and server are already on npm. A trusted-publisher entry that is missing or names the wrong workflow
-fails this way, not through the skip. Re-running the job cannot help (sdk's publish would fail on a
-taken version) and re-running the release burns a version. Publish the missing CLI by hand from the
-release branch as in step 1 (OIDC works only inside Actions), then create the tag and release page by
-hand from that branch (`gh release create v<version> --target release/v<version>`, with the notes
-`release-notes.mjs extract <version>` prints), and dispatch `skills-npm.yml` then
-`create-malloy-package-npm.yml` on `main`.
+`cli_action` is one of three values:
+
+- **`skip_missing`.** `npm view @malloy-publisher/cli version` answers E404, so the package does not
+  exist yet. The step emits a `CLI not published` warning naming the setup above and the job stays
+  green, so a release that lands before the setup still publishes sdk/app/server, cuts its tag and
+  runs `publish-packages`. Read the run's annotations: a green release with that warning shipped no
+  CLI.
+- **`skip_published`.** `npm view @malloy-publisher/cli@<version> version` returns that version, so it
+  is already on npm. The step emits a notice and the publish is skipped.
+- **`publish`.** The package exists and this version does not. Current npm answers E404 for a missing
+  version and older npm answers empty, and both count.
+
+Any other `npm view` failure (a registry outage, auth) fails the check step, because it cannot tell a
+missing package from an unreachable registry. The version bump does not depend on any of this:
+`prepare` sets `packages/cli/package.json` regardless, so the release branch and `main` stay lockstep
+even for a release that skipped the CLI.
+
+**A failed final CLI publish leaves sdk, app and server on npm, and re-running the job does NOT
+recover it.** That failure is real once the package exists: a missing or mis-named trusted-publisher
+entry, or a registry error during the publish itself. It fails `publish-npm`, so `gh-release` and
+`publish-packages` do not run. A re-run of the job gets past the CLI check, which would skip a CLI
+that had landed, but then stops at the sdk publish: the *Publish to NPM* and server steps have no
+already-published guard, and npm refuses to publish over an existing version. So `skip_published`
+makes the CLI half of a re-run idempotent, not the whole job. Re-running the release burns a version.
+Recover by hand instead:
+
+1. Publish the missing CLI from the release branch as in step 1 (OIDC works only inside Actions).
+2. Create the tag and release page from that branch (`gh release create v<version> --target
+   release/v<version>`, with the notes `release-notes.mjs extract <version>` prints).
+3. Dispatch `skills-npm.yml`, then `create-malloy-package-npm.yml`, on `main`.
+
+Giving the sdk, app and server publishes the same exact-version skip would make "re-run failed jobs"
+the whole recovery for any transient failure in this job, including the server's own build, which
+also runs after sdk and app ship.
 
 For completeness: `api-doc.yaml`'s `info.version: v0` is the REST API version behind the `/api/v0`
 path prefix, not a package version. It is unrelated to any of this and should not be bumped with a

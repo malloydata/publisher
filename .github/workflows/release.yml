@@ -372,7 +372,7 @@ jobs:
   # entry, and no npm setting has to change for this job to work.
   #
   # Deliberately NOT in gh-release's needs. These packages are independent of
-  # the sdk/app/server artifacts, and prepare walks the patch version forward on
+  # the sdk/app/server/cli artifacts, and prepare walks the patch version forward on
   # a re-run rather than resuming, so gating the tag on them would turn a failed
   # package publish into a partial release that cannot be re-run at the same
   # version. A failure here still reddens the run.

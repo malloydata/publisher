@@ -205,7 +205,7 @@ wait_for_server_latest() {
   # A failure here returns 1 to the top-level publish_indep_pkg call,
   # and `set -e` ends the job there. Re-running the job covers it:
   # skills is skipped as already published, and this wait runs again.
-  local SERVER_LATEST_RECOVERY="Once \`npm view @malloy-publisher/server dist-tags.latest\` reads ${NEW_VERSION}, re-run THIS JOB (Re-run failed jobs). Do not re-run the whole release: that bumps and republishes sdk/app/server."
+  local SERVER_LATEST_RECOVERY="Once \`npm view @malloy-publisher/server dist-tags.latest\` reads ${NEW_VERSION}, re-run THIS JOB (Re-run failed jobs). Do not re-run the whole release: that bumps and republishes sdk/app/server/cli."
   deadline=$((SECONDS + SERVER_LATEST_BUDGET_SECONDS))
   while :; do
     if answer="$(npm view @malloy-publisher/server dist-tags.latest --prefer-online 2>&1)" \
@@ -845,7 +845,7 @@ publish_resolved() {
       # Deliberately does not claim nothing was published: on the second
       # package, the first may already have been dispatched and confirmed.
       # The job summary records what actually shipped.
-      echo "::error title=${name}::main moved from ${CHECKOUT_SHA} to ${live_sha} during this release and touched files ${spec} is built from, so ${wf} would not publish what this job verified. It was NOT dispatched; see the job summary for what already shipped. Re-run THIS JOB (Re-run failed jobs), or dispatch ${wf} on main directly. Do not re-run the whole release: that bumps and republishes sdk/app/server."
+      echo "::error title=${name}::main moved from ${CHECKOUT_SHA} to ${live_sha} during this release and touched files ${spec} is built from, so ${wf} would not publish what this job verified. It was NOT dispatched; see the job summary for what already shipped. Re-run THIS JOB (Re-run failed jobs), or dispatch ${wf} on main directly. Do not re-run the whole release: that bumps and republishes sdk/app/server/cli."
       printf '%s\n' "$relevant" | sed 's/^/[changed] /'
       echo "- \`${spec}\` NOT dispatched: main moved under its own paths" >> "$GITHUB_STEP_SUMMARY"
       return 1
@@ -928,7 +928,7 @@ publish_resolved() {
     esac
   done
 
-  echo "::error title=${name}::${spec} did not appear on ${reg} within $((POLL_BUDGET_SECONDS / 60))m. Check ${runs_url}. If that run failed, fix it and dispatch ${wf} on main; do not re-run the whole release, which bumps and republishes sdk/app/server."
+  echo "::error title=${name}::${spec} did not appear on ${reg} within $((POLL_BUDGET_SECONDS / 60))m. Check ${runs_url}. If that run failed, fix it and dispatch ${wf} on main; do not re-run the whole release, which bumps and republishes sdk/app/server/cli."
   echo "- \`${spec}\` dispatched but did not appear on ${reg}, see ${runs_url}" >> "$GITHUB_STEP_SUMMARY"
   return 1
 }
