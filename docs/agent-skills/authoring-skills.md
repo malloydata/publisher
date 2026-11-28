@@ -101,21 +101,21 @@ sequence and point each step at a focused skill; a focused skill must not name a
 
 ### A skill in a package
 
-A package carries its own skills in a skill set: a folder of skills that a workflow lists in
-`publisher.json`. The shortest layout is one folder at the package root:
+A package carries its own skills in its `default` skill set: a folder of skills that
+`publisher.json` declares. The shortest layout is a `skills/` folder at the package root:
 
 ```
 publisher.json
-analyst/
+skills/
   margin-rules/
     SKILL.md
 ```
 
 ```json
-{ "name": "storefront", "workflows": { "default": { "skillSets": ["analyst"] } } }
+{ "name": "storefront", "skillSets": { "default": { "path": "skills" } } }
 ```
 
-`analyst/margin-rules/SKILL.md` is a complete skill:
+`skills/margin-rules/SKILL.md` is a complete skill:
 
 ```markdown
 ---
@@ -126,13 +126,18 @@ description: Use when a question involves margin, so net revenue is not mistaken
 Margin is net revenue less cost, never gross revenue less cost. `margin_pct` in `orders.malloy` already does this; use it.
 ```
 
-A package with several workflows keeps each one's sets at `workflows/<workflow>/skill_sets/<set>/<skill>/SKILL.md`
-instead. The `default` workflow's skills are the ones every session on the package sees; see
-[Packages](../packages.md#skill-sets) for sets, refusals and the codes a finding carries.
+Every session on the package sees the `default` set's skills beside the bundled ones. A package
+adds named sets for guidance that belongs to one job, `"analyst": { "path": "skill_sets/analyst" }`
+with `skill_sets/analyst/<skill>/SKILL.md`, and a workflow lists the sets it needs in `skillSets`.
+Each set is read once per load and served whole by name; see
+[Packages](../packages.md#skill-sets-and-workflows) for sets, workflows, refusals and the codes a
+finding carries.
 
-A package skill whose `name` matches a bundled skill replaces it in Publisher, for that package.
-Credible's agent skips such a skill and keeps the bundled one, so give a package skill a name no
-bundled skill has if it must behave the same in both.
+A `default` skill whose `name` matches a bundled skill replaces it in Publisher, for that package,
+only if the `default` set's `overrides` lists the name; otherwise the bundled skill is served and
+the set carries a finding that names the fix. Credible's agent skips such a package skill and
+keeps the bundled one, so give a package skill a name no bundled skill has if it must behave the
+same in both. The `malloy-` and `eval-` prefixes belong to bundled skills.
 
 ## Cross-skill references
 
@@ -217,24 +222,27 @@ assuming it is always loaded.
 
 A skill's files are read, hashed and listed when Publisher loads a package. Each bound is set out
 below, and each skill set is measured on its own.
-Each crossing is a load warning on the package, and for a workflow also in `get_workflow`'s
-`warnings`; `cred publish --dry-run` shows the upload set. A crossing skips the one file it
-concerns, unless the row says it sets the skill aside or refuses the workflow. Inline files are a
-skill's Markdown outside `assets/`, carried in the workflow definition; listed files are every other
+Each crossing is a load warning on the package, and a set's own findings also travel on the set
+(`get_skill_set`'s `warnings`); `cred publish --dry-run` shows the upload set. A crossing skips the one file it
+concerns, unless the row says it sets the skill aside or refuses a set or workflow. Inline files are
+a skill's Markdown outside `assets/`, carried in the set's reply; listed files are every other
 file, which Publisher lists by path, size and sha256 and reads on request.
 
 | Budget | Limit | When it is crossed |
 | --- | --- | --- |
 | A workflow's `instructions` | 16 KiB | Refuses the workflow |
 | Skill sets a workflow lists | 8 | Refuses the workflow |
+| Skill sets and workflows a package declares | 32 and 64 | Refuses the whole `skillSets` or `workflows` declaration, so none of its entries is served |
+| Names in a set's `overrides` | 64 | Reads as empty, with a finding |
 | A `SKILL.md` | 256 KiB | The skill is not served |
 | A skill set's inline Markdown | 256 KiB per set; every `SKILL.md` is counted first | A `SKILL.md` that does not fit is skipped with its skill; other Markdown that does not fit is listed instead, with a warning |
+| Inline Markdown files per skill set | 1,000, `SKILL.md` included. A zero-byte file passes the byte budget, so without this a set could inline about 64 skills of 1,000 files each | The file is skipped, with a warning |
 | One skill Markdown file | 256 KiB per file | The file is listed instead of inlined |
 | Skills in a skill set | 64 skill directories, counted in name order as the walk reaches them. Each skill has its own `reference/` and `references/` allowance | The first 64 by name are served and the rest are not read, with one finding on the set |
 | Skill findings named per set | 20 per set, then one line counting the rest. Skipped assets are capped the same way | The remaining findings are counted, not named, so a reply that carries the set stays small |
 | One listed file | Under 1 MiB (1,048,576 bytes is out) | The file is skipped |
 | Listed files per skill set | 4 MiB and 200 files | Later files are skipped |
-| Listed files per package, across sets | 8 MiB, each path counted once, sets charged in sorted set-path order | Later files are skipped |
+| Listed files per package, across sets | 8 MiB, each path counted once, sets charged whole in name order | The set that would cross it is refused, and so is every workflow that lists it |
 | A listed path | Segments of `[A-Za-z0-9_][A-Za-z0-9._-]*`, at most 200 characters with the skill's directory name, at most 8 levels deep, no control character, no `.malloy` or `.malloynb`, a regular file | The file is skipped. Inline Markdown keeps lenient names, but not a path over 200 characters from the skill's root (next row) |
 | A path in the walk | At most 200 characters from the skill's root, inline Markdown included. A directory over it is not descended | The entry is skipped, with one warning naming the first |
 | Entries walked | Per skill set, 1,000 under `assets/` and 1,000 elsewhere, shared by its skills. Entries `.skillignore` matches count | The walk stops there, and the rest are not included |
@@ -242,6 +250,7 @@ file, which Publisher lists by path, size and sha256 and reads on request.
 | `.skillignore` | 16 KiB; at most 50 patterns, of at most 200 characters each and 1,024 together (comments and blank lines are free); two `*` or `**` segments a pattern, a run of `**` counting once | The pattern, or the file, is skipped |
 | Frontmatter | YAML 1.2; at most 4 KiB; at most 100 references to one anchor; output at most 5 times the source plus 10,000 characters | An empty `frontmatter` and a line read of `name` and `description`, with a warning |
 | `get_skill` result | 35,000 characters, Cursor's limit | Keeps the body and trims `files` with a count, then drops the parsed frontmatter, then the body |
+| `get_skill_set` and `get_workflow` result | 35,000 characters | Steps down from the full set to a summary of its files, then to the set's `name`, `digest` and `source` (a workflow keeps its `instructions` and each set's `name` and `digest` one step longer), with a message saying where to read the rest. REST has no such limit |
 
 A Markdown file of a bundled skill must come back whole from `get_skill` at that limit, so keep each one under it and split a long reference file in two; a bundle test holds every file to it.
 
@@ -252,34 +261,34 @@ characters), and it refuses a workflow past it. A `description` written as a YAM
 
 ### What a reload costs
 
-The package-load worker walks and hashes a package's workflows and skill sets, on creation and on
+The package-load worker walks and hashes a package's skill sets and workflows, on creation and on
 every reload, in the same job that compiles its models, so the server's event loop does not wait
-for it. A load bound to a build manifest walks twice, both times in the worker. The walk counts against that job's timeout (`packageLoad.jobTimeoutMs`, 120 s). The main thread pays only to
-receive the result and adopt it: rebuild each skill's reader and hash the shas the worker shipped,
-reading no file. `bun run perf:skills-reload` in `packages/server` builds a package with nine skill
-sets of one skill each, listed by two workflows, and times both sides. The second row is the
-largest each budget allows for those nine skills; a package with up to 64 skills in each set costs
-more, and the checks of a set's folder run once per path however many workflows list it. On a
-development machine with a warm page cache, the median of 5 reloads:
+for it. A load bound to a build manifest walks twice, both times in the worker. The walk counts
+against that job's timeout (`packageLoad.jobTimeoutMs`, 120 s). Every declared set is read once,
+however many workflows list it. The main thread pays only to receive the result and adopt it:
+rebuild each set's readers and hash the shas the worker shipped, reading no file. `bun run perf:skills-reload` in `packages/server` builds a package with the most
+sets it may declare (32), each spending every per-set cap, and times both sides. A package with up to 64 skills in each set
+costs more than the bench's, which keeps each set's 1,000 inline files in one skill. On a development
+machine with a warm page cache, the median of 3 reloads, in milliseconds:
 
-| Package | Worker: walk, hash and serialize | Main thread: receive, adopt and hash |
-| --- | --- | --- |
-| One set, `SKILL.md` only | 2 ms | under 1 ms |
-| Every budget spent in nine skill sets: 8 MiB in 1,355 listed files, 1,000 entries under `assets/`, 999 files in `references/` and 907 in `reference/` each | 837 ms | 33 ms |
-| The listed files alone (204 files, 8 MiB) | 120 ms | 2 ms |
-| The 1,000 `assets/` entries alone | 270 ms | 4 ms |
-| The 999 `references/` files alone | 760 ms | 30 ms |
-| The 907 `reference/` files alone | 711 ms | 27 ms |
+| Package | Worker: walk | Worker: hash | Worker: serialize | Main: receive | Main: adopt |
+| --- | --- | --- | --- | --- | --- |
+| One set, `SKILL.md` only | 2 | under 1 | under 1 | under 1 | under 1 |
+| 32 sets, every per-set cap spent: 32,000 inline Markdown files and 6,400 listed files (6.3 MiB) | 2,147 | 94 | 85 | 17 | 3 |
+| The listed files alone (6,400 files, 200 per set) | 389 | 15 | 18 | 4 | under 1 |
+| The inline Markdown alone (32,000 files, 1,000 per set) | 1,907 | 81 | 67 | 14 | 3 |
 
-A Markdown file costs about 0.07 ms to read and digest in the worker and a walked entry about 10
-microseconds, so file count moves the time most. Keep a skill to the files an agent uses. The main
-thread's share is the structured-clone receive of the walk and one hash over the shipped shas,
-which grow with the number of files and inline Markdown bytes, not with their content.
+A walked file costs about 60 microseconds in the worker, so file count moves the time most. Keep a
+skill to the files an agent uses. The main thread's share is the structured-clone receive of the
+walk and one hash over the shipped shas, which grow with the number of files and inline Markdown
+bytes, not with their content: about 20 ms at the most a package may declare.
 
 If the walk cannot finish (it throws, or a listed set or an instructions file exists but cannot be
-read), the package's models still load and the workflow routes and `get_workflow` answer 409
-`WORKFLOWS_UNAVAILABLE` with the reason, until the package reloads. So do the skills routes when the
-package declares a `default` workflow; without one the bundled skills serve as usual.
+read), the package's models still load, one `skill-sets-unavailable` warning names the cause, and
+every set and workflow route and `get_skill_set` and `get_workflow` answer 409
+`SKILL_SETS_UNAVAILABLE` with the reason, until the package reloads. So do the skills routes when
+the package declares a `default` set; without one the bundled skills serve as usual. A name the
+manifest never declares is still a 404.
 
 ## Authoring a new skill
 
