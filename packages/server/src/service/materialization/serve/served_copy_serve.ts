@@ -64,7 +64,11 @@ import {
 import { createEventLoopYielder } from "../../event_loop_yield";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { packageFiles } from "../text/package_files";
-import { reachableSourceIDs, SourceMap } from "../text/source_map";
+import {
+   detachedNode,
+   reachableSourceIDs,
+   SourceMap,
+} from "../text/source_map";
 import {
    chainBuildFileSet,
    rollupBuildFileSet,
@@ -470,6 +474,12 @@ interface ServedCopyHost {
 type AuthorReroot = Reroot & {
    sourceID: string;
    authorDef: unknown;
+   /**
+    * Reached only as the declared base of a source this model names, in a
+    * file it does not import ({@link ServedCopyServe.authorNode}):
+    * the model holds no node for it, yet these named sources read it.
+    */
+   declaredAncestor?: readonly string[];
    /**
     * For a `#(materialize)` re-root: its rows depend on the zone it was built
     * in, which the probe compiler did not clear: a `where:` term or base
@@ -1508,9 +1518,7 @@ export class ServedCopyServe {
            [map.sourceIDOf(binding.sourceName)].filter(
               (id): id is string => id !== undefined,
            ));
-      const node =
-         authorIDs.map((id) => map.node(id)).find((n) => n !== undefined) ??
-         this.joinedDeclaration(authorIDs, map);
+      const { node, declared } = this.authorNode(authorIDs, map);
       // Another model's source: not this served copy's to re-root.
       if (!node) return undefined;
       const sourceName = plan?.sourceName ?? binding.sourceName;
@@ -1679,6 +1687,7 @@ export class ServedCopyServe {
             : {}),
          sourceID: node.sourceID,
          authorDef: node.def,
+         ...(declared ? { declaredAncestor: declared } : {}),
       } as AuthorReroot;
    }
 
@@ -1803,6 +1812,76 @@ export class ServedCopyServe {
     * sources joins it. Re-rooting it in its declaring file is what lets the
     * joining source's re-root keep its join on the destination.
     */
+   /**
+    * The author's declaration a binding re-roots, as this model reaches it:
+    * a node it holds, one it reaches only as a join, or a declared ancestor
+    * (`declared`, the named sources built on it): a source this model
+    * reaches only as the declared base of one it names, across a file it
+    * does not import (Malloy imports are not transitive, and record no edge
+    * for an extension of a table-backed source, so this model's compile
+    * holds no node for it). Its declaration, as the package model holding it
+    * compiled it, read by the declared-base walk
+    * ({@link keptAncestorChainOrDeclared}). Re-rooting it in its own file is
+    * what serves the sources this model names over it from its table.
+    */
+   private authorNode(
+      authorIDs: readonly string[],
+      map: SourceMap,
+   ): {
+      node: { sourceID: string; def: unknown } | undefined;
+      declared?: readonly string[];
+   } {
+      const held =
+         authorIDs.map((id) => map.node(id)).find((n) => n !== undefined) ??
+         this.joinedDeclaration(authorIDs, map);
+      if (held) return { node: held };
+      if (!this.declarationOf) return { node: undefined };
+      const reach = this.declaredAncestorReach(map);
+      const id = authorIDs.find((a) => reach.has(a));
+      const node = id ? detachedNode(this.declarationOf(id)) : undefined;
+      return node && id
+         ? { node, declared: reach.get(id) ?? [] }
+         : { node: undefined };
+   }
+
+   private declaredReachMemo = new WeakMap<SourceMap, Map<string, string[]>>();
+
+   /**
+    * The declared ancestors this model holds no node for, of every source it
+    * names, across files: each with the named sources built on it.
+    */
+   declaredAncestorReach(map: SourceMap): Map<string, string[]> {
+      const memo = this.declaredReachMemo.get(map);
+      if (memo) return memo;
+      const reach = new Map<string, string[]>();
+      const lift = authorModelLiftContext(
+         map.model(),
+         compiledTextReader(map.model(), this.packagePath),
+      );
+      for (const node of map.nodes()) {
+         if (node.name === undefined) continue;
+         const url = (node.def as { location?: { url?: unknown } }).location
+            ?.url;
+         if (typeof url !== "string") continue;
+         for (const a of keptAncestorChainOrDeclared(
+            map,
+            node.sourceID,
+            url,
+            (u) => lift.fileText(u),
+            this.declarationOf,
+         )) {
+            if (!map.node(a.sourceID)) {
+               reach.set(a.sourceID, [
+                  ...(reach.get(a.sourceID) ?? []),
+                  node.sourceID,
+               ]);
+            }
+         }
+      }
+      this.declaredReachMemo.set(map, reach);
+      return reach;
+   }
+
    private joinedDeclaration(
       authorIDs: readonly string[],
       map: SourceMap,
@@ -3504,16 +3583,36 @@ function rerootsLosing(
             .filter((n): n is string => n !== undefined),
       );
       chain.add(c.reroot.sourceName);
+      const excused = new Set([
+         ...leftOut
+            .filter((l) => chain.has(l.declaration ?? l.name))
+            .map((l) => l.name),
+         ...(c.reroot.columnsLeftOut ?? []),
+      ]);
+      // A declared ancestor this model holds no node for, in its served
+      // compile either: what a caller here reads of it is what the named
+      // sources built on it read, so each of them is proven instead.
+      if (c.reroot.declaredAncestor) {
+         const descendants = c.reroot.declaredAncestor;
+         if (descendants.length === 0) return "fields" as const;
+         for (const d of descendants) {
+            const loss = proveReroot({
+               author: map.node(d)?.def,
+               served: servedDefOf(servedMap, d),
+               servedHasOwnNode: hasOwnNode(servedMap, d),
+               excused,
+               termsKeptAsWritten: keptAsWritten(c),
+               givenTerms: givenReadingFilterTerms,
+            });
+            if (loss !== undefined) return loss;
+         }
+         return undefined;
+      }
       return proveReroot({
          author: c.reroot.authorDef,
          served: servedDefOf(servedMap, c.reroot.sourceID),
          servedHasOwnNode: hasOwnNode(servedMap, c.reroot.sourceID),
-         excused: new Set([
-            ...leftOut
-               .filter((l) => chain.has(l.declaration ?? l.name))
-               .map((l) => l.name),
-            ...(c.reroot.columnsLeftOut ?? []),
-         ]),
+         excused,
          termsKeptAsWritten: keptAsWritten(c),
          givenTerms: givenReadingFilterTerms,
       });
@@ -3526,6 +3625,7 @@ function rerootsLosing(
    // a caller can read here.
    const unreached = state.candidates.filter(
       (c) =>
+         c.reroot.declaredAncestor === undefined &&
          map.node(c.reroot.sourceID)?.name === undefined &&
          servedMap.node(c.reroot.sourceID) === undefined &&
          servedDefOf(servedMap, c.reroot.sourceID) === undefined,

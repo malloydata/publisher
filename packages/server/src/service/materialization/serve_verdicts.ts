@@ -797,14 +797,25 @@ export class ServeVerdicts {
          const gated = (struct: SourceDef): boolean =>
             collectEntryPointGates(struct, modelDef, new Set(), true).length >
             0;
+         // A stored base this model reaches only through a file it does not
+         // import (a source it names is declared over it there) is reached.
+         const declared = model.declaredAncestors();
+         const withDeclared = (ids: Set<string>): Set<string> => {
+            for (const [ancestor, descendants] of declared) {
+               if (descendants.some((d) => ids.has(d))) ids.add(ancestor);
+            }
+            return ids;
+         };
          for (const name of names) {
             const entry = modelDef.contents?.[name];
             if (!entry || !isSourceDef(entry)) continue;
             roots.push({
                gated: gated(entry),
-               ids: reachableSourceIDs(
-                  structsReachedFrom([entry], modelDef),
-                  modelDef,
+               ids: withDeclared(
+                  reachableSourceIDs(
+                     structsReachedFrom([entry], modelDef),
+                     modelDef,
+                  ),
                ),
             });
          }
@@ -830,7 +841,10 @@ export class ServeVerdicts {
                   ids.add(id);
                }
             }
-            roots.push({ gated: !!source && gated(source), ids });
+            roots.push({
+               gated: !!source && gated(source),
+               ids: withDeclared(ids),
+            });
          }
       }
       const reached =
