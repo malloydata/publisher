@@ -206,7 +206,7 @@ for (const shape of SHAPES) {
 
       it("warns no source unreachable, and index.malloy's copy leaves nothing as written", () => {
          const codes = (
-            (fixture?.pkg.getPackageMetadata().warnings ?? []) as {
+            (fixture?.pkg.getPackageMetadata().warnings ?? []) as readonly {
                code?: string;
                subject?: string;
             }[]
