@@ -1,6 +1,6 @@
 ---
 name: eval-improve
-description: 'Make the smallest safe edit that closes a diagnosed gap the model repo owns: a Malloy model edit, or a package skill under skills/. Every factual claim carries a probe receipt. Use after eval-diagnose, or when asked to fix a model so an agent can discover the right answer. Never accepts its own edit; the acceptance check belongs to eval-loop. Does not decide whether an answer was wrong (eval-answer) or why (eval-diagnose).'
+description: 'Make the smallest safe edit that closes a diagnosed gap the model repo owns: a Malloy model edit, or a package skill in the default skill set. Every factual claim carries a probe receipt. Use after eval-diagnose, or when asked to fix a model so an agent can discover the right answer. Never accepts its own edit; the acceptance check belongs to eval-loop. Does not decide whether an answer was wrong (eval-answer) or why (eval-diagnose).'
 ---
 
 # Improve the Model
@@ -14,10 +14,12 @@ The two owners license different edits and are never interchangeable:
 - **`model`** changes what the data means or how it is described:
   a `.malloy` file.
 - **`package-skill`** changes what the agent is told about using this package:
-  a file under the package's `skills/`. Use it for a rule that spans entities or
-  is not a property of any one of them. A fact about a single field belongs in
-  that field's `#(doc)`, which reaches every agent whether or not it loaded a
-  guide.
+  a skill in the package's `default` skill set (`skillSets.default.path` in
+  `publisher.json`). A root `skills/` folder reaches the answerer only if the
+  `default` set is declared at it. Use it
+  for a rule that spans entities or is not a property of any one of them. A fact
+  about a single field belongs in that field's `#(doc)`, which reaches every
+  agent whether or not it loaded a guide.
 
 Both live in the model repo, so one git commit checkpoints and rolls back
 either.
@@ -231,7 +233,7 @@ each one, because a rerun against stale goldens measures nothing.
 
 Compile, reload, run one trivial query against each source you touched.
 Append a `candidate` event to the run's `events.jsonl` (shape in
-`skill:eval-answer` `reference/ledger-schema.md`): the files touched, a
+`skill:eval-answer` `reference/ledger-schema-events.md`): the files touched, a
 one-line diff summary per file, the issue_ids, probe receipts, and this
 report. Every proposal gets its event, accepted or not; a rejected direction
 keeps its record. Then stop and wait for the acceptance check in `skill:eval-loop`. That

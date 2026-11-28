@@ -37,6 +37,9 @@ import {
 
 const ENV_NAME = "watch-it-env";
 const PKG_NAME = "watch-it-pkg";
+const LONE_SCRIPTS = "sets/lone/lone/scripts";
+const LONE_SKILL = "sets/lone/lone/SKILL.md";
+const LONE_SCRIPT = `${LONE_SCRIPTS}/check.py`;
 
 interface TestServer {
    baseUrl: string;
@@ -64,6 +67,21 @@ const modelsText = async (baseUrl: string): Promise<string> => {
  */
 async function startServer(opts: { watch: boolean }): Promise<TestServer> {
    const src = writeSourcePackage(PKG_NAME);
+   // A skill set no workflow lists, with a file only the set's own declaration makes the watcher notice.
+   fs.mkdirSync(path.join(src.dir, LONE_SCRIPTS), { recursive: true });
+   fs.writeFileSync(
+      path.join(src.dir, LONE_SKILL),
+      "---\nname: lone\ndescription: d\n---\n\nbody\n",
+   );
+   fs.writeFileSync(path.join(src.dir, LONE_SCRIPT), 'print("first")\n');
+   fs.writeFileSync(
+      path.join(src.dir, "publisher.json"),
+      JSON.stringify({
+         name: PKG_NAME,
+         version: "1.0.0",
+         skillSets: { stash: { path: "sets/lone" } },
+      }),
+   );
    const adminPort = await getFreePort();
    const server = await spawnServer({
       config: singlePackageConfig(ENV_NAME, {
@@ -244,6 +262,24 @@ describe("Watch-mode source-edit live reload via --watch-env (E2E)", () => {
          return (model.sources ?? []).some((s) => s.name === "renamed_source");
       }, 25_000);
       expect(recompiled).toBe(true);
+   });
+
+   it("reloads on an edit to a file under a skill set no workflow lists", async () => {
+      // A .py is let through the watcher only because the package watches the declared set; a model or .md edit reloads regardless.
+      const shaOf = async () =>
+         (
+            (await (await fetch(apiUrl(baseUrl, "/status"))).json()) as {
+               sourceContentSha: string;
+            }
+         ).sourceContentSha;
+      const before = await shaOf();
+      fs.writeFileSync(
+         path.join(server!.srcDir, LONE_SCRIPT),
+         'print("edited")\n',
+      );
+      expect(
+         await pollUntil(async () => (await shaOf()) !== before, 25_000),
+      ).toBe(true);
    });
 
    it("survives a transient compile error during reload and recovers", async () => {

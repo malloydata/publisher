@@ -46,7 +46,7 @@ interface CellFinding {
    code?: string;
    reason?: string;
    severity?: "warn" | "error";
-   message?: string;
+   message: string;
 }
 
 /**

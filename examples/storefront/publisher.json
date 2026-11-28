@@ -2,17 +2,22 @@
   "name": "storefront",
   "version": "1.0.0",
   "description": "A small but complete ecommerce semantic model — joins, measures, and reports over local DuckDB data.",
-  "agents": {
+  "skillSets": {
+    "default": {
+      "path": "skill_sets/default",
+      "description": "The storefront house conventions and search vocabulary",
+      "overrides": ["malloy-phrase-detection"]
+    },
     "analyst": {
-      "description": "Answers revenue and order questions using the storefront house conventions",
-      "instructions": "agents/analyst/instructions.md",
-      "skills": ["agents/analyst/skills"],
-      "schedules": [
-        {
-          "cron": "0 13 * * MON",
-          "task": "agents/analyst/tasks/weekly-report.md"
-        }
-      ]
+      "path": "skill_sets/analyst",
+      "description": "The analyst's revenue convention"
+    }
+  },
+  "workflows": {
+    "weekly-report": {
+      "description": "Writes the weekly storefront report as the analyst, using the house conventions",
+      "instructions": "workflows/weekly-report/instructions.md",
+      "skillSets": ["analyst", "default"]
     }
   }
 }

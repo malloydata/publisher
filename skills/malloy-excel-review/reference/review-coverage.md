@@ -45,7 +45,7 @@ match the **Routes** table:
 | X | | | | | | |
 | NR | | | | | | |
 
-For the bundled fixture the classifier reports 55 regions: T 40 regions / 77 cells, C 13 /
+For the repository's fixture the classifier reports 55 regions: T 40 regions / 77 cells, C 13 /
 23, X 2 / 1001, NR 0 / 0. A T region that failed parity moves out of "translated"; a region
 the classifier routed T is not thereby correct.
 

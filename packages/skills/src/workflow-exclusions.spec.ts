@@ -3,25 +3,20 @@
 
 /**
  * The contract between `scripts/publish-packages.sh`'s `skills_diff_status`
- * and `scripts/exclusions.ts`.
+ * and what the package really ships (`packedSkillFiles` over the manifest's
+ * skills).
  *
- * exclusions.ts's own docstring states the rule this enforces: "The copy, the
- * pack audit, and the tests all have to agree exactly. When they drift, one of
- * them silently permits what another forbids." `skills_diff_status` is now a
- * FOURTH reader of that list: at release time it diffs this checkout against
- * npm latest's recorded gitHead, and its own `EXCLUDE=(...)` subtracts the
- * unpublishable files from that diff, so that editing one does not make the
- * release think published content changed when it did not — and it was the
- * only reader with no test behind it.
+ * `skills_diff_status` diffs this checkout against npm latest's recorded
+ * gitHead, and its own `EXCLUDE=(...)` subtracts the unpublishable files from
+ * that diff, so that editing one does not make the release think published
+ * content changed when it did not.
  *
- * The drift that matters is not the obvious direction. If someone decides
- * `skills/README.md` SHOULD ship (drops `isSourceReadme`, or renames the file)
- * and `skills_diff_status` keeps excluding it, a README-only change then really
- * does change the tarball while the release's diff reports "unchanged". The
- * release skips publishing, and the version already on npm silently keeps
- * shipping stale content under the name a reader thinks is current — the exact
- * failure this exclusion list exists to close, re-entering through the
- * exclusion itself.
+ * The drift that matters is not the obvious direction. If a file the packer
+ * ships (`skills/README.md`, say, if the copy started taking top-level files)
+ * stays in `EXCLUDE`, a change to it really does change the tarball while the
+ * release's diff reports "unchanged". The release skips publishing, and the
+ * version already on npm silently keeps shipping stale content under the name
+ * a reader thinks is current.
  *
  * Reading a sibling shell script from a unit test is ugly. It is also the only
  * thing that makes this contract fail loudly, and it costs one file read.
@@ -29,7 +24,20 @@
 import { describe, expect, it } from "bun:test";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { isExcluded } from "../scripts/exclusions";
+import { packedSkillFiles } from "../scripts/exclusions";
+import { manifestSkillNames } from "../scripts/manifest";
+
+const SKILLS_DIR = path.join(import.meta.dir, "..", "..", "..", "skills");
+
+/** Whether a path under skills/ reaches the tarball: only a file of a manifest skill, as the pack lists it; the copy takes no top-level file. */
+function ships(relative: string): boolean {
+   const [skill, ...rest] = relative.split("/");
+   return (
+      rest.length > 0 &&
+      manifestSkillNames().includes(skill!) &&
+      packedSkillFiles(SKILLS_DIR, skill!).includes(rest.join("/"))
+   );
+}
 
 const PUBLISH_SCRIPT = path.join(
    import.meta.dir,
@@ -68,7 +76,7 @@ function excludePathspecs(script: string): string[] {
    return specs;
 }
 
-describe("publish-packages.sh's skills EXCLUDE agrees with exclusions.ts", () => {
+describe("publish-packages.sh's skills EXCLUDE agrees with what the pack ships", () => {
    const script = fs.readFileSync(PUBLISH_SCRIPT, "utf8");
 
    it("skills_diff_status's git diff actually passes EXCLUDE", () => {
@@ -98,14 +106,13 @@ describe("publish-packages.sh's skills EXCLUDE agrees with exclusions.ts", () =>
          // it would be an exclusion nothing checks, which is the state this
          // whole file exists to end.
          if (repoPath.startsWith("skills/")) {
-            // exclusions.ts works in paths relative to skills/.
             const relative = repoPath.slice("skills/".length);
             expect(
-               isExcluded(relative),
-               `publish-packages.sh excludes ${repoPath} from its release-time content diff, but exclusions.ts would PACK it. ` +
+               ships(relative),
+               `publish-packages.sh excludes ${repoPath} from its release-time content diff, but the pack ships it. ` +
                   `A change to that file reaches the published tarball while the diff reports "unchanged since npm latest's gitHead", ` +
                   `so the release decides there is nothing to publish and skills quietly ships stale content.`,
-            ).toBe(true);
+            ).toBe(false);
             continue;
          }
 
@@ -151,24 +158,18 @@ describe("publish-packages.sh's skills EXCLUDE agrees with exclusions.ts", () =>
       }
    });
 
-   it("excludes every unpublishable file that is actually in the tree", () => {
+   it("excludes every top-level file of skills/, which the copy never takes", () => {
       // The other direction, and the cheaper failure: a file the packer drops
       // but the diff still watches only makes the release re-publish content
-      // that never changed. Scoped to the top level of skills/, because that
-      // is where a whole-file exclusion like README.md lives; `credible-*` is
-      // asserted absent from this repo elsewhere, and dotfiles are not
-      // content.
+      // that never changed. Dotfiles are not content.
       const excluded = new Set(
          excludePathspecs(script).map((spec) => spec.slice(2)),
       );
-      const skillsDir = path.join(import.meta.dir, "..", "..", "..", "skills");
-
-      for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+      for (const entry of fs.readdirSync(SKILLS_DIR, { withFileTypes: true })) {
          if (!entry.isFile() || entry.name.startsWith(".")) continue;
-         if (!isExcluded(entry.name)) continue;
          expect(
             excluded.has(`skills/${entry.name}`),
-            `exclusions.ts keeps skills/${entry.name} out of the tarball, but publish-packages.sh's release-time diff still watches it, ` +
+            `skills/${entry.name} never reaches the tarball, but publish-packages.sh's release-time diff still watches it, ` +
                `so editing it looks like published content changed when it never reaches the tarball.`,
          ).toBe(true);
       }

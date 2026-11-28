@@ -11,7 +11,12 @@ import { logger } from "../logger";
 import { assertSafePackageName } from "../path_safety";
 import type { PackageLookup } from "../service/environment_ports";
 import { EnvironmentStore } from "../service/environment_store";
+import type { Environment } from "../service/environment";
 import { parseEnvironmentName, parsePackageName } from "../service/identity";
+import {
+   workflowFileServed,
+   workflowFileServedExactly,
+} from "../service/skills/package_workflows";
 
 type WatchStatusRes = components["schemas"]["WatchStatus"];
 
@@ -34,6 +39,40 @@ const ASSET_EXTS = new Set([
    ".woff2",
 ]);
 const MODEL_EXTS = new Set([".malloy", ".malloynb", ".md"]);
+
+/**
+ * A reload per key that never queues behind itself: one runs at a time, and an
+ * event that arrives while it does sets a flag that makes it run once more, so
+ * a burst of N events costs two loads, the second started after the last event.
+ * Every caller gets the result of the last run its key had.
+ */
+export function coalescedReloads<K>(
+   reload: (key: K) => Promise<boolean>,
+): (key: K) => Promise<boolean> {
+   const running = new Map<K, { dirty: boolean; done: Promise<boolean> }>();
+   return (key) => {
+      const slot = running.get(key);
+      if (slot) {
+         slot.dirty = true;
+         return slot.done;
+      }
+      const fresh = { dirty: false, done: Promise.resolve(false) };
+      fresh.done = (async () => {
+         try {
+            let ok: boolean;
+            do {
+               fresh.dirty = false;
+               ok = await reload(key);
+            } while (fresh.dirty);
+            return ok;
+         } finally {
+            running.delete(key);
+         }
+      })();
+      running.set(key, fresh);
+      return fresh.done;
+   };
+}
 
 export class WatchModeController {
    watchingPath: string | null;
@@ -89,7 +128,7 @@ export class WatchModeController {
                await this.watcher.close();
                this.watcher = null;
             }
-            this.startWatcher(environmentName, watchPath);
+            this.startWatcher(environmentName, watchPath, env);
          });
       this.setupChain = run;
       await run;
@@ -100,14 +139,82 @@ export class WatchModeController {
       return !!this.watcher && this.watchingEnvironmentName === environmentName;
    }
 
-   private startWatcher(watchName: string, watchPath: string) {
+   private startWatcher(
+      watchName: string,
+      watchPath: string,
+      environment: Environment,
+   ) {
       this.watchingEnvironmentName = watchName;
       this.watchingPath = watchPath;
+      // A skill set holds scripts and data of any extension, and its listing
+      // is read at load, so a change to a file a skill serves is a reload. The
+      // exact answer reads the skill's `.skillignore`, so the per-file filter,
+      // which runs for every file the watcher walks and cannot wait, uses the
+      // answer by name alone.
+      const workflowFileAt = (filePath: string) => {
+         const [pkgName, ...within] = path
+            .relative(watchPath, filePath)
+            .split(path.sep);
+         if (!pkgName || within.length === 0) return undefined;
+         const pkg = environment
+            .getLoadedPackages()
+            .find((p) => p.getPackageName() === pkgName);
+         return pkg === undefined
+            ? undefined
+            : {
+                 packagePath: path.join(watchPath, pkgName),
+                 watched: pkg.workflowPaths(),
+                 relative: within.join("/"),
+              };
+      };
+      const servesWorkflowFile = (filePath: string): boolean => {
+         const at = workflowFileAt(filePath);
+         return (
+            at !== undefined &&
+            workflowFileServed(at.packagePath, at.watched, at.relative)
+         );
+      };
+      const servesWorkflowFileExactly = async (
+         filePath: string,
+      ): Promise<boolean> => {
+         const at = workflowFileAt(filePath);
+         return (
+            at !== undefined &&
+            (await workflowFileServedExactly(
+               at.packagePath,
+               at.watched,
+               at.relative,
+            ))
+         );
+      };
+      const workflowPathsOf = (pkgName: string): readonly string[] =>
+         environment
+            .getLoadedPackages()
+            .find((p) => p.getPackageName() === pkgName)
+            ?.workflowPaths() ?? [];
+      // The per-file filter dropped what a newly declared set holds, and on macOS a save to a file nothing watches raises no directory event.
+      const watchDeclared = (pkgName: string, declared: string[]) => {
+         if (declared.length === 0) return;
+         const roots = declared.map((rel) =>
+            path.join(watchPath, pkgName, ...rel.split("/")),
+         );
+         const dirs = Object.keys(this.watcher?.getWatched() ?? {}).filter(
+            (dir) =>
+               roots.some(
+                  (root) => dir === root || dir.startsWith(root + path.sep),
+               ),
+         );
+         if (dirs.length > 0) this.watcher?.add(dirs);
+      };
       this.watcher = chokidar.watch(this.watchingPath, {
          ignored: (filePath, stats) => {
             if (!stats?.isFile()) return false;
             const ext = path.extname(filePath).toLowerCase();
-            return !MODEL_EXTS.has(ext) && !ASSET_EXTS.has(ext);
+            return (
+               !MODEL_EXTS.has(ext) &&
+               !ASSET_EXTS.has(ext) &&
+               !servesWorkflowFile(filePath)
+            );
          },
          ignoreInitial: true,
       });
@@ -115,13 +222,18 @@ export class WatchModeController {
       // not do: Environment.update() refreshes metadata and connections but
       // never recompiles packages. Returns false on a compile error (e.g. a
       // half-typed model saved mid-edit).
-      const reloadPackage = async (pkgName: string): Promise<boolean> => {
+      const reloadPackage = coalescedReloads(async (pkgName: string) => {
          try {
             const environment = await this.environmentStore.getEnvironment(
                parseEnvironmentName(watchName),
                false,
             );
+            const declaredBefore = new Set(workflowPathsOf(pkgName));
             await environment.getPackage(parsePackageName(pkgName), true);
+            watchDeclared(
+               pkgName,
+               workflowPathsOf(pkgName).filter((p) => !declaredBefore.has(p)),
+            );
             recordPackageReload("watch", "success");
             logger.info(
                `Watch: recompiled package "${pkgName}" in environment "${watchName}"`,
@@ -135,7 +247,7 @@ export class WatchModeController {
             );
             return false;
          }
-      };
+      });
       const onEvent =
          (kind: "add" | "change" | "unlink") => async (filePath: string) => {
             logger.info(`Watch ${kind}: ${filePath}; environment=${watchName}`);
@@ -154,7 +266,12 @@ export class WatchModeController {
             // only once it recompiles, so a transient syntax error doesn't
             // bounce open pages into a compile error or 404.
             const ext = path.extname(filePath).toLowerCase();
-            if (MODEL_EXTS.has(ext)) {
+            const recompile =
+               MODEL_EXTS.has(ext) ||
+               (await servesWorkflowFileExactly(filePath));
+            // The per-file filter does not read `.skillignore`, so a file it rules out can get here.
+            if (!recompile && !ASSET_EXTS.has(ext)) return;
+            if (recompile) {
                const recompiled = await reloadPackage(pkgName);
                if (!recompiled) return;
             }

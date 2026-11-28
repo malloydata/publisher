@@ -132,8 +132,10 @@ TOOL_ARM_TOOLS = ("mcp__publisher__get_skill",)
 #                           under measurement is not the one the run pinned.
 #
 #   compile_model           authoring surface.
-#   get_agent               adopting a package agent changes who is answering;
-#                           the run measures the model, not a persona.
+#   get_workflow            adopting a package workflow changes what the answerer
+#                           is told to do; the run measures the model, not a brief.
+#   get_skill_set           reading a named skill set does the same: it hands the
+#                           answerer guidance the run did not pin.
 #
 # `get_status` and `list_packages` reveal the other packages on the server and
 # are no use to an answerer given its scope in the prompt.
@@ -148,7 +150,8 @@ TOOL_ARM_TOOLS = ("mcp__publisher__get_skill",)
 # or `mcp__publisher__*`) removes ALL of its tools including the ones wanted,
 # verified 2026-09-08.
 ANSWER_DENIED = ("mcp__publisher__compile_model",
-                 "mcp__publisher__get_agent",
+                 "mcp__publisher__get_workflow",
+                 "mcp__publisher__get_skill_set",
                  "mcp__publisher__search_database_schema",
                  "mcp__publisher__reload_package",
                  "mcp__publisher__get_status",
@@ -165,9 +168,10 @@ ANSWER_DENIED = ("mcp__publisher__compile_model",
 # side it belongs on. Read from `get_status`/`tools/list` on a running server
 # when this needs re-checking; the authority is the server's registration, and
 # a mismatch here is a decision, not a lint.
-PUBLISHER_MCP_TOOLS = ("compile_model", "execute_query", "get_agent",
-                       "get_context", "get_skill", "get_status",
-                       "list_packages", "list_reports", "reload_package",
+PUBLISHER_MCP_TOOLS = ("compile_model", "execute_query", "get_context",
+                       "get_skill", "get_skill_set", "get_status",
+                       "get_workflow", "list_packages", "list_reports",
+                       "reload_package",
                        "report_api", "search_database_schema",
                        "search_malloy_docs", "show_report")
 # The platform target: a hosted MCP server exposing the same two operations
@@ -219,6 +223,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from agent_harness import (ALWAYS_BLOCKED, NO_EDITS, NO_SHELL,  # noqa: E402
                            build_workspace, default_manifest,
                            manifest_skills, no_events, no_text,
+                           package_skill_dirs, package_skills_sha,
                            run_cli, skills_roots)
 from flip_table import counts_toward_score  # noqa: E402
 
@@ -2182,7 +2187,7 @@ def run_answerer(case: dict[str, Any], a: argparse.Namespace,
         if a.answerer_skills:
             work = str(build_workspace(a.answerer_skills, a.roots,
                                        mcp_url=None, prefix=f"ans-{qid}-",
-                                       package_skills_dir=a.package_skills_dir))
+                                       package_skills_dirs=a.package_skills_dirs))
         else:
             work = tempfile.mkdtemp(prefix=f"ans-{qid}-")
         mcp = os.path.join(work, "mcp.json")
@@ -3082,13 +3087,15 @@ def resolve_package_skills(a: argparse.Namespace,
 
     So each mode is checked, not assumed:
 
-    - `install`: the package must have a skills/ directory to copy. Nothing to
-      copy means this arm is silently the `off` arm.
+    - `install`: the package's `default` skill set must hold skills to
+      copy, and the server (which must be reachable) must report serving
+      exactly those skills. Nothing to copy means this arm is silently the
+      `off` arm; a different set means it differs in content, not delivery.
     - `tool`: the server must be serving the package's skills, or the answerer
       has nothing to fetch and this arm is silently the `off` arm too.
     - `off`: the served package must hold no skills, or the answerer can reach
       guidance the baseline is supposed to exclude. Point --package at a copy
-      of the package without skills/.
+      of the package without its `default` skill set.
 
     A run that spawns no answerer (`--rebuild`, `--rejudge`, `--from`, signalled
     by a non-None `prior`) resolves nothing: it carries the prior run's recorded
@@ -3098,11 +3105,12 @@ def resolve_package_skills(a: argparse.Namespace,
     recorded as `off` (the answerer is denied get_skill, so that is what it
     measures) rather than refused.
 
-    Sets `package_skills_dir` (the tree to install, or None) and
-    `package_skills_sha` (a content hash pinned on the run, so two runs
-    differing only in guidance are distinguishable in the ledger).
+    Sets `package_skills_dirs` (the `default` skill set's folder, the one
+    to install) and `package_skills_sha` (a content hash of the
+    skills those folders hold, pinned on the run, so two runs differing only in
+    guidance are distinguishable in the ledger).
     """
-    a.package_skills_dir = None
+    a.package_skills_dirs = []
     a.package_skills_sha = None
     # Directory names of the package skills this run INSTALLS. The answerer
     # addresses a skill by that name, and the provenance check below needs to
@@ -3126,38 +3134,46 @@ def resolve_package_skills(a: argparse.Namespace,
     # server holds, so installing those same bytes is what makes the two arms
     # differ only in delivery -- which is the whole comparison. An explicit
     # --package-skills-dir wins, for a server whose tree is not local.
-    local = None
+    local: list[pathlib.Path] = []
     if a.package_skills_dir_override:
         # Checked here rather than left to build_workspace: this resolver runs
         # before the first spawn precisely so a mistyped path stops the run at
         # second zero instead of after it has started answering.
-        override = pathlib.Path(a.package_skills_dir_override)
-        if not override.is_dir():
-            raise SystemExit(
-                f"--package-skills-dir {override} is not a directory.")
-        local = override
+        for given in a.package_skills_dir_override:
+            override = pathlib.Path(given)
+            if not override.is_dir():
+                raise SystemExit(
+                    f"--package-skills-dir {override} is not a directory.")
+            local.append(override)
     else:
         pkg_dir = served_package_dir(a.publisher, a.environment, a.package)
-        skills_dir = pkg_dir / "skills" if pkg_dir is not None else None
-        if skills_dir is not None and skills_dir.is_symlink():
-            raise SystemExit(
-                f"{skills_dir} is a link; refusing to read or install through "
-                f"it, since it can point at the eval set.")
-        if skills_dir is not None and skills_dir.is_dir():
-            local = skills_dir
+        default = default_skill_set(pkg_dir) if pkg_dir is not None else None
+        local = [default] if default is not None else []
+    try:
+        installable = package_skill_dirs(local)
+    except (OSError, ValueError) as e:
+        raise SystemExit(str(e))
     served = package_skill_names(a.publisher, a.environment, a.package)
 
     if a.package_skills == "install":
-        if local is None:
+        if not installable:
             raise SystemExit(
-                "--package-skills=install, but no skills/ directory was found "
-                "for the package. Installing nothing measures the 'off' arm "
-                "under the 'install' label. Pass --package-skills-dir, or pick "
-                "another mode.")
-        a.package_skills_dir = local
-        a.package_skill_names = sorted(
-            c.name for c in local.iterdir()
-            if c.is_dir() and not c.name.startswith("."))
+                "--package-skills=install, but the package's `default` "
+                "skill set was not found holding a skill. Installing "
+                "nothing measures the 'off' arm under the 'install' label. "
+                "Pass --package-skills-dir, or pick another mode.")
+        # The server decides what it serves (a refused default set, a
+        # skill it sets aside), so what is installed must be what it reports.
+        if sorted(installable) != served:
+            raise SystemExit(
+                f"--package-skills=install would install "
+                f"{', '.join(sorted(installable))}, but the server serves "
+                f"{', '.join(served) or 'no package skills'} for "
+                f"{a.environment}/{a.package}. The arms would differ in "
+                f"content, not delivery. Check the package's load warnings "
+                f"for a refused default set or a skipped skill.")
+        a.package_skills_dirs = local
+        a.package_skill_names = sorted(installable)
     elif a.package_skills == "tool":
         if not served:
             print(f"  ! the server serves no package skills for "
@@ -3171,17 +3187,41 @@ def resolve_package_skills(a: argparse.Namespace,
                 f"skills for {a.environment}/{a.package}: "
                 f"{', '.join(served)}. The answerer could fetch them with "
                 "get_skill, so this is not a baseline. Serve a copy of the "
-                "package without skills/.")
+                "package without its `default` skill set.")
 
-    if local is not None:
-        h = hashlib.sha256()
-        for f in sorted(local.rglob("*")):
-            if f.is_file():
-                h.update(str(f.relative_to(local)).encode())
-                h.update(b"\0")
-                h.update(f.read_bytes())
-                h.update(b"\0")
-        a.package_skills_sha = h.hexdigest()
+    # The pin is of guidance the answerer can reach: skills the server serves
+    # and this machine holds the same names of, never a hash of nothing.
+    if served and sorted(installable) == served:
+        a.package_skills_sha = package_skills_sha(installable)
+
+
+def default_skill_set(pkg_dir: pathlib.Path) -> pathlib.Path | None:
+    """The folder `skillSets.default.path` names in `publisher.json`, or None.
+
+    Read from the served copy's manifest. A path that is not a directory
+    inside the package gives None. This does not apply the server's manifest
+    rules (it refuses a set for a bad or repeated path, an unknown key and
+    more); the caller checks the result against the skills the server reports
+    serving.
+    """
+    try:
+        manifest = json.loads((pkg_dir / "publisher.json").read_text())
+        entry = manifest["skillSets"]["default"]["path"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    if not isinstance(entry, str):
+        return None
+    path = pkg_dir
+    for part in pathlib.PurePosixPath(entry).parts:
+        path = path / part
+        if path.is_symlink():
+            raise SystemExit(
+                f"{path} is a link; refusing to read or install "
+                f"through it, since it can point at the eval set.")
+    path = pkg_dir / entry
+    if path.is_dir() and path.resolve().is_relative_to(pkg_dir.resolve()):
+        return path
+    return None
 
 
 def resolve_config(a: argparse.Namespace) -> config.Config:
@@ -3348,16 +3388,20 @@ def main(argv: list[str] | None = None) -> int:
                          "like any other skill. tool = not installed; the "
                          "answerer must call get_skill, which is what a real "
                          "agent against this server does. off = the served package "
-                         "ships none (serve a copy without skills/), the "
+                         "ships none (serve a copy without its `default` "
+                         "skill set), the "
                          "baseline arm. "
                          "The default is `tool` because it is the unmodified "
                          "product behaviour.")
     ap.add_argument("--package-skills-dir", dest="package_skills_dir_override",
-                    default=None,
-                    help="the skills/ tree to install for --package-skills="
-                         "install. Defaults to the served package's own, which "
-                         "is what the `tool` arm would fetch; pass this only "
-                         "when the served tree is not reachable locally.")
+                    action="append", default=None,
+                    help="a skill-set folder (one holding <skill>/SKILL.md) to "
+                         "install for --package-skills=install; repeat it for "
+                         "several, first wins a name clash. Defaults to the "
+                         "served package's `default` skill set, which is what "
+                         "the `tool` arm would fetch; "
+                         "pass this only when the served tree is not "
+                         "reachable locally.")
     ap.add_argument("--publisher", default=None,
                     help="Publisher REST base, used to re-execute the answerer's "
                          "final query so the judge sees rows rather than prose. "

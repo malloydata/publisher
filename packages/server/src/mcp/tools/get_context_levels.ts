@@ -18,7 +18,7 @@
 
 import { InvalidArgumentError } from "../../errors";
 import type { EnvironmentCatalog } from "../../service/environment_ports";
-import { FCJ_MAX_CHARS } from "../../retrieval/search/pages";
+import { FCJ_MAX_CHARS } from "../../constants";
 import type { GetContextParams, ScopedParams } from "./get_context_request";
 import type { PackageInfo } from "../../retrieval/model/types";
 import { oneLineSummary } from "../../retrieval/model/package_entities";

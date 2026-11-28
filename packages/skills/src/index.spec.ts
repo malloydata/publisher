@@ -5,7 +5,8 @@ import { describe, expect, it } from "bun:test";
 import { execFileSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { isCredible, isExcluded } from "../scripts/exclusions";
+import { isCredible } from "../../server/src/service/skills/skill_files";
+import { packedSkillFiles } from "../scripts/exclusions";
 import { manifestSkillNames } from "../scripts/manifest";
 import { listSkills, skillsDir } from "./index";
 
@@ -73,27 +74,6 @@ describe("@malloy-publisher/skills", () => {
       }
    });
 
-   // The reason this package exists: reference/ files reach no npm consumer
-   // today, so the pointers to them in the MCP prompt bodies dangle.
-   it("brings each skill's reference/ files along", () => {
-      const shipping = new Set(manifestSkillNames());
-      const withReference = skillNamesIn(sourceDir)
-         .filter((name) => shipping.has(name))
-         .filter((name) =>
-            fs.existsSync(path.join(sourceDir, name, "reference")),
-         );
-      expect(withReference.length).toBeGreaterThan(0);
-      for (const name of withReference) {
-         const shipped = fs.readdirSync(
-            path.join(skillsDir, name, "reference"),
-         );
-         const original = fs
-            .readdirSync(path.join(sourceDir, name, "reference"))
-            .filter((file) => !isExcluded(`${name}/reference/${file}`));
-         expect(shipped.sort()).toEqual(original.sort());
-      }
-   });
-
    /**
     * The stamp is what makes a months-old install identifiable on disk, and it
     * is applied by the copy rather than committed, so nothing else would notice
@@ -131,6 +111,47 @@ describe("@malloy-publisher/skills", () => {
             /^version:/m,
          );
       }
+   });
+
+   it("packs each skill as skillFiles decides it: its whole directory minus its .skillignore", () => {
+      const filesUnder = (dir: string, prefix = ""): string[] =>
+         fs
+            .readdirSync(dir, { withFileTypes: true })
+            .flatMap((entry) =>
+               entry.isDirectory()
+                  ? filesUnder(
+                       path.join(dir, entry.name),
+                       `${prefix}${entry.name}/`,
+                    )
+                  : [`${prefix}${entry.name}`],
+            );
+      for (const name of manifestSkillNames()) {
+         expect(filesUnder(path.join(skillsDir, name)).sort()).toEqual(
+            packedSkillFiles(sourceDir, name).sort(),
+         );
+      }
+   });
+
+   it("leaves out the tests and fixtures the bundled skills' .skillignore files name", () => {
+      const packed = manifestSkillNames().flatMap((name) =>
+         packedSkillFiles(sourceDir, name),
+      );
+      expect(packed.filter((file) => file.endsWith("_test.py"))).toEqual([]);
+      const excel = path.join(skillsDir, "malloy-excel-review");
+      expect(fs.readdirSync(path.join(excel, "fixtures"))).toEqual([
+         "README.md",
+      ]);
+      // Positive control: the tree does hold them.
+      expect(
+         fs.existsSync(
+            path.join(sourceDir, "malloy-excel-review/fixtures/fixture.xlsx"),
+         ),
+      ).toBe(true);
+      expect(
+         fs
+            .readdirSync(path.join(sourceDir, "eval-loop/scripts"))
+            .some((f) => f.endsWith("_test.py")),
+      ).toBe(true);
    });
 
    it("leaves out the internal sync README and any credible-* skill", () => {

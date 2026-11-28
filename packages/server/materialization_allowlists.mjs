@@ -87,8 +87,6 @@ export const MATERIALIZATION_IMPORT_ALLOWLIST = {
    "service/query_serving.ts -> service/materialization/serve/view_variants":
       "2n",
    "service/query_serving.ts -> service/materialization/text/source_map": "2n",
-   "service/skills/package_skills.ts -> service/materialization/run/cron_evaluator":
-      "2n",
    // H5: logger and metrics only in run/, the facade and the query pipeline.
    "service/materialization/plan/build_plan.ts -> logger": "2o",
    "service/materialization/plan/build_plan.ts -> materialization_metrics":

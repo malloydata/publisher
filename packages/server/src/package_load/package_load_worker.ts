@@ -33,9 +33,11 @@ import {
 import * as Malloy from "@malloydata/malloy-interfaces";
 import { parseMalloynb } from "../service/deprecated/malloynb";
 import {
+   agentsNotReadFindings,
    declaredDeprecatedManifestKeys,
    type DeprecatedManifestKey,
 } from "../service/deprecated/manifest_keys";
+import type { ApiPackageWarning } from "../service/classification";
 import * as fs from "fs";
 import * as path from "path";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -62,13 +64,19 @@ import {
    jobFiles,
    ModelCacheView,
    modelFileTexts,
+   urlKey,
    type JobFiles,
 } from "./job_files";
 import { translatorMalloyError } from "../service/translator_error";
 import { extractCheckedModel } from "../service/model_load_checks";
 import { modelInfoOf } from "../service/model_info";
 import { compileNotebookCells } from "../service/model_notebook_cell";
-import { boundedManifestValue } from "../service/package_revision";
+import { boundedDeclaration } from "../service/package_revision";
+import {
+   readPackageWorkflows,
+   workflowsToWire,
+} from "../service/skills/package_workflows";
+import { servedContentSha, type Walked } from "./served_content_sha";
 import {
    PackageMaterializationConfig,
    PackageScope,
@@ -148,6 +156,7 @@ import type {
    WorkerBuildPlan,
    WorkerLogMessage,
    WorkerUnhandledRejectionMessage,
+   WorkflowsRead,
 } from "./protocol";
 import { PACKAGE_LOAD_PROTOCOL_VERSION } from "./protocol";
 
@@ -783,6 +792,7 @@ async function declaredReportPaths(
 async function readPackageMetadata(
    packagePath: string,
    modelPaths: readonly string[],
+   readWorkflows: LoadPackageRequest["readWorkflows"],
 ): Promise<{
    name?: string;
    description?: string;
@@ -795,7 +805,10 @@ async function readPackageMetadata(
    manifestWarnings?: string[];
    deprecatedManifestKeys?: DeprecatedManifestKey[];
    retrieval?: PackageRetrievalSettings;
-   agents?: unknown;
+   manifestFindings?: ApiPackageWarning[];
+   workflowsRead?: WorkflowsRead;
+   /** What the walk read that the source content sha covers; the sha itself waits for the compile. */
+   walked?: Walked;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    // Inside the package only, and one answer for any manifest that cannot be
@@ -825,6 +838,8 @@ async function readPackageMetadata(
       queryMetadata?: unknown;
       retrieval?: unknown;
       agents?: unknown;
+      skillSets?: unknown;
+      workflows?: unknown;
    };
    try {
       parsed = JSON.parse(contents);
@@ -844,6 +859,25 @@ async function readPackageMetadata(
             `${Array.isArray(parsed) ? "an array" : parsed === null ? "null" : `a ${typeof parsed}`}. ` +
             `Fix: { "name": "my-package" }.`,
       );
+   }
+   // Read before the compile, which answers the main thread's schema fetches
+   // between awaits that a synchronous walk would stall.
+   let workflowsRead: WorkflowsRead | undefined;
+   let walked: Walked | undefined;
+   if (readWorkflows) {
+      const declaration = boundedDeclaration(parsed);
+      const walk = readPackageWorkflows(
+         packagePath,
+         declaration.value,
+         readWorkflows.bundledSkillNames,
+      );
+      workflowsRead = { walk: workflowsToWire(walk) };
+      walked = {
+         walk,
+         ...(declaration.sha !== undefined && {
+            declarationSha: declaration.sha,
+         }),
+      };
    }
    // Scope has two homes (canonical `materialization.scope`, deprecated root);
    // an invalid value or a conflict throws.
@@ -906,7 +940,10 @@ async function readPackageMetadata(
       // Validated and read here so a bad key or unreadable prompt file fails
       // the load by name, and a prompt edit takes effect on reload.
       retrieval: await readPackageRetrieval(packagePath, parsed.retrieval),
-      agents: boundedManifestValue(parsed.agents),
+      // Findings with a code, which a manifestWarning has none of.
+      manifestFindings: agentsNotReadFindings(parsed),
+      workflowsRead,
+      walked,
    };
 }
 
@@ -1381,6 +1418,7 @@ async function compileNotebookModel(
    job: LoadPackageRequest,
    malloyConfig: MalloyConfig,
    modelPath: string,
+   files: JobFiles,
 ): Promise<SerializedModel> {
    const compileStart = performance.now();
    const fullPath = path.join(job.packagePath, modelPath);
@@ -1389,6 +1427,10 @@ async function compileNotebookModel(
 
    const { runtime, urlReader } = buildRuntimeForModel(job, malloyConfig);
    const fileContents = await readPackageURL(job.packagePath, modelURL);
+   files.notebookShas.set(
+      urlKey(modelURL.href),
+      createHash("sha256").update(fileContents).digest("hex"),
+   );
    const { materializer, cells } = await compileNotebookCells(
       runtime,
       importBaseURL,
@@ -1469,7 +1511,7 @@ async function compileOneModel(
          );
       }
       if (modelPath.endsWith(NOTEBOOK_FILE_SUFFIX)) {
-         return await compileNotebookModel(job, malloyConfig, modelPath);
+         return await compileNotebookModel(job, malloyConfig, modelPath, files);
       }
       return {
          modelPath,
@@ -1517,9 +1559,10 @@ async function loadPackage(
 
    // Resolved against the ON-DISK tree, before the replacement: a /compile
    // preview proposing an index.malloy must not re-curate the package.
-   const packageMetadata = await readPackageMetadata(
+   const { walked, ...packageMetadata } = await readPackageMetadata(
       job.packagePath,
       modelPaths,
+      job.readWorkflows,
    );
    const refresh: SchemaRefresh | undefined =
       job.refreshTimestamp !== undefined
@@ -1595,6 +1638,7 @@ async function loadPackage(
       job.requestId,
    );
    const loadEnd = performance.now();
+   const fileDigests = fileTextDigests(files);
    return {
       type: "load-package-result",
       requestId: job.requestId,
@@ -1603,7 +1647,18 @@ async function loadPackage(
       models,
       replacementMatchedExisting,
       ...(refresh ? { refreshedSchemaKeys: [...refresh.refetched] } : {}),
-      fileDigests: fileTextDigests(files),
+      fileDigests,
+      ...(walked
+         ? {
+              sourceContentSha: servedContentSha(
+                 job.packagePath,
+                 models,
+                 fileDigests,
+                 files.notebookShas,
+                 walked,
+              ),
+           }
+         : {}),
       loadDurationMs: loadEnd - loadStart,
       timings: {
          // Clamped: rounding can nudge it slightly negative.

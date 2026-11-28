@@ -273,7 +273,7 @@ Publisher serves out of the box, and a fourth shows the SDK:
 The [`docs/`](docs/) folder is the reference hub; start at its [index](docs/README.md). Beyond the
 guides linked above: [architecture](docs/architecture.md) for how the pieces fit together,
 [api-overview](docs/api-overview.md) for the REST and MCP surface, [packages](docs/packages.md) for
-the package format (`publisher.json`, models, data), and the
+the package format (`publisher.json`, models, data, workflows), and the
 [Docker runtime deep-dive](packages/server/README.docker.md) for image layout, environment, and
 tuning. The complete user guide also lives at
 **[docs.malloydata.dev](https://docs.malloydata.dev/documentation/user_guides/publishing/publishing)**.

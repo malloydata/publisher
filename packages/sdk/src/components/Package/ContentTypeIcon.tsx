@@ -11,14 +11,15 @@ export type ContentType =
    | "materialization"
    | "dataApp"
    | "dashboard"
-   | "agent";
+   | "workflow"
+   | "skillSet";
 
 /**
  * The backplate color behind each icon. One per content type and no repeats: on
- * a page that lists all seven, a shared color reads as a shared kind, and the
+ * a page that lists all eight, a shared color reads as a shared kind, and the
  * glyphs are small enough that color does most of the telling apart.
  *
- * Seven hues from `PALETTE`, spaced far enough apart to survive being 18px of
+ * Eight hues from `PALETTE`, spaced far enough apart to survive being 18px of
  * white on a 32px plate, and disjoint from the three `SURFACE_TINT` uses so a
  * colour means one kind of thing everywhere in the Console.
  *
@@ -33,7 +34,9 @@ export const CONTENT_TINT: Record<ContentType, string> = {
    dataApp: PALETTE.pink,
    data: PALETTE.lime,
    materialization: PALETTE.amber,
-   agent: PALETTE.red,
+   workflow: PALETTE.red,
+   // Slate, the one hue neither a package nor another kind wears: indigo sits too close to dashboard blue, which is why packages left it.
+   skillSet: PALETTE.slate,
 };
 
 interface ContentTypeIconProps extends Omit<SvgIconProps, "fontSize"> {
@@ -92,7 +95,8 @@ const CONTENT_GLYPH: Record<ContentType, () => React.ReactElement> = {
    materialization: StackPath,
    dataApp: BrowserWindowPath,
    dashboard: DashboardGridPath,
-   agent: PersonPath,
+   workflow: StepsPath,
+   skillSet: FolderPath,
 };
 
 /** File outline with a folded top-right corner and three chart bars inside. */
@@ -165,13 +169,23 @@ function DashboardGridPath() {
    );
 }
 
-/** A head and shoulders: someone who works with the package. */
-function PersonPath() {
+/** Three steps joined by a line: a workflow's ordered work. */
+function StepsPath() {
    return (
       <>
-         <circle cx="12" cy="8" r="3.5" />
-         <path d="M5 20 a7 7 0 0 1 14 0" />
+         <circle cx="6" cy="6" r="2.5" />
+         <circle cx="18" cy="12" r="2.5" />
+         <circle cx="6" cy="18" r="2.5" />
+         <path d="M8.2 7.1 L15.8 10.9" />
+         <path d="M15.8 13.1 L8.2 16.9" />
       </>
+   );
+}
+
+/** Folder outline: a skill set is a directory of skills. */
+function FolderPath() {
+   return (
+      <path d="M3 7 a2 2 0 0 1 2 -2 h4 l2 2 h8 a2 2 0 0 1 2 2 v8 a2 2 0 0 1 -2 2 H5 a2 2 0 0 1 -2 -2 z" />
    );
 }
 

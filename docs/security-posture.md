@@ -111,8 +111,37 @@ Concretely:
 - **Package content is first-party code.** A package's models, notebooks, and `public/` files are
   treated as code the operator chose to run, the same way you would treat your own web app
   deployed on your own origin. Publisher does not scan, sandbox, or vet them.
-  Package-authored skill and agent text is served unauthenticated over MCP and REST too, bounded
-  by the realpath rule (nothing that resolves outside the package) and the per-file size caps.
+  A package's workflow instructions and skills are served without authentication too. Every file
+  of a skill in a declared skill set is listed and served over REST and MCP (`get_skill_set`,
+  `get_workflow`, `get_skill`, the `…/skill-sets`, `…/workflows` and `…/skills` routes), not only its text: Markdown inline, any
+  other text file on request, a binary file as its size and a message. The exceptions are what the
+  skill's `.skillignore` matches, dotfiles and dot-folders, `node_modules/` and `__pycache__/` (no
+  pattern brings those back), `.malloy` and `.malloynb` files, and, withheld because an agent
+  computer reads them with authority, a `SKILL.md` below a skill's root and `CLAUDE.md`,
+  `CLAUDE.local.md`, `AGENTS.md` and `publisher.json` anywhere in a skill. A file under `assets/`
+  is served like any other, so an asset is as readable as the skill's Markdown; a link, a `..`
+  name or a case collision under `assets/` sets the whole skill aside instead. `.skillignore`
+  curates what is served and hides nothing from someone with the package, so keep a secret out of
+  a skill directory. The per-set caps bound it (256 KiB and 1,000 files of inline Markdown, and 4 MiB and 200
+  listed files per set, under 1 MiB each, with 8 MiB across the package), as do the realpath rule
+  at load (nothing that resolves outside the package is listed) and a re-check of each listed file
+  on every read. A read opens the file once without following a link, refuses anything that is not
+  a regular file within the cap, reads at most its size plus one byte through that descriptor, and
+  serves it only if it still hashes to its recorded sha256. That hash is also the guard against a
+  parent directory swapped for a link after the load, which a path check on the read would not
+  catch, so a swapped directory serves nothing.
+- **A `SKILL.md` is served as written, so a skill can carry `hooks` or `allowed-tools`.** No route strips
+  frontmatter, so an author's `allowed-tools`, `hooks` or `model` key reaches whoever installs the file
+  unchanged. Publishing is unauthenticated, so on a shared Publisher anyone who can publish a package
+  reaches the people who install its skills. What protects an installing user is the install rule, which
+  the `get_workflow` and `get_skill_set` descriptions and the bundled `malloy-run-workflow` skill state:
+  write only `name` and `description` into the installed file's frontmatter, taken from the entry's
+  fields, then the text after the file's own frontmatter, and name any other key the file carried to the
+  user. An installer that keeps the file's frontmatter gives up the bounded reader's protection (the server's own size-capped, expansion-limited read of the frontmatter, whose `name` and `description` the installer writes instead of parsing the file's own), and the
+  server cannot enforce the rule for it. Publisher itself runs nothing from a definition, but an
+  installer writes a skill's package-authored `scripts/` (and any other listed file) to the user's
+  disk, where the skill tells the agent to run it: the install copies the bytes unread, so the user
+  is trusting the package author, and the sha256 only proves the file arrived as listed.
 - **A package's Malloy reads only its own package's files.** The same realpath rule bounds every
   file the compiler reads for a package's models (an `import`, a `.malloynb`, a data-styles
   file) on every compile: the load and its worker, a reload, `/compile` and MCP `compile_model`
@@ -162,8 +191,8 @@ Concretely:
   gets the same refusal, and a target outside the package that does not exist is refused exactly
   like one that does. Every lookup Publisher makes through a path a package author controls uses this
   walk: model and notebook reads, the package listing and its data probe, `publisher.json`,
-  the content hash, the retrieval prompt files, package skills and agent skills and their
-  assets, the report write path, and the files of an HTML data app. When the walk stops at a
+  the content hash, the retrieval prompt files, workflow instructions and skill sets and
+  their files, the report write path, and the files of an HTML data app. When the walk stops at a
   missing directory, only that point and the next name are opened, never the rest of the
   spelled path, so a directory appearing there afterwards cannot carry the open out. (A symlink
   appearing there, or at a component already checked, between the check and the open still

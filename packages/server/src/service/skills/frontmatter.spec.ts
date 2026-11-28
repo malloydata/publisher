@@ -1,0 +1,199 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { describe, expect, it } from "bun:test";
+import { parseFrontmatter } from "./frontmatter";
+
+const skill = (front: string) => `---\n${front}\n---\nbody\n`;
+const refs = (anchor: string, n: number) =>
+   Array.from({ length: n }, (_, i) => `ref${i}: *${anchor}`).join("\n");
+
+describe("parseFrontmatter: what an alias can expand to", () => {
+   it("falls back when a wide anchored list is referenced 99 times", () => {
+      const list = `[${Array.from({ length: 300 }, (_, i) => i).join(", ")}]`;
+      const out = parseFrontmatter(
+         skill(
+            `name: wide\ndescription: d\nlist: &l ${list}\n${refs("l", 99)}`,
+         ),
+         "wide",
+      );
+      expect(out.frontmatter).toEqual({});
+      expect(out.warnings[0]).toContain("valid YAML but too large");
+      expect(out.warnings[0]).not.toContain("not valid YAML");
+      expect(out.name).toBe("wide");
+      expect(out.description).toBe("d");
+   });
+
+   it("falls back when an anchored long string is referenced many times", () => {
+      const out = parseFrontmatter(
+         skill(
+            `name: fat\ndescription: d\ntext: &s "${"x".repeat(2000)}"\n${refs("s", 60)}`,
+         ),
+         "fat",
+      );
+      expect(out.frontmatter).toEqual({});
+      expect(out.warnings[0]).toContain("valid YAML but too large");
+   });
+
+   it("still parses an alias-free list of 400 items", () => {
+      const items = Array.from({ length: 400 }, (_, i) => `- i${i}`).join("\n");
+      const out = parseFrontmatter(
+         skill(`name: long\ndescription: d\nitems:\n${items}`),
+         "long",
+      );
+      expect(out.warnings).toEqual([]);
+      expect((out.frontmatter.items as string[]).length).toBe(400);
+   });
+
+   it("still parses an alias-free list of 600 values that print far longer than they are written", () => {
+      const out = parseFrontmatter(
+         skill(
+            `name: big\ndescription: d\nv: [${Array(600).fill("1e20").join(",")}]`,
+         ),
+         "big",
+      );
+      expect(out.warnings).toEqual([]);
+      expect((out.frontmatter.v as number[]).length).toBe(600);
+   });
+
+   it("still parses a short mapping referenced twice", () => {
+      const out = parseFrontmatter(
+         skill("name: ok\ndescription: d\nbase: &b {x: 1}\na: *b\nc: *b"),
+         "ok",
+      );
+      expect(out.warnings).toEqual([]);
+      expect(out.frontmatter.a).toEqual({ x: 1 });
+      expect(out.frontmatter.c).toEqual({ x: 1 });
+   });
+});
+
+const range = (n: number) => Array.from({ length: n }, (_, i) => i);
+
+/** Shapes that make the YAML parser's time grow faster than the text, each past the 4 KiB cap. */
+const OVERSIZE: Array<[string, string]> = [
+   [
+      "21,400 plain keys",
+      range(21_400)
+         .map((i) => `a${i}: x`)
+         .join("\n"),
+   ],
+   [
+      "10,700 anchor pairs",
+      range(10_700)
+         .map((i) => `a${i}: &k${i} x\nb${i}: *k${i}`)
+         .join("\n"),
+   ],
+   [
+      "10,700 anchor pairs with names led by U+00A0",
+      range(10_700)
+         .map((i) => `a${i}: &\u00a0k${i} x\nb${i}: *\u00a0k${i}`)
+         .join("\n"),
+   ],
+   [
+      "10,700 empty-name pairs",
+      range(10_700)
+         .map((i) => `a${i}: & x\nb${i}: *`)
+         .join("\n"),
+   ],
+   [
+      "15,000 lines with a scalar error",
+      range(15_000)
+         .map(() => `a: "b`)
+         .join("\n"),
+   ],
+];
+
+describe("parseFrontmatter: how much YAML it reads", () => {
+   it.each(OVERSIZE)("falls back, quickly, on %s", (_label, filler) => {
+      const text = skill(`name: many\ndescription: d\n${filler}`);
+      expect(text.length).toBeGreaterThan(64 * 1024);
+      const started = performance.now();
+      const out = parseFrontmatter(text, "many");
+      // Parsing this much took seconds; the bound is loose so a slow runner never flakes.
+      expect(performance.now() - started).toBeLessThan(1_000);
+      expect(out.frontmatter).toEqual({});
+      expect(out.warnings[0]).toContain("over 4 KiB");
+      expect(out.name).toBe("many");
+      expect(out.description).toBe("d");
+   });
+
+   const sized = (bytes: number, char = "d") => {
+      const head = "name: x\ndescription: ";
+      const fill = Math.floor(
+         (bytes - Buffer.byteLength(head)) / Buffer.byteLength(char),
+      );
+      return head + char.repeat(fill);
+   };
+
+   it("reads a frontmatter of exactly 4 KiB as YAML, and falls back one byte over", () => {
+      const at = sized(4096);
+      expect(Buffer.byteLength(at)).toBe(4096);
+      const parsed = parseFrontmatter(skill(at), "dir");
+      expect(parsed.warnings).toEqual([]);
+      expect(parsed.frontmatter.name).toBe("x");
+      const over = parseFrontmatter(skill(`${at}d`), "dir");
+      expect(over.warnings[0]).toContain("over 4 KiB");
+      expect(over.frontmatter).toEqual({});
+      expect(over.name).toBe("x");
+   });
+
+   it("counts bytes, not characters", () => {
+      // 2,050 two-byte characters are under 4,096 characters and over 4,096 bytes.
+      const front = sized(4100, "\u00e9");
+      expect(front.length).toBeLessThan(4096);
+      expect(Buffer.byteLength(front)).toBeGreaterThan(4096);
+      expect(parseFrontmatter(skill(front), "dir").warnings[0]).toContain(
+         "over 4 KiB",
+      );
+   });
+
+   it("line-reads only the first 4 KiB of an oversize frontmatter, so a key past it is not seen", () => {
+      const filler = Array.from({ length: 600 }, (_, i) => `k${i}: v`).join(
+         "\n",
+      );
+      const early = parseFrontmatter(
+         skill(`name: x\ndescription: early\n${filler}`),
+         "dir",
+      );
+      expect(early.warnings[0]).toContain("over 4 KiB");
+      expect(early.description).toBe("early");
+      const late = parseFrontmatter(
+         skill(`name: x\n${filler}\ndescription: late`),
+         "dir",
+      );
+      expect(late.warnings[0]).toContain("over 4 KiB");
+      expect(late.name).toBe("x");
+      expect(late.description).toBe("");
+   });
+});
+
+describe("parseFrontmatter: where the frontmatter starts", () => {
+   it("reads one that begins with a byte-order mark and ends its lines with CRLF", () => {
+      const out = parseFrontmatter(
+         "﻿---\r\nname: x\r\ndescription: d\r\nlicense: MIT\r\n---\r\nbody\r\n",
+         "dir",
+      );
+      expect(out.warnings).toEqual([]);
+      expect(out.name).toBe("x");
+      expect(out.description).toBe("d");
+      expect(out.frontmatter).toEqual({
+         name: "x",
+         description: "d",
+         license: "MIT",
+      });
+      expect(out.body).toBe("body\n");
+   });
+
+   it("takes a fence only on line 1, and strips a single byte-order mark", () => {
+      for (const text of [
+         "intro\n---\nname: x\ndescription: d\n---\nbody\n",
+         "\n---\nname: x\ndescription: d\n---\nbody\n",
+         "﻿﻿---\nname: x\ndescription: d\n---\nbody\n",
+      ]) {
+         const out = parseFrontmatter(text, "dir");
+         expect(out.name).toBe("dir");
+         expect(out.description).toBe("");
+         expect(out.frontmatter).toEqual({});
+      }
+   });
+});

@@ -12,14 +12,14 @@
  *
  * modes.integration.spec.ts covers 17 routes this way. This file covers the
  * rest: reports (list and one), a notebook cell, skills,
- * agents and an agent's skill file, the package duckdb connection's tables
+ * skill sets, a set's file, workflows, the package duckdb connection's tables
  * (and one table), the report write, a materialization's create (body),
  * get, stop and delete, and the model query with the version in its URL.
  *
  * Two packages are probed: one with two published versions (`latest` is the
  * higher, 2.0.0), and one published with versioning off, so it has none. Each
  * package tree answers its own number from its model, report titles, notebook,
- * skills and agent, so an answer proves which tree served it. A route's
+ * skills and workflow, so an answer proves which tree served it. A route's
  * answer with "" is compared to its answer with nothing, status and body.
  */
 
@@ -65,33 +65,55 @@ function writePackage(
    answer: number,
 ): string {
    fs.mkdirSync(path.join(dir, "dashboards"), { recursive: true });
-   fs.mkdirSync(path.join(dir, "skills", "house-rules"), { recursive: true });
-   fs.mkdirSync(path.join(dir, "agents", "analyst", "skills", "conventions"), {
+   fs.mkdirSync(path.join(dir, "skill_sets", "house", "house-rules"), {
       recursive: true,
    });
+   fs.mkdirSync(
+      path.join(
+         dir,
+         "workflows",
+         "analyst",
+         "skill_sets",
+         "analysis",
+         "conventions",
+      ),
+      { recursive: true },
+   );
    fs.writeFileSync(
       path.join(dir, "publisher.json"),
       JSON.stringify({
          ...manifest,
-         agents: {
+         skillSets: {
+            default: { path: "skill_sets/house" },
+            finance: { path: "workflows/analyst/skill_sets/analysis" },
+         },
+         workflows: {
             analyst: {
                description: `Analyst v${answer}`,
-               instructions: "agents/analyst/instructions.md",
-               skills: ["agents/analyst/skills"],
+               instructions: "workflows/analyst/instructions.md",
+               skillSets: ["finance"],
             },
          },
       }),
    );
    fs.writeFileSync(
-      path.join(dir, "skills", "house-rules", "SKILL.md"),
+      path.join(dir, "skill_sets", "house", "house-rules", "SKILL.md"),
       `---\nname: house-rules\ndescription: House rules v${answer}\n---\n\nrules v${answer}\n`,
    );
    fs.writeFileSync(
-      path.join(dir, "agents", "analyst", "instructions.md"),
+      path.join(dir, "workflows", "analyst", "instructions.md"),
       `instructions v${answer}\n`,
    );
    fs.writeFileSync(
-      path.join(dir, "agents", "analyst", "skills", "conventions", "SKILL.md"),
+      path.join(
+         dir,
+         "workflows",
+         "analyst",
+         "skill_sets",
+         "analysis",
+         "conventions",
+         "SKILL.md",
+      ),
       `---\nname: conventions\ndescription: Conventions v${answer}\n---\n\nconventions v${answer}\n`,
    );
    fs.writeFileSync(
@@ -182,15 +204,24 @@ const READ_ROUTES: ReadRoute[] = [
       path: "/skills/house-rules",
       marker: (n) => `rules v${n}`,
    },
-   { name: "GET agents", path: "/agents", marker: (n) => `Analyst v${n}` },
    {
-      name: "GET agent",
-      path: "/agents/analyst",
+      name: "GET workflows",
+      path: "/workflows",
+      marker: (n) => `Analyst v${n}`,
+   },
+   {
+      name: "GET workflow",
+      path: "/workflows/analyst",
       marker: (n) => `instructions v${n}`,
    },
    {
-      name: "GET agent skill file",
-      path: "/agents/analyst/skills/conventions/SKILL.md",
+      name: "GET skill set",
+      path: "/skill-sets/finance",
+      marker: (n) => `conventions v${n}`,
+   },
+   {
+      name: "GET skill set file",
+      path: "/skill-sets/finance/skills/conventions/SKILL.md",
       marker: (n) => `conventions v${n}`,
    },
    // The package's duckdb sandbox is in memory, one per loaded tree, and the
@@ -422,7 +453,7 @@ describe("an empty versionId answers as no versionId", () => {
 
          afterAll(() => setFlag("off"));
 
-         it("answers each report, notebook cell, skill, agent and connection-table read the same with versionId= as with none", async () => {
+         it("answers each report, notebook cell, skill, workflow and connection-table read the same with versionId= as with none", async () => {
             await expectEmptyReadsAsNone(kind.pkg, kind.n);
          });
 

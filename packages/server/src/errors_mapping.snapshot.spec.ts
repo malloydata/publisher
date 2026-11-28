@@ -8,10 +8,12 @@ import * as path from "path";
 import * as errors from "./errors";
 import {
    AccessDeniedError,
-   AgentNotFoundError,
+   WorkflowNotFoundError,
    BadRequestError,
    BuildPlanRefreshingError,
    BuildPlanUnavailableError,
+   SkillSetsUnavailableError,
+   SkillSetNotFoundError,
    ChainedShapeNotCarriedError,
    ContractCaptureFailedError,
    SchemaIncompatibleError,
@@ -161,6 +163,13 @@ const CASES: Array<[string, () => unknown]> = [
       () => new BuildPlanUnavailableError("build plan could not be derived"),
    ],
    [
+      "SkillSetsUnavailableError",
+      () =>
+         new SkillSetsUnavailableError(
+            "Skill sets and workflows are unavailable: skill set directory 'sets/a' cannot be read (EACCES)",
+         ),
+   ],
+   [
       "BuildPlanRefreshingError",
       () => new BuildPlanRefreshingError("build plan is being re-derived"),
    ],
@@ -269,7 +278,49 @@ const CASES: Array<[string, () => unknown]> = [
       () => new DashboardNotFoundError("Report not found"),
    ],
    ["SkillNotFoundError", () => new SkillNotFoundError("Skill not found")],
-   ["AgentNotFoundError", () => new AgentNotFoundError("Agent not found")],
+   [
+      "WorkflowNotFoundError",
+      () => new WorkflowNotFoundError("Workflow not found"),
+   ],
+   [
+      "WorkflowNotFoundError for a workflow the package refuses",
+      () =>
+         new WorkflowNotFoundError(
+            "Workflow 'w' is not served: a reason. Fix: correct it.",
+            "WORKFLOW_NOT_SERVED",
+         ),
+   ],
+   [
+      "WorkflowNotFoundError for a workflow the package does not declare",
+      () =>
+         new WorkflowNotFoundError(
+            "No workflow named 'w' is declared in package 'pkg'.",
+            "WORKFLOW_NOT_DECLARED",
+         ),
+   ],
+   [
+      "SkillSetNotFoundError for a file the set does not hold",
+      () =>
+         new SkillSetNotFoundError(
+            "Skill file 'a/SKILL.md' not found in skill set 's' in package 'pkg'.",
+         ),
+   ],
+   [
+      "SkillSetNotFoundError for a set the package refuses",
+      () =>
+         new SkillSetNotFoundError(
+            "Skill set 's' is not served: a reason. Fix: correct it.",
+            "SKILL_SET_NOT_SERVED",
+         ),
+   ],
+   [
+      "SkillSetNotFoundError for a set the package does not declare",
+      () =>
+         new SkillSetNotFoundError(
+            "No skill set named 's' is declared in package 'pkg'.",
+            "SKILL_SET_NOT_DECLARED",
+         ),
+   ],
    ["ConflictError", () => new ConflictError("already exists")],
    [
       "ConnectionNotFoundError",

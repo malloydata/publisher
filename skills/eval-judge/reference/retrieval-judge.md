@@ -38,4 +38,4 @@ Output:
 ```
 
 The conductor computes coverage, recall, and precision by counting these
-(`reference/ledger-schema.md`). The judge only judges.
+(`reference/ledger-schema-events.md`). The judge only judges.

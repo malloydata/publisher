@@ -16,8 +16,9 @@
  *   `PATCH …/packages/{pkg}`, counted in its controller
  *   (`PackageController.updatePackage`) so the environment and project paths
  *   count alike.
- * - A package load or reload: per package that sets `explores` or
- *   `queryableSources` in publisher.json, per `.malloynb` file, per source
+ * - A package load or reload: per package that sets `explores`,
+ *   `queryableSources` or the no-longer-read `agents` in publisher.json, per
+ *   package with a root `skills/` that no declared skill set reads, per `.malloynb` file, per source
  *   that declares `#(filter)` annotations, and per measure that declares
  *   `#@ preaggregate` (`service/deprecated/*`).
  * - A startup: each deprecated setting name in use, a variable, flag or file
@@ -33,6 +34,8 @@ export type DeprecatedFeature =
    | "malloynb"
    | "explores"
    | "queryable_sources"
+   | "agents"
+   | "skills_dir"
    | "filter_annotation"
    | "preaggregate_annotation"
    | "filter_params"

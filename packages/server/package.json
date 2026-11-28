@@ -49,6 +49,7 @@
       "perf:main-thread": "bun tests/perf/main-thread/run.ts",
       "perf:rollup-reuse": "bun tests/perf/rollup_reuse_bench.ts",
       "perf:chain-reuse": "bun tests/perf/chain_reuse_bench.ts",
+      "perf:skills-reload": "bun tests/perf/skills_reload_bench.ts",
       "build": "bun generate-api-types && bun build:app && NODE_ENV=production bun run build.ts && bun run bake-duckdb-extensions",
       "build:server-only": "bun run build:server-only:bundle && bun run bake-duckdb-extensions",
       "build:server-only:bundle": "bun generate-api-types && NODE_ENV=production SKIP_APP_BUNDLE=1 bun run build.ts",
@@ -62,6 +63,7 @@
       "format": "bunx prettier --write '**/*.{ts,tsx}'",
       "build:app": "cd ../app && NODE_ENV=production bun run build:server",
       "generate-settings-reference": "bun scripts/generate-settings-reference.ts",
+      "generate-skill-directory-replies": "bun scripts/generate-skill-directory-replies.ts",
       "generate-api-types": "bunx openapi-typescript ../../api-doc.yaml --output src/api.ts && node ../../scripts/add-license-headers.mjs src/api.ts"
    },
    "dependencies": {
@@ -103,11 +105,13 @@
       "globals": "^15.9.0",
       "google-auth-library": "^9.15.1",
       "http-proxy-middleware": "^3.0.7",
+      "ignore": "^7.0.16",
       "lunr": "^2.3.6",
       "pg": "8.7.3",
       "recursive-readdir": "^2.2.3",
       "simple-git": "^4.0.2",
-      "winston": "^3.17.0"
+      "winston": "^3.17.0",
+      "yaml": "^2.9.1"
    },
    "devDependencies": {
       "@eslint/compat": "^1.2.7",

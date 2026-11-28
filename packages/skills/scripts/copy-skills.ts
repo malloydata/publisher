@@ -12,7 +12,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { isExcluded } from "./exclusions";
+import { packedSkillFiles } from "./exclusions";
 import { locateFrontmatterClose } from "./frontmatter";
 import { manifestPath, manifestSkillNames } from "./manifest";
 
@@ -20,7 +20,8 @@ const packageDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const source = path.join(packageDir, "..", "..", "skills");
 const destination = path.join(packageDir, "skills");
 
-// What ships is the manifest, not whatever happens to be in skills/.
+// What ships is the manifest's skills, each as `skillFiles` decides it (its
+// `.skillignore` included), not whatever happens to be in skills/.
 //
 // The manifest is exhaustive by construction, not a way to hold a skill back:
 // manifest.spec.ts fails on any skill in the tree the manifest omits, and
@@ -40,20 +41,18 @@ if (missing.length > 0) {
    process.exit(1);
 }
 
+// Every skill's files are listed, and so every refusal thrown, before the old copy is deleted.
+const planned = [...shipping].map(
+   (name) => [name, packedSkillFiles(source, name)] as const,
+);
 fs.rmSync(destination, { recursive: true, force: true });
-fs.cpSync(source, destination, {
-   recursive: true,
-   filter: (from: string) => {
-      const relative = path.relative(source, from);
-      if (relative === "") return true;
-      if (isExcluded(relative)) return false;
-      // Keep the manifest's skills and everything under them; drop the rest.
-      // path.sep rather than "/" so this holds on Windows, which the
-      // cross-platform job actually runs.
-      const [top] = relative.split(path.sep);
-      return shipping.has(top);
-   },
-});
+for (const [name, files] of planned) {
+   for (const file of files) {
+      const to = path.join(destination, name, file);
+      fs.mkdirSync(path.dirname(to), { recursive: true });
+      fs.copyFileSync(path.join(source, name, file), to);
+   }
+}
 
 const copied = fs
    .readdirSync(destination, { withFileTypes: true })

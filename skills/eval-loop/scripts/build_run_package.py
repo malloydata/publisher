@@ -334,8 +334,8 @@ def build(run_dirs: list[pathlib.Path], set_dir: pathlib.Path,
 
         # issues.csv is keyed by `qid` and carries a `status`, but the issue
         # event has neither: the schema gives it `qids` (a LIST of affected
-        # cases, ledger-schema.md:260) and keeps status in separate
-        # `issue_status` events whose latest wins for an issue_id (:272).
+        # cases) and keeps status in separate `issue_status` events whose
+        # latest wins for an issue_id (both in ledger-schema-events.md).
         # Copying the raw event left both columns blank, i.e. the backlog with
         # no case linkage and no open/closed state.
         latest_status: dict[str, str] = {}

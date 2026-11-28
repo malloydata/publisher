@@ -122,7 +122,7 @@ The route is a priority order, not a verdict: it cannot prove a formula safe.
 - **`GETPIVOTDATA` routes NR** with the flag `getpivotdata`, because its value is a read of
   the pivot's snapshot. Each region lists the pivot it reads under `pivots` (name, location,
   source), or an empty list when its first argument is outside every pivot
-  (`cookbook-pivot.md#p8`).
+  (`cookbook-pivot-2.md#p8`).
 - **Sheet classes are heuristics.** They are tested on the fixture and on hand-built
   workbooks. Confirm each with the user.
 - **A relative reference with an offset** is read as a prior-period reference. A
@@ -153,7 +153,7 @@ The route is a priority order, not a verdict: it cannot prove a formula safe.
 ## What the cached values can and cannot tell you
 
 - The cache is only an oracle when Excel computed it (`parity.md` section 1). On a library-written
-  file it is a model of Excel, and the bundled fixture's committed binary is exactly that
+  file it is a model of Excel, and the repository's fixture binary is exactly that
   (`fixtures/README.md`). No quirk-route recipe in this skill is `executed (Excel)` until
   an Excel save is recorded.
 - A cell that reads through an external link, a feed or an add-in is a snapshot.
@@ -164,8 +164,8 @@ The route is a priority order, not a verdict: it cannot prove a formula safe.
 ## Where it runs
 
 Claude Code and Cursor. A regular chat in a client such as Credible has no shell tool (an agent's own computer does), and the MCP skills
-bundle carries the `SKILL.md` body and each `reference/*.md` file (served as a prompt named
-`malloy-excel-review/<name>`, fetched on request) but no `scripts/`.
+bundle carries the `SKILL.md` body and each `reference/*.md` file (read with
+`get_skill("malloy-excel-review", path)`; check that the reply's `skill.path` is the `path` you passed, since a server too old to read a file answers with `SKILL.md` and the file was not read) but no `scripts/`.
 **So `SKILL.md` and the reference files have to be usable without the script**, and the script exists to do what
 reading sheets one at a time cannot: expand shared formulas, find the regions, build the
 dependency graph and its cycles, gate the oracle, and read the external data without a

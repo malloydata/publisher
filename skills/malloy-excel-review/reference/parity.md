@@ -38,7 +38,7 @@ formula, and the report says so in the Oracle section when both hold:
 in `--json`; the `calcId` is also printed on the `Cached values` line, or `none`). It is
 the absence of the untrusted tells above, not proof: a library can copy both.
 The `volatile` caveat names the functions it actually found, and its pin advice
-applies to `TODAY`/`NOW` only. The bundled fixture is untrusted on purpose (`full_calc_on_load`), so its parity
+applies to `TODAY`/`NOW` only. The repository's fixture is untrusted on purpose (`full_calc_on_load`), so its parity
 is against the generator's model of Excel, which is why most rows below are
 `semantics-cited`.
 
@@ -48,7 +48,7 @@ is against the generator's model of Excel, which is why most rows below are
 
 | Tell | What the cached value is | Do |
 |---|---|---|
-| `volatile` | as of the last calculation. `TODAY`/`NOW` change at every open. | Pin `TODAY`/`NOW` to `docProps/core.xml` `dcterms:modified` and expose it as a `given:` (`AS_OF`, `cookbook-lookup-aggregate.md#la12`). `RAND*` is X: never compared cell for cell (`cookbook-scenario.md#sc7`). `OFFSET`/`INDIRECT` are NR. |
+| `volatile` | as of the last calculation. `TODAY`/`NOW` change at every open. | Pin `TODAY`/`NOW` to `docProps/core.xml` `dcterms:modified` and expose it as a `given:` (`AS_OF`, `cookbook-lookup-aggregate-2.md#la12`). `RAND*` is X: never compared cell for cell (`cookbook-scenario-2.md#sc7`). `OFFSET`/`INDIRECT` are NR. |
 | `cached_errors` | `t="e"` cells: `#N/A`, `#DIV/0!`, `#VALUE!` | `#N/A` is a legitimate no-match oracle (Malloy null). Others map to null only with the `IFERROR` routing stated: say which cells the workbook wraps and which it does not. An error value in the cache matches null, never a number: label that row `semantics-cited` (error cell == null in the port). Port a division as `a / nullif(b, 0)`: a bare `/` in DuckDB gives NaN for `0/0` and inf for `x/0`, which no cached error matches. Read the cell as text to tell an error from an empty value (below). |
 | `pivot_snapshot` | the pivot as of `refreshedDate`, from `pivotCacheRecords` | Name which two things were compared (`cookbook-pivot.md`, "The snapshot problem"). A `pivot predates last save` line is an advisory, not an error: the cache may still match, so compare the pivot cells against the current data and record the outcome either way (match, or a mismatch attributed to the stale pivot). |
 | `subtotal_ui_state` | `SUBTOTAL(1xx)` and `AGGREGATE` over an autofiltered or hidden range depend on what the user had hidden when the file was saved | Never bake the filter into the model. The code matters only for manually hidden rows (`SUBTOTAL(9)` counts them, `SUBTOTAL(109)` does not; `recover-sources.md`, `Ledger`); a filter excludes its rows under every code, so the port needs the filter as a `where:`, reported as a finding. |
@@ -116,7 +116,7 @@ run: lookup_cached -> { select: sheet_row, label, cached; order_by: sheet_row }
 
 **Observed once:** `col.count()` inside a `%{ }` given or query expression made registration or compile return HTTP 500; use a precomputed measure instead.
 
-**Scale.** A model with hundreds of SEPARATE `duckdb.sql` sources can time out at registration: split it across several packages, with the sources grouped by sheet, or combine the oracle stanzas into one `UNION ALL` source with a `region_id` column (`cookbook-lookup-aggregate.md#la17`; one such source registered in seconds in practice, observed once). A Publisher ad hoc query (`run:` sent to the endpoint) cannot call `duckdb.sql` itself, so every stanza lives in the model file and the query names the source. *(semantics-cited; not run here)*
+**Scale.** A model with hundreds of SEPARATE `duckdb.sql` sources can time out at registration: split it across several packages, with the sources grouped by sheet, or combine the oracle stanzas into one `UNION ALL` source with a `region_id` column (`cookbook-lookup-aggregate-2.md#la17`; one such source registered in seconds in practice, observed once). A Publisher ad hoc query (`run:` sent to the endpoint) cannot call `duckdb.sql` itself, so every stanza lives in the model file and the query names the source. *(semantics-cited; not run here)*
 
 A formula whose result is the empty string `""` is read back from the cache as NULL, so the key cannot tell `""` from a blank on a formula cell: compare with `coalesce(x, '')` on both sides and say so.
 
@@ -144,7 +144,7 @@ Say the number in the report. The defaults:
 | anything the workbook rounds with `ROUND` | exact on the rounded value; the Malloy rounds the same way |
 | iterative calculation (`iterate="1"`) | the workbook's own `iterateDelta` is the floor; the fixture documents 0.01 (`fixtures/README.md`). Excel's cache is where it stopped, not the fixed point, so solve tightly (about 1e-12) but compare at no less than `iterateDelta` (0.01 on the fixture); report both numbers (`cookbook-scenario.md#sc6`) |
 | `XIRR` | Excel's iteration stops near 1e-8, so compare at about 1e-7 and label the residual `float_noise` with the measured diff |
-| Monte Carlo | statistics within sampling error, never draws (`cookbook-scenario.md#sc7`) |
+| Monte Carlo | statistics within sampling error, never draws (`cookbook-scenario-2.md#sc7`) |
 | a snapshot you cannot recompute | "matches as of save", with no tolerance claimed |
 
 A displayed `2.89` is not a comparison. A tolerance chosen after seeing the difference is

@@ -77,13 +77,17 @@ tags:
       directory)
   - name: skills
     description:
-      Agent skills in force for a package - the bundled guides plus the package's
-      own `skills/`, with the package's copy replacing a bundled one of the same
-      name
-  - name: agents
+      Agent skills in force for a package - the bundled guides plus the skills
+      of the package's `default` skill set, which replace a bundled guide of the
+      same name only when that set's `overrides` lists it
+  - name: skill-sets
     description:
-      Agents a package declares in `publisher.json`, resolved to their
-      instructions, skill files and schedules (served, never run)
+      Skill sets a package declares under `skillSets` in `publisher.json`, each
+      served whole at its own route, whether or not a workflow lists it
+  - name: workflows
+    description:
+      Workflows a package declares in `publisher.json`, resolved to their
+      instructions and the skill sets they list (served, never run)
   - name: databases
     description: Embedded database management and access
   - name: watch-mode
@@ -2765,18 +2769,30 @@ paths:
       summary: List the agent skills in force for a package
       description: |
         Lists the agent skills that apply to this package: the guides bundled
-        with this server, plus any the package ships under `skills/`.
+        with this server, plus the skills of the package's `default` skill set
+        (none when the package declares no `default`).
 
-        Resolution is name shadowing. A package skill whose `name` matches a
-        bundled skill REPLACES it for this package; one with a new name is
+        A `default` skill named like a bundled skill is served in the bundled
+        skill's place only when `default`'s `overrides` lists that name;
+        otherwise the bundled skill is served. A skill with a new name is
         added. Nothing is merged, because the server does not know which guides
         the calling agent already holds and so cannot patch one. Read `origin`
-        on each entry to tell a replaced skill from the original.
+        on each entry to tell a replaced skill from the original. This is the
+        only place `overrides` changes what is served: the set routes serve a
+        set whole either way.
 
         Bodies are not returned here. Fetch one with
-        `GET .../skills/{skillName}`. An entry whose `name` contains a slash
-        (`<skill>/<stem>`) is a skill's on-demand reference file, addressed by
-        the pointer at the end of its parent's body.
+        `GET .../skills/{skillName}`. Any other file of a package skill is read
+        at `GET .../skill-sets/default/skills/{skill}/{file}`; a bundled skill's
+        other files are read through the `get_skill` MCP tool.
+
+        409 `SKILL_SETS_UNAVAILABLE` when the package declares a `default` set
+        and the load could not read the package's skill sets (any set's folder
+        or any workflow's instructions file, or a walk that threw). Its own
+        skills come from `default` and one can replace a bundled skill, so the
+        listing is refused whole: the message carries the reason and it lasts
+        until the package reloads. A package with no `default` has no skills of
+        its own, so it lists the bundled ones as usual.
 
         The REST half of the `get_skill` MCP tool, for callers running
         unattended.
@@ -2809,6 +2825,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
         "500":
@@ -2821,15 +2839,24 @@ paths:
       tags:
         - skills
       operationId: get-skill
-      summary: Get one agent skill, with its body
+      summary: Get one agent skill's SKILL.md, with its frontmatter and files
       description: |
-        Returns one skill in force for this package, including its full
-        Markdown. `skillName` is a name from the listing, exactly as spelled
-        there; a reference file is addressed as `<skill>/<stem>`. The slash may
-        be sent literally or as `%2F`; a literal `%` in a name must be sent as
-        `%25`.
+        Returns a skill's `SKILL.md` verbatim as `content`, the skill's
+        `frontmatter` (the YAML block as an object, parsed as YAML 1.2) and
+        `files`: every file the skill holds, with sizes. For a package skill
+        `files` is exactly the set this server serves, so it is also the dry run
+        of a `.skillignore`. `skillName` is a name from the listing, exactly as
+        spelled there.
 
-        404 when no skill of that name is in force.
+        The `SKILL.md` is served as written, and so is every skill set route's:
+        an installer reads a set at `GET .../skill-sets/{skillSetName}`. A
+        package skill's other files are read at
+        `GET .../skill-sets/default/skills/{skill}/{file}`; a bundled skill's
+        other files are read through the `get_skill` MCP tool.
+
+        404 when no skill of that name is in force. 409 `SKILL_SETS_UNAVAILABLE`
+        when the package declares a `default` set and the load could not read
+        the package's skill sets, as for the listing.
       parameters:
         - name: environmentName
           in: path
@@ -2845,16 +2872,14 @@ paths:
             $ref: "#/components/schemas/IdentifierPattern"
         - name: skillName
           in: path
-          description: >-
-            Skill name as returned by the listing. A reference file is
-            `<skill>/<stem>`; the slash may be literal or `%2F`.
+          description: Skill name as returned by the listing.
           required: true
           schema:
             type: string
         - $ref: "#/components/parameters/versionId"
       responses:
         "200":
-          description: The skill and its body
+          description: The skill's SKILL.md
           content:
             application/json:
               schema:
@@ -2865,6 +2890,8 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
         "500":
@@ -3138,19 +3165,28 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/{packageName}/agents:
+  /environments/{environmentName}/packages/{packageName}/skill-sets:
     get:
       tags:
-        - agents
-      operationId: list-agents
-      summary: List the agents a package declares
+        - skill-sets
+      operationId: list-skill-sets
+      summary: List the skill sets a package serves
       description: |
-        Lists the agents declared under `agents` in the package's
-        `publisher.json` that passed validation, without instructions or
-        skills. An agent that failed validation is not listed; the package's
-        `warnings` say why. Empty when the manifest declares none.
+        Lists every skill set the package's `publisher.json` declares under
+        `skillSets` that is served, in name order, without skill text: each
+        one's name, description and digest. A set that failed validation is not
+        listed; the package's `warnings` say why. Empty when the manifest
+        declares none. A set is listed whether or not a workflow lists it, and
+        the `default` set, whose skills are the package's own, is listed with
+        the rest.
 
-        The REST half of the `get_agent` MCP tool.
+        409 `SKILL_SETS_UNAVAILABLE` when the load could not read the package's
+        skill sets (the walk threw, or a declared set exists but cannot be read,
+        such as `EACCES` or `EIO`): the models still serve, the message carries
+        the reason, and it lasts until the package reloads, so there is no
+        `Retry-After`.
+
+        The REST half of the `get_skill_set` MCP tool.
       parameters:
         - name: environmentName
           in: path
@@ -3167,19 +3203,21 @@ paths:
         - $ref: "#/components/parameters/versionId"
       responses:
         "200":
-          description: The agents the package declares
+          description: The skill sets the package serves
           content:
             application/json:
               schema:
                 type: array
                 items:
-                  $ref: "#/components/schemas/AgentSummary"
+                  $ref: "#/components/schemas/SkillSetSummary"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
         "500":
@@ -3187,20 +3225,41 @@ paths:
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 
-  /environments/{environmentName}/packages/{packageName}/agents/{agentName}:
+  /environments/{environmentName}/packages/{packageName}/skill-sets/{skillSetName}:
     get:
       tags:
-        - agents
-      operationId: get-agent
-      summary: Get one agent, resolved
+        - skill-sets
+      operationId: get-skill-set
+      summary: Get one skill set, whole
       description: |
-        Returns one agent with its instructions, its own skill files and each
-        schedule's task text, plus `source`, which pins the package load and the
-        agent's own content so a runner can prove which bytes ran. Publisher
-        serves the definition and runs nothing: the caller's own harness
-        executes it, and schedules are never fired by the server.
+        Returns one skill set: its skills' inline files and the files its
+        skills list, with `source`, which pins the package load so a caller can
+        prove which bytes it read. A set is served whole or not at all, and its
+        `digest` covers exactly what this reply carries, so two sets with the
+        same content have the same digest.
 
-        404 when no agent of that name is served.
+        A `SKILL.md` is served as written, byte for byte, and each `SKILL.md`
+        entry carries its parsed `name` and `description` in both views.
+        **Installing a set.** An installer writes a `SKILL.md` as `name` and
+        `description` taken from the entry's fields, followed by the text after
+        the file's own frontmatter, and names any other frontmatter key the file
+        carried (`allowed-tools`, `hooks`) to the user. The text as written can
+        carry keys that grant a tool or run a command, and nothing in this route
+        removes them.
+
+        409 `SKILL_SETS_UNAVAILABLE` when the load could not read the package's
+        skill sets (the walk threw, or a declared set exists but cannot be read,
+        such as `EACCES` or `EIO`): the models still serve, the message carries
+        the reason, and it lasts until the package reloads, so there is no
+        `Retry-After`. A name the manifest never declares is still a 404.
+
+        404 when no skill set of that name is served. `reason` says why:
+        `SKILL_SET_NOT_SERVED` when the manifest declares the set and
+        Publisher refuses it (the message is the refusal, the same text as the
+        package's `skill-set-not-served` warning for it), or refuses its whole
+        declaration, for every name (the message is the text of the package
+        warning that says so); `SKILL_SET_NOT_DECLARED` when the manifest
+        declares no set of that name.
       parameters:
         - name: environmentName
           in: path
@@ -3214,10 +3273,250 @@ paths:
           required: true
           schema:
             $ref: "#/components/schemas/IdentifierPattern"
-        - name: agentName
+        - name: skillSetName
           in: path
           description: >-
-            Agent name as returned by the listing. Names are 1-64 lowercase
+            Skill set name as returned by the listing, its key under
+            `skillSets` in the manifest. Names are 1-64 lowercase letters,
+            digits and single hyphens; any other value is a 404, not a 400.
+          required: true
+          schema:
+            type: string
+            pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+            maxLength: 64
+        - name: skills
+          in: query
+          description: >-
+            `full` (the default) returns every skill file with its text and the
+            set's `assets`. `summary` returns each file's `relative_filepath`
+            and `bytes`, plus `name` and `description` for a `SKILL.md`, and no
+            `file_contents` and no `assets`; fetch a file with
+            `GET .../skill-sets/{skillSetName}/skills/{path}`. The `digest` and
+            `source` are identical in both. Any other value, including an empty
+            one, is a 400.
+          required: false
+          schema:
+            type: string
+            enum: [full, summary]
+            default: full
+        - $ref: "#/components/parameters/versionId"
+      responses:
+        "200":
+          description: The skill set
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillSet"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/skill-sets/{skillSetName}/skills/{path}:
+    get:
+      tags:
+        - skill-sets
+      operationId: get-skill-set-file
+      summary: Get one file of a skill set
+      description: |
+        The one route that reads a single file of a package skill. Returns one
+        file of the set, named by a `<skill>/<file>` path relative to the set's
+        folder (for example `analyst-conventions/SKILL.md`) from
+        `GET .../skill-sets/{skillSetName}?skills=summary`, or from the set's
+        `assets`, with the set's `digest` and the same `source` pin as the set.
+        The path is looked up in the set's served files, never joined onto the
+        filesystem. A file from the set's `assets` listing is matched exactly
+        against the listing, then read from disk and served only if it still
+        hashes to its listed `sha256`; one that changed, or became a link, since
+        the load is a 404 that says it changed and is not served until the
+        package reloads. A text file answers with `file_contents`, as written;
+        a binary one (not UTF-8, or holding a NUL byte) has no `file_contents`
+        and answers with a `message` naming its size.
+
+        404 when the set or the file is not served. When it is the set,
+        `reason` is `SKILL_SET_NOT_SERVED` or `SKILL_SET_NOT_DECLARED`, as for
+        `GET .../skill-sets/{skillSetName}`; a file the set does not hold has no
+        `reason`.
+
+        409 `SKILL_SETS_UNAVAILABLE` when the load could not read the package's
+        skill sets, as for the set itself. A name the manifest never declares is
+        still a 404.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: skillSetName
+          in: path
+          description: >-
+            Skill set name as returned by the listing. Names are 1-64 lowercase
+            letters, digits and single hyphens; any other value is a 404, not a
+            400.
+          required: true
+          schema:
+            type: string
+            pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
+            maxLength: 64
+        - name: path
+          in: path
+          description: >-
+            A `<skill>/<file>` path from the set's summary, or from its `assets`
+            in the full view. Slashes may be sent literally or as `%2F`; a
+            literal `%` in a name must be sent as `%25`.
+          required: true
+          schema:
+            type: string
+        - $ref: "#/components/parameters/versionId"
+      responses:
+        "200":
+          description: The skill set file
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SkillSetFileRead"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/workflows:
+    get:
+      tags:
+        - workflows
+      operationId: list-workflows
+      summary: List the workflows a package declares
+      description: |
+        Lists the workflows declared under `workflows` in the package's
+        `publisher.json` that passed validation, without instructions or skill
+        text: each one's name, description and the names of the skill sets it
+        lists, in the order the manifest lists them. A workflow that failed
+        validation is not listed; the package's `warnings` say why. Empty when
+        the manifest declares none.
+
+        409 `SKILL_SETS_UNAVAILABLE` when the load could not read the package's
+        skill sets (the walk threw, or a declared set exists but cannot be read,
+        such as `EACCES` or `EIO`): the models still serve, the message carries
+        the reason, and it lasts until the package reloads, so there is no
+        `Retry-After`.
+
+        The REST half of the `get_workflow` MCP tool.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - $ref: "#/components/parameters/versionId"
+      responses:
+        "200":
+          description: The workflows the package declares
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/WorkflowSummary"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "410":
+          $ref: "#/components/responses/Gone"
+        "500":
+          $ref: "#/components/responses/InternalServerError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+
+  /environments/{environmentName}/packages/{packageName}/workflows/{workflowName}:
+    get:
+      tags:
+        - workflows
+      operationId: get-workflow
+      summary: Get one workflow, resolved
+      description: |
+        Returns one workflow with its instructions and every skill set it
+        lists, each whole and byte-identical to what `GET
+        .../skill-sets/{skillSetName}` returns for it minus `source`, plus
+        `source`, which pins the package load and the workflow's own content so
+        a runner can prove which bytes ran. Publisher serves the definition and
+        runs nothing: the caller's own harness executes it.
+
+        A skill name that two of the workflow's sets both hold is served from
+        both, and the workflow's `warnings` carry `skill-shadowed`: an installer
+        keeps the first-listed set's copy.
+
+        A `SKILL.md` is served as written, as on the set route; the install rule
+        there applies to this reply too.
+
+        404 when no workflow of that name is served. `reason` says why:
+        `WORKFLOW_NOT_SERVED` when the manifest declares the workflow and
+        Publisher refuses it (the message is the refusal, the same text as the
+        package's `workflow-not-served` warning for it), or refuses its whole
+        declaration, for every name (the message is the text of the package
+        warning that says so); `WORKFLOW_NOT_DECLARED` when the manifest
+        declares no workflow of that name.
+
+        409 `SKILL_SETS_UNAVAILABLE` when the load could not read the package's
+        skill sets (the walk threw, or a declared set exists but cannot be read,
+        such as `EACCES` or `EIO`): the models still serve, the message carries
+        the reason, and it lasts until the package reloads, so there is no
+        `Retry-After`. A name the manifest never declares is still a 404.
+      parameters:
+        - name: environmentName
+          in: path
+          description: Name of the environment
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: packageName
+          in: path
+          description: Name of the package
+          required: true
+          schema:
+            $ref: "#/components/schemas/IdentifierPattern"
+        - name: workflowName
+          in: path
+          description: >-
+            Workflow name as returned by the listing. Names are 1-64 lowercase
             letters, digits and single hyphens; any other value is a 404, not a
             400.
           required: true
@@ -3230,10 +3529,11 @@ paths:
           description: >-
             `full` (the default) returns every skill file with its text.
             `summary` returns each file's `relative_filepath` and `bytes`, plus
-            `name` and `description` for a `SKILL.md`, and no `file_contents`;
-            fetch a file with `GET .../agents/{agentName}/skills/{path}`. The
-            `source` pin is identical in both. Any other value, including an
-            empty one, is a 400.
+            `name` and `description` for a `SKILL.md`, and no `file_contents`
+            and no `assets`; fetch a file with
+            `GET .../skill-sets/{skillSetName}/skills/{path}`. The `source` pin
+            is identical in both. Any other value, including an empty one, is a
+            400.
           required: false
           schema:
             type: string
@@ -3242,89 +3542,19 @@ paths:
         - $ref: "#/components/parameters/versionId"
       responses:
         "200":
-          description: The resolved agent
+          description: The resolved workflow
           content:
             application/json:
               schema:
-                $ref: "#/components/schemas/Agent"
+                $ref: "#/components/schemas/Workflow"
         "400":
           $ref: "#/components/responses/BadRequest"
         "401":
           $ref: "#/components/responses/Unauthorized"
         "404":
           $ref: "#/components/responses/NotFound"
-        "410":
-          $ref: "#/components/responses/Gone"
-        "500":
-          $ref: "#/components/responses/InternalServerError"
-        "503":
-          $ref: "#/components/responses/ServiceUnavailable"
-
-  /environments/{environmentName}/packages/{packageName}/agents/{agentName}/skills/{relativeFilepath}:
-    get:
-      tags:
-        - agents
-      operationId: get-agent-skill-file
-      summary: Get one of an agent's skill files
-      description: |
-        Returns one file from the agent's resolved skill set, named by a
-        `relative_filepath` from `GET .../agents/{agentName}?skills=summary`
-        (for example `analyst-conventions/SKILL.md`), with the same `source`
-        pin as the full definition. The path is looked up in the resolved set,
-        never joined onto the filesystem. A `relative_filepath` from the
-        agent's `assets` listing (`<skill>/assets/...`, full view only) is
-        matched exactly against the listing, then read from disk as UTF-8 text
-        and served only if it still hashes to its listed `sha256`; one that
-        changed, or became a link, since the load is a 404.
-
-        404 when the agent or the file is not served.
-      parameters:
-        - name: environmentName
-          in: path
-          description: Name of the environment
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: packageName
-          in: path
-          description: Name of the package
-          required: true
-          schema:
-            $ref: "#/components/schemas/IdentifierPattern"
-        - name: agentName
-          in: path
-          description: >-
-            Agent name as returned by the listing. Names are 1-64 lowercase
-            letters, digits and single hyphens; any other value is a 404, not a
-            400.
-          required: true
-          schema:
-            type: string
-            pattern: "^[a-z0-9]+(-[a-z0-9]+)*$"
-            maxLength: 64
-        - name: relativeFilepath
-          in: path
-          description: >-
-            A `relative_filepath` from the agent's skill summary. Slashes may be
-            sent literally or as `%2F`; a literal `%` in a name must be sent as
-            `%25`.
-          required: true
-          schema:
-            type: string
-        - $ref: "#/components/parameters/versionId"
-      responses:
-        "200":
-          description: The skill file
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/AgentSkillRead"
-        "400":
-          $ref: "#/components/responses/BadRequest"
-        "401":
-          $ref: "#/components/responses/Unauthorized"
-        "404":
-          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
         "410":
           $ref: "#/components/responses/Gone"
         "500":
@@ -4168,6 +4398,12 @@ components:
           * BUILD_PLAN_UNAVAILABLE: the package's build plan could not be
             derived when it loaded. Reload the package; retrying the read does
             not help.
+          * SKILL_SETS_UNAVAILABLE: the package's skill sets could not be read
+            when it loaded, so its skill sets and workflows are not served,
+            nor are the skills routes and `get_skill` when it declares a
+            `default` set, bundled names included, because a `default` skill
+            can replace a bundled one. Reload the package; retrying the read
+            does not help.
       content:
         application/json:
           schema:
@@ -5327,9 +5563,10 @@ components:
           description: >-
             Server-computed, read-only: SHA-256 over the package-relative path
             and bytes of every file the package is serving: each model file,
-            each package skill file under `skills/`, and, when the manifest
-            declares `agents`, the canonical form of that `agents` object plus
-            every instructions, task and skill file those agents read.
+            each file of each served skill set, and, when the manifest declares
+            `skillSets` or `workflows`, the canonical form of that declaration
+            plus every instructions file the served workflows read. It is
+            computed in the package-load worker.
 
             This is the reload receipt. Publisher serves a COPY of a package
             under `publisher_data/<env>/<pkg>/` unless the environment was
@@ -5803,14 +6040,36 @@ components:
             `report-layout-unknown` (a `layout=` other than `grid` or
             `linear`). The rest are `warn` (a mistyped `(markdown)` opener, a
             block that never closes, and similar).
-            Skill and agent findings, all `warn`: a package skill under
-            `skills/` that is not served (unreadable or linked-out `SKILL.md`,
-            a frontmatter `name` that is not its directory name, a `skills/`
-            directory that links out of the package) or served with a gap (no
-            `description`, a `reference/` that cannot be listed or read); and
-            each agent the manifest declares that is not served, or is served
-            with a finding (an agent skill with no `description`, a skills
-            directory with no skills, an unreadable reference).
+            Skill set and workflow findings, all `warn`, each with a `code`
+            and, except the last, a `subject`: `workflow-not-served` (`subject`
+            the workflow's name) for each workflow the manifest declares that is
+            not served, with the reason in `message`; `skill-set-not-served`
+            (the set's name) for each skill set it declares that is not served;
+            `skill-shadowed` (the workflow's name) for a skill name two of a
+            workflow's sets both hold; once per skill set, each finding of the
+            set (`subject` the set's name): `skill-file-skipped` for a served
+            skill that has a file of its directory left out (a skipped
+            reference or asset, a file over the reply budget of `get_skill`),
+            and `skill-finding` for any other: a skill that is not served
+            (unreadable or linked-out `SKILL.md`, a frontmatter `name` that is
+            not its directory name, a directory name that breaks the name rule
+            or differs from another's only by case, an `assets/` that breaks a
+            rule, a skill whose `assets/` the `publisher.json` search
+            cannot finish within the set's budget, or that comes after one that
+            spent it, a `SKILL.md` past the set's inline budget), a skill served with a
+            gap (no `description`, frontmatter that is not valid YAML), a set
+            that holds no skills, a set past its skill cap, a skill named like a
+            bundled skill that the set's `overrides` does not list (in a set
+            that is not `default`, any such skill), a bad `overrides` value,
+            and an `overrides` on a set that is not `default`; and `skill-sets-unavailable` (no `subject`) when
+            the walk failed, so no skill set or workflow is served until the
+            package reloads. A `SkillSet.warnings` carries the set's own
+            findings, and `Workflow.warnings` the workflow's `skill-shadowed`.
+            Hard-break findings, all `warn`, each with a `code`: a manifest
+            that declares `agents`, which is no longer read
+            (`package-agents-not-read`), and a root `skills/` directory that no
+            declared skill set reads, which is no longer read
+            (`package-skills-dir-not-read`).
             Deprecated-format findings, all `warn`: each `.malloynb` notebook
             (`model` is its path), and each source a file declares deprecated
             `#(filter)` annotations on (`model` is that file, `subject` the
@@ -5894,447 +6153,7 @@ components:
             anyone reads the message. For the other violations the refusal IS the
             enforcement, which is why they stay fatal.
           items:
-            type: object
-            properties:
-              model:
-                type: string
-                description: >-
-                  Package-relative path of the model the finding is on. Absent
-                  for a package-wide finding.
-              subject:
-                type: string
-                description: >-
-                  What the finding is about: the query or view a render finding
-                  sits on (`by_carrier`, `flights -> by_carrier`), the source a
-                  materialization finding belongs to, or, for a report
-                  finding, the report's name or the `source.dimension` a
-                  `# drill` is declared on. Absent when a finding sits on none
-                  of those, either because it spans several, in which case the
-                  message names them, or because it is about the lint itself
-                  rather than about any one dashboard.
-              message:
-                type: string
-                description: A description of the problem.
-              code:
-                type: string
-                description: >-
-                  A stable identifier for the finding's family, for a client that
-                  acts on it rather than only showing it; absent for a family that
-                  has none yet. `render-tag`: a render annotation the
-                  renderer cannot apply as written, malformed for its field
-                  (`error`) or inert where it sits (`warn`); one per finding,
-                  `model` its file and `subject` the query or view it sits on.
-                  `render-tag-check-failed`: a model whose render-tag check did
-                  not finish (it could not be read, `error`, or the validator
-                  failed, `warn`), so its render-tag findings are unknown
-                  rather than clean; reported by a package-scope compile,
-                  one per model. `deprecated-malloynb-notebook`: a `.malloynb`
-                  notebook, the deprecated cell format (one per file, `model`
-                  naming it). `malloynb-cell-refused`: a `.malloynb` code cell
-                  whose `run:` statement the query route refuses for every
-                  reader in the Console, which sends no privilege and no
-                  `filterParams`, so the cell never runs there. One per cell,
-                  up to the bound below, `model` naming the notebook, severity `warn`. The message
-                  names the cell by its 1-based position among the notebook's
-                  cells, markdown cells included, and the fix. `reason` names
-                  the rule: `off_surface` is the 404 for a source the package
-                  surface does not publish, which a source the notebook
-                  declares never is on a package with a curated surface, an
-                  `index.malloy` or the deprecated `explores`; a caller with `includeHiddenFilesAndSources` still runs such a
-                  cell. `caller_annotation` is the 400 for text carrying an
-                  annotation only the model author may write, such as
-                  `#(authorize)`, comments included. `required_filter` is the
-                  400 for a source with a required `#(filter)`.
-                  `restricted_mode` is the 400 for a `sql_*` call or a direct
-                  table read. `compile_error` is the 400 for any other failure
-                  of the statement to compile on its own. A cell that only a
-                  reader's givens refuse, by `#(authorize)` or a row-level
-                  gate, is not reported. Markdown cells are not read, as the
-                  Console does not run them. A notebook lists at most 10
-                  refused cells one by one, and the package at most 50. The
-                  rest of a notebook that lists some are named by number and
-                  reason in one `malloynb-cells-unlisted` warning (`model` the
-                  notebook; `warn`). The notebooks after the package limit
-                  share one `malloynb-cells-unlisted` warning with no `model`,
-                  which counts their cells by reason and names the first 10 of
-                  them. The report lint metric still counts each refused cell
-                  under `malloynb-cell-refused`.
-                  `malloynb-cell-check-failed`: a notebook whose cell check
-                  could not run, so a refused cell of it may have no warning;
-                  the cause is in the server log (one per notebook, `warn`).
-                  `deprecated-filter-annotation`: a source declaring
-                  deprecated `#(filter)` annotations (one per declaring source,
-                  `model` naming its file and `subject` the source).
-                  `deprecated-preaggregate-annotation`: a measure declaring
-                  `#@ preaggregate` or the deprecated alias `#(preaggregate)`,
-                  whose v2 spelling is `#(rollup)`; the message names the
-                  spelling it found (one per measure, `model` its file, `subject` the source and the
-                  message the measure; `warn`; only while
-                  `PUBLISHER_MATERIALIZE` is on).
-                  `deprecated-rollup-namespace`: a rollup line placed with
-                  `namespace=`, the deprecated spelling of its `name=`
-                  container; still read, in that container under the readable
-                  name (one per measure and container, `subject`
-                  `<base>.<measure>`; `warn`).
-                  `classification-coverage`: a
-                  published source with a dimension or measure that carries no
-                  `#(classification)` while some field in the package does (one
-                  per source, `model` naming its file and `subject` the source;
-                  `warn`; see docs/classification.md).
-                  `classification-malformed`: a `#(classification)` annotation
-                  that names no single class (one per field, `subject` the
-                  source; `warn`).
-                  `classification-downgrade`: a field that declares a lower
-                  class than the fields its expression reads, which Publisher
-                  cannot tell from a real de-identification, so a review has
-                  to (one per field, `subject` the source; `warn`; a plain
-                  copy under `#(carries)` refuses the load instead).
-                  Materialization codes follow one rule: the suffix tells the
-                  outcome. An INVALID annotation (or invalid code it covers)
-                  fails the publish and the load, on every path, so its code
-                  appears only in the load failure's message (the publish 4xx
-                  and `loadErrors`), never as a warning here:
-                  `persist-invalid`, `materialize-invalid`,
-                  `rollup-invalid`, `persist-view-invalid` and
-                  `persist-query-invalid` (a bad value or contradictory
-                  combination: a `storage=` that names nothing, an `@env.`
-                  reference, an unusable, unsafe, unquoted or reserved
-                  `name=`, an `inline=` that names no join, an incremental
-                  key or `refresh="incremental"` on a view or query);
-                  `persist-unknown-key`, `materialize-unknown-key` and
-                  `rollup-unknown-key` (every route's key set is
-                  closed, a `freshness.` group's included);
-                  `persist-retired-key` and `materialize-retired-key`
-                  (`sharing=`, `schedule=`, `partition=`, and on `#@ persist`
-                  `realization=`); `persist-unparseable`,
-                  `materialize-unparseable`, `rollup-unparseable`,
-                  `persist-view-unparseable` and `persist-query-unparseable`; `persist-not-materializable` (a
-                  `#@ persist` on a shape Malloy does not plan);
-                  `rollup-not-a-measure`, `rollup-unknown-grain` and
-                  `rollup-not-mergeable` (a rollup line on a field that is not
-                  a measure, a grain naming no dimension, a measure no rollup
-                  can merge);
-                  `materialization-table-collision` (two sources whose
-                  `name=` puts them on one table; under
-                  `PERSIST_COLLISION_ENFORCE=false` a refusal instead); and
-                  `materialization-near-miss` (a misspelled materialization
-                  route or directive, such as `#(materialise)` or
-                  `#@ persits`). `preaggregate-malformed` is retained and no
-                  longer produced: it is `rollup-invalid` or
-                  `rollup-unparseable` now. Retained, no longer produced:
-                  `preaggregate-invalid`, `preaggregate-unknown-key`,
-                  `preaggregate-unparseable`, `preaggregate-not-a-measure`,
-                  `preaggregate-unknown-grain` and
-                  `preaggregate-not-mergeable`, now `rollup-invalid`,
-                  `rollup-unknown-key`, `rollup-unparseable`,
-                  `rollup-not-a-measure`, `rollup-unknown-grain` and
-                  `rollup-not-mergeable`. A measure or
-                  source that carries both `#(rollup)` and `#(preaggregate)`
-                  is `rollup-invalid`.
-                  A VALID annotation Publisher cannot build here is refused
-                  alone, answered live, while the package loads, and is
-                  severity `warn`, never `error`. Every one is a
-                  `BuildPlan.refusedSources` entry with a bounded `reason`,
-                  and its warning's code names the mechanism:
-                  `persist-not-built` (a `#@ persist` source; `subject` the
-                  source), `materialize-not-built` (a `#(materialize)` source;
-                  `subject` the source), `persist-view-not-built` and
-                  `persist-query-not-built` (a persisted view or named query;
-                  `subject` the view or query), and `rollup-not-built`
-                  (a `#(rollup)` or `#@ preaggregate` rollup; `subject`
-                  the base, or `<base>.<measure>` for one measure). The
-                  message says why, and `reason` is the refusal record's
-                  bounded reason. `preaggregate-not-built` is
-                  `rollup-not-built`'s former name, retained, no longer
-                  produced: 0.15.0 and 0.16 repeated each `rollup-not-built`
-                  warning under it. `persist-source-refused`, the former name
-                  of `persist-not-built` repeated beside it in 0.14.0, is no
-                  longer produced.
-                  Retained, no longer produced: the rollup sub-family
-                  `preaggregate-hidden-field`, `-access-filter`, `-time-zone`,
-                  `-current-time`, `-reads-given`, `-unreadable-measure`,
-                  `-join-level` and `-name-clash`, now each
-                  `rollup-not-built` with the reasons `hidden_field`,
-                  `access_filter` (or `authorize`), `time_zone`,
-                  `current_time`, `reads_given`,
-                  `inherited_where_with_given` or
-                  `given_where_over_unstored_field`, `unreadable_measure`,
-                  `join_not_in_grain` and `partial_name_collision`.
-                  `materialization-storage-mode`: a `storage=` source the
-                  deployment's `PERSIST_STORAGE_MODE` (`off` or `write-only`)
-                  does not serve from storage (`subject` the source, or a
-                  rollup's base; `reason` `storage_mode`; `warn`).
-                  `materialization-unreachable`,
-                  `materialization-destination-missing` and
-                  `materialization-connection-cannot-hold-table`: a source
-                  whose serve verdict is `live` for the reason each names (no
-                  published source reaches it; its `storage=` destination is not
-                  configured; its connection creates no tables), with the
-                  verdict's `message` and `fixes` (`subject` the source;
-                  `reason` the verdict's; `warn`).
-                  `materialize-pair-full-refresh`: a `#(materialize)` pair
-                  table (an inlined `join_many`) whose `refresh="incremental"`
-                  is not honoured: it is rebuilt in full on every refresh, and
-                  served (`subject` the source; `warn`).
-                  `materialize-extension-full-refresh`: an incremental
-                  `#(materialize)` extension whose watermark is not the same
-                  stored column as its incremental parent's: it is rebuilt in
-                  full over the parent's table whenever that table changes, and
-                  served (`subject` the extension; `warn`; the message names
-                  both watermarks).
-                  `materialize-extension-generation-unproven`: the newest run
-                  rebuilt an incremental extension in full because it could not
-                  prove which build of its parent's table it last read (neither
-                  the run's ledger entry nor the bound manifest records it;
-                  step reason `upstream_generation_skipped`) (`subject` the
-                  extension; `warn`).
-                  `rollup-join-one-key-repeated`: a rollup's last build found
-                  a `join_one` key repeated in the data, so queries that read
-                  that join beside other aggregates, or, for a `join_one` the
-                  rollup's grain reads, queries that read nothing through it,
-                  are answered live (`subject` the rollup's base; `warn`). Its former name,
-                  `preaggregate-join-one-key-repeated`, is retained, no longer
-                  produced.
-                  `served-copy-not-served`: the served copy (the author's own
-                  files, each stored source re-rooted on its table) leaves a
-                  source as written, so it answers live, or serves it with a
-                  join read as written or left out; `reason` names why
-                  (`compile_failed`, `cross_connection_unbuilt`,
-                  `column_types`, `no_declaration`, `definition_not_parsed`,
-                  `pair_join_not_found`, `pair_not_compiled`,
-                  `fields_not_carried`, `read_terms_not_kept`,
-                  `cross_connection_join`, `inline_join_kept`,
-                  `reroot_not_compiled`, `classification_not_kept`,
-                  `sql_embed_cross_connection`, `sql_embed_bare`; an
-                  open set) (`subject` the
-                  source; `warn`).
-                  `model-recompile-failed`: a model file that compiled before
-                  did not compile when the package bound new tables, although
-                  neither its text nor that of any file it imports changed
-                  since (most often because a table it reads directly was
-                  dropped), so the file keeps serving the model it last
-                  compiled rather than answering every query on its sources
-                  with the compile error, and the package reads `stale: true`
-                  in `/status` `loadErrors`. A file an author edited that
-                  fails to compile is never kept: it answers with its compile
-                  error. The message carries the compile error and names the
-                  file's sources, and which of them stopped serving their
-                  stored tables because an upstream table they were built
-                  from changed (those answer live, and read `incompatible`,
-                  `upstream_altered`) (`model` the file; `reason`
-                  `compile_failed`; `warn`). Cleared by the next bind or
-                  reload that compiles the file.
-                  `row-level-gate-unexpressible`: a row-level gate an entry
-                  point inherits, whose field it no longer carries, so that
-                  entry point denies every request; `row-level-gate-reads-no-given`:
-                  a source-line gate that reads no given, a fixed predicate
-                  rather than an access rule keyed on the caller;
-                  `row-level-gate-negated-membership`: a source-line gate that
-                  negates a membership test, which an empty given turns into
-                  match-all, or that is too deep to check for one (its message
-                  then says it is too deep to check, not that it negates one)
-                  (`model` the
-                  entry point's file, `subject` the entry point; `warn`; the
-                  model still loads).
-                  `annotation-near-miss` and `annotation-malformed-route`: an
-                  annotation whose route or directive looks like a misspelled
-                  one Publisher reads (`warn`); `annotation-gate-near-miss`: a
-                  misspelled gate annotation (`#(authorise)`), which
-                  `compile_model` refuses.
-                  `persist-incremental-no-merge-key`: an incremental source
-                  with no `merge_key=`, so each refresh replaces its watermark
-                  range (`subject` the source; `warn`).
-                  `persist-reads-current-time`: a `#@ persist` source,
-                  persisted view or persisted named query whose stored
-                  relation reads the current time (`now`, or a relative time
-                  filter string such as `f'last 7 days'`), so its answers are
-                  as of its last build and it is rebuilt on every run; the
-                  message names where it reads the clock and how to answer as
-                  of each query instead (one per table, `subject` the source,
-                  the view as `<source> -> <view>`, or the query; `warn`).
-                  `persist-incremental-shared-address`: sources that compile to
-                  the same SQL on one connection, so they share one table and
-                  one boundary, where at least one is incremental (one per
-                  source; `warn`).
-                  `persist-incremental-late-rows`: an incremental source whose
-                  bound table a delta's late-row check found missing rows
-                  stamped just below where a delta started reading, which no
-                  later delta reads (its manifest entry's `lateRows`); it is
-                  carried until the source is rebuilt in full (one per source;
-                  `warn`).
-                  `rollup-join-one-key-repeated`: a bound rollup whose last
-                  build found the key of a `join_one` it reads repeated, so a
-                  query reading that join beside other aggregates is answered
-                  live, or, for a `join_one` its grain reads, a query reading
-                  nothing through it; it clears once a build finds the key
-                  unique (one per rollup and key; `warn`). `preaggregate-join-one-key-repeated` is
-                  retained, no longer produced: it is
-                  `rollup-join-one-key-repeated` now.
-                  `join-bypass`: an author join from a published source to one
-                  with a stricter gate, which the join does not carry (one per
-                  join, or one for a walk cut short at the join bound; always
-                  a `warn`, never a load refusal; see docs/authorize.md).
-                  `storage-column-type-mismatch`: a `storage=` table of any
-                  kind (`#@ persist`, `#(materialize)`, a rollup, a persisted
-                  view or query) stores a column as a type other than the one
-                  its build declares, as its build wrote it (a change after
-                  the build is `materialization-table-incompatible`). It is
-                  read through a cast to the
-                  declared type where that is faithful, and otherwise
-                  answered live, never read as its stored type (one per
-                  source and column, `model` the model
-                  declaring it, `subject` the source, a rollup's base, or a
-                  view's or query's build source, the message naming the
-                  column, both types and which applies; `warn`; see
-                  docs/materialization.md).
-                  `database-column-type-mismatch` is retained, no longer
-                  produced: a bound table altered outside a build is now
-                  `materialization-table-incompatible`, answered live whole
-                  until it is rebuilt, never read through a cast.
-                  `materialization-table-incompatible`: a bound table, on
-                  either tier, that no longer matches the column contract its
-                  build recorded (a column gone, retyped or recollated since,
-                  or its source now declaring another type than it was built
-                  for); it is answered live until a build rebuilds it (one per
-                  source, `subject` the source; `warn`; the serve verdict's
-                  `incompatible` names the table and what changed).
-                  `materialization-contract-missing`: a bound table whose
-                  entry carries no column contract (built before contracts
-                  were recorded); it is answered live until a build rebuilds
-                  it in full (one per source, `subject` the source; `warn`).
-                  `materialization-types-unrecorded` is retained, no longer
-                  produced: a table with no recorded types is
-                  `materialization-contract-missing` now.
-                  `table-kept`: a table an auto-run replaced
-                  when its source's table was renamed or moved, which
-                  Publisher keeps rather than drops: one at an author's exact
-                  `name=` (never dropped), one in a storage destination
-                  that is no longer configured (which, when the destination
-                  was renamed rather than removed, may be the table served
-                  under the new name), or one a `storage=` or tier move left
-                  under the name the source is served under now (which may
-                  be the very table served, so it is never dropped).
-                  Listed on the newest run's
-                  `metadata.keptTables` until no committed run names it in
-                  its place (its runs deleted; a delete is record-only),
-                  a run finds it dropped by hand (never on Snowflake or
-                  MySQL, whose catalogs hide tables), or its name is used
-                  again in its own place
-                  (one per table, `model` the model
-                  declaring the source, `subject` the source or a rollup's
-                  base, the message naming the table and where it is,
-                  `reason` the kept table's `author_name`,
-                  `destination_missing` or `may_be_served`; `warn`; see
-                  docs/materialization.md).
-                  `database-table-unread`: a bound table in a source's own
-                  database whose columns could not be read when it was bound
-                  (missing, unreadable, slower than the read's bound, or named
-                  in more than one schema), so its queries are answered live
-                  until a read succeeds; the message names the table or
-                  rollup, one fixed reason (its connection could not be
-                  opened, the catalog read timed out, the catalog query
-                  failed, not found, a name matching more than one table, a
-                  name the catalog cannot read; never the driver's text) and
-                  whether a retry is pending, and the warning clears once the
-                  table is read (only for a table a source of the package
-                  reads; one per table, `model` the model declaring
-                  its source, `subject` the source, or a rollup's base, when
-                  the plan knows the table; `reason` one of
-                  `connection_failed`, `timed_out`, `catalog_query_failed`,
-                  `not_found`, `ambiguous`, `unparseable`, `not_read`; `warn`;
-                  see docs/materialization.md).
-                  `storage-table-unread`: the same, for a bound `storage=`
-                  table whose columns its destination session could not read
-                  when it was bound, or that a query's failed read left
-                  unread until the package reads it again; the message names
-                  the table or rollup and its destination; same fields and
-                  reasons.
-                  `database-native-type-missing`: a database table is bound
-                  with no captured warehouse type (its manifest entry's
-                  `nativeSchema`) for a column whose field Malloy types as a big
-                  integer. On BigQuery the column is read as `INT64`, its only
-                  integer type, and still serves; on any other dialect it is
-                  left out, so a query that reads it is answered live. The next
-                  full rebuild captures the types (one per source, `model` the
-                  first model binding it, `subject` the source, the message
-                  naming the columns and which applies; `warn`; see
-                  docs/materialization.md). Its former name,
-                  `stored-native-schema-missing`, is retained, no longer
-                  produced.
-                  `entities-…` (`entities-not-a-dimension`,
-                  `entities-parameterized-source`,
-                  `entities-multiple-required-filters`,
-                  `entities-sharing-not-allowed-on-dimension`,
-                  `entities-schedule-not-allowed-on-dimension`,
-                  `entities-required-filter-missing-dimension`,
-                  `entities-required-filter-non-public-dimension`): an
-                  `#(index)` or required `#(filter)` an index cannot honor, left
-                  out of `GET …/entities` (`model` its file; `warn`). The per-file
-                  report findings (`notebook-…`, `report-…`) and the report
-                  curation findings (`report-on-surface`,
-                  `index-is-not-a-report`). The message wording may change; the
-                  code does not.
-              reason:
-                type: string
-                description: >-
-                  The bounded cause of a finding, so a client branches on it
-                  rather than on the message (whose wording may change): the
-                  refusal record's `reason` on a `*-not-built` warning; the served copy's reason on
-                  `served-copy-not-served`; `compile_failed` on
-                  `model-recompile-failed`; the unread reason on
-                  `database-table-unread` and `storage-table-unread`; the kept table's reason on
-                  `table-kept`; the serve verdict's reason on a
-                  `materialization-*` verdict warning; `storage_mode` on
-                  `materialization-storage-mode`; the rule a cell breaks on
-                  `malloynb-cell-refused` (`off_surface`, `caller_annotation`,
-                  `required_filter`, `restricted_mode`, `compile_error`). Always snake_case. An open
-                  string; absent on a finding that has none.
-              sourceEntityId:
-                type: string
-                description: >-
-                  The content address (its manifest key) of the stored table a
-                  finding is about, so a client routes it without reading the
-                  message: set on `database-table-unread` and
-                  `storage-table-unread`, where `subject` names the source a
-                  query names (a rollup's base) and this names the unread
-                  table's own source. Absent on every other finding.
-              sourceName:
-                type: string
-                description: >-
-                  The name of the source whose stored table a finding is about,
-                  beside `sourceEntityId`: for a rollup's table, the rollup's
-                  own source (`<base>__rollup__…`), not the base `subject`
-                  names. Set on `database-table-unread` and
-                  `storage-table-unread` when the build plan knows the table;
-                  absent otherwise.
-              severity:
-                type: string
-                enum:
-                  - error
-                  - warn
-                description: >-
-                  Finding severity, `error` or `warn` and nothing else; a
-                  deprecated form that still loads (such as
-                  `deprecated-malloynb-notebook`) is `warn`. Render-tag findings use both: `error` for
-                  a tag malformed for the field it sits on, which renders as
-                  "[object Object]" or an inline error at query time, and `warn`
-                  for one that is well-formed but inert where it sits and so is
-                  silently ignored (e.g. `# colspan` outside
-                  `# dashboard { columns=N }`), where nothing looks broken at
-                  query time and the layout simply is not what was written.
-                  Those are the only two severities the renderer emits, so no
-                  render finding is withheld. Materialization and dashboard
-                  findings use both: `error` for something that cannot work as
-                  written, such as a tile naming a view the source does not
-                  have, and `warn` for something that works but not as the
-                  author probably intended. The two findings about Publisher rather than about
-                  the package split across both: a file that carries an artifact
-                  tag and could not be read is `error`, because the dashboard it
-                  should have produced does not exist, and a lint that stopped
-                  early is `warn`, because the lint failing is not itself a
-                  defect in the package. That `warn` does NOT mean the package is
-                  free of `error`-severity findings, since the ones the lint
-                  never reached are exactly what it cannot report.
+            $ref: "#/components/schemas/PackageWarning"
         queryableSources:
           type: string
           deprecated: true
@@ -6528,20 +6347,6 @@ components:
           readOnly: true
           description: >-
             **Moved** to `GET …/packages/{packageName}/status` (`PackageServingState.sourceContentSha`). Always present on a `?reload=true` response, as that reload's receipt. Otherwise present only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it from all but the reload response.
-        agents:
-          deprecated: true
-          type: array
-          readOnly: true
-          description: >-
-            **Moved** to `GET …/packages/{packageName}/agents`. Present here only while `PUBLISHER_PACKAGE_INLINE_FIELDS` is on, the default in this release; a later release removes it.
-
-            Server-computed, read-only: the agents this package's
-            `publisher.json` declares and the server accepted, without their
-            instructions. Absent when the manifest declares no `agents`. An
-            agent that failed validation is left out and named in `warnings`.
-            Fetch one with `GET .../agents/{agentName}`.
-          items:
-            $ref: "#/components/schemas/AgentSummary"
         secureGivens:
           deprecated: true
           type: array
@@ -6576,137 +6381,677 @@ components:
             body carrying it is ignored.
           items:
             $ref: "#/components/schemas/SecureGivenSummary"
-    AgentSchedule:
+    PackageWarning:
       type: object
-      readOnly: true
       description: >-
-        A cron schedule an agent declares. Validated and exposed only: the
-        server never runs it.
+        One non-fatal finding about a package, as `Package.warnings`,
+        `SkillSet.warnings` and `Workflow.warnings` carry it. `message` is the only field every finding
+        has; a client that acts on a finding reads its `code` and `subject` and
+        shows its `message` whole, never parsing it.
       properties:
-        cron:
-          type: string
-          description: A 5-field UNIX cron expression, evaluated in UTC.
-        task:
-          type: string
-          description: Package-relative path of the task file, as written in the manifest.
-        taskContent:
+        model:
           type: string
           description: >-
-            The task file's Markdown. Only on the resolved agent, not the
-            listing.
-
-    AgentBudget:
+            Package-relative path of the model the finding is on. Absent
+            for a package-wide finding.
+        subject:
+          type: string
+          description: >-
+            What the finding is about: the query or view a render finding
+            sits on (`by_carrier`, `flights -> by_carrier`), the source a
+            materialization finding belongs to, for a report
+            finding, the report's name or the `source.dimension` a
+            `# drill` is declared on, or, for a workflow or skill set
+            finding, the workflow's or the skill set's name (see `code`). Absent
+            when a finding sits on none
+            of those, either because it spans several, in which case the
+            message names them, or because it is about the lint itself
+            rather than about any one dashboard.
+        message:
+          type: string
+          description: A description of the problem.
+        code:
+          type: string
+          description: >-
+            A stable identifier for the finding's family, for a client that
+            acts on it rather than only showing it; absent for a family that
+            has none yet. `render-tag`: a render annotation the renderer
+            cannot apply as written, malformed for its field (`error`) or
+            inert where it sits (`warn`); one per finding, `model` its file
+            and `subject` the query or view it sits on.
+            `render-tag-check-failed`: a model whose render-tag check did
+            not finish (it could not be read, `error`, or the validator
+            failed, `warn`), so its render-tag findings are unknown rather
+            than clean; reported by a package-scope compile, one per
+            model. `deprecated-malloynb-notebook`: a `.malloynb`
+            notebook, the deprecated cell format (one per file, `model`
+            naming it). `malloynb-cell-refused`: a `.malloynb` code cell
+            whose `run:` statement the query route refuses for every
+            reader in the Console, which sends no privilege and no
+            `filterParams`, so the cell never runs there. One per cell,
+            up to the bound below, `model` naming the notebook, severity `warn`. The message
+            names the cell by its 1-based position among the notebook's
+            cells, markdown cells included, and the fix. `reason` names
+            the rule: `off_surface` is the 404 for a source the package
+            surface does not publish, which a source the notebook
+            declares never is on a package with a curated surface, an
+            `index.malloy` or the deprecated `explores`; a caller with `includeHiddenFilesAndSources` still runs such a
+            cell. `caller_annotation` is the 400 for text carrying an
+            annotation only the model author may write, such as
+            `#(authorize)`, comments included. `required_filter` is the
+            400 for a source with a required `#(filter)`.
+            `restricted_mode` is the 400 for a `sql_*` call or a direct
+            table read. `compile_error` is the 400 for any other failure
+            of the statement to compile on its own. A cell that only a
+            reader's givens refuse, by `#(authorize)` or a row-level
+            gate, is not reported. Markdown cells are not read, as the
+            Console does not run them. A notebook lists at most 10
+            refused cells one by one, and the package at most 50. The
+            rest of a notebook that lists some are named by number and
+            reason in one `malloynb-cells-unlisted` warning (`model` the
+            notebook; `warn`). The notebooks after the package limit
+            share one `malloynb-cells-unlisted` warning with no `model`,
+            which counts their cells by reason and names the first 10 of
+            them. The report lint metric still counts each refused cell
+            under `malloynb-cell-refused`.
+            `malloynb-cell-check-failed`: a notebook whose cell check
+            could not run, so a refused cell of it may have no warning;
+            the cause is in the server log (one per notebook, `warn`).
+            `deprecated-filter-annotation`: a source declaring
+            deprecated `#(filter)` annotations (one per declaring source,
+            `model` naming its file and `subject` the source).
+            `deprecated-preaggregate-annotation`: a measure declaring
+            `#@ preaggregate` or the deprecated alias `#(preaggregate)`,
+            whose v2 spelling is `#(rollup)`; the message names the
+            spelling it found (one per measure, `model` its file, `subject` the source and the
+            message the measure; `warn`; only while
+            `PUBLISHER_MATERIALIZE` is on).
+            `workflow-not-served`: a workflow the manifest declares and
+            Publisher refuses, or lists an undeclared or refused set
+            (`subject` the workflow's name; the message is the refusal, and
+            the workflow's 404 carries the same text).
+            `skill-set-not-served`: a skill set the manifest declares and
+            Publisher refuses, for a bad key, path or description, a path
+            another set also names, or because it would take the package past
+            the 8 MiB asset cap (`subject` the set's name; the message is the
+            refusal, and the set's 404 carries the same text).
+            `skill-shadowed`: a skill name two of a workflow's sets both hold;
+            both sets are served whole, and an installer keeps the first-listed
+            set's copy (`subject` the workflow's name).
+            `skill-file-skipped`: a served skill has a file of its directory
+            left out, a skipped reference or asset or a file over the reply
+            budget of `get_skill` (`subject` the skill set's name).
+            `skill-finding`: any other finding of a skill set: a skill not
+            served, a skill served with a gap, a set with no skills, a set
+            past its skill cap, a skill named like a bundled skill that the
+            set's `overrides` does not list (any such skill in a set that is
+            not `default`), a bad `overrides` value, or an `overrides` on a
+            set that is not `default` (`subject` the set's name). Each finding of a set is published
+            once, however many workflows list it.
+            `skill-sets-unavailable`: the walk that reads the declared skill
+            sets failed, so no skill set or workflow is served until the
+            package reloads (no `subject`; one per load). All six of these
+            are `warn`.
+            `package-agents-not-read`: the manifest declares `agents`,
+            which is no longer read (one per load; the message says to
+            declare `workflows`). `package-skills-dir-not-read`: the
+            package has a root `skills/` directory that no declared skill
+            set reads, so it is no longer read (one per load; the message
+            names the one-line fix, a `default` set whose `path` is `skills`).
+            `deprecated-rollup-namespace`: a rollup line placed with
+            `namespace=`, the deprecated spelling of its `name=`
+            container; still read, in that container under the readable
+            name (one per measure and container, `subject`
+            `<base>.<measure>`; `warn`).
+            `classification-coverage`: a
+            published source with a dimension or measure that carries no
+            `#(classification)` while some field in the package does (one
+            per source, `model` naming its file and `subject` the source;
+            `warn`; see docs/classification.md).
+            `classification-malformed`: a `#(classification)` annotation
+            that names no single class (one per field, `subject` the
+            source; `warn`).
+            `classification-downgrade`: a field that declares a lower
+            class than the fields its expression reads, which Publisher
+            cannot tell from a real de-identification, so a review has
+            to (one per field, `subject` the source; `warn`; a plain
+            copy under `#(carries)` refuses the load instead).
+            Materialization codes follow one rule: the suffix tells the
+            outcome. An INVALID annotation (or invalid code it covers)
+            fails the publish and the load, on every path, so its code
+            appears only in the load failure's message (the publish 4xx
+            and `loadErrors`), never as a warning here:
+            `persist-invalid`, `materialize-invalid`,
+            `rollup-invalid`, `persist-view-invalid` and
+            `persist-query-invalid` (a bad value or contradictory
+            combination: a `storage=` that names nothing, an `@env.`
+            reference, an unusable, unsafe, unquoted or reserved
+            `name=`, an `inline=` that names no join, an incremental
+            key or `refresh="incremental"` on a view or query);
+            `persist-unknown-key`, `materialize-unknown-key` and
+            `rollup-unknown-key` (every route's key set is
+            closed, a `freshness.` group's included);
+            `persist-retired-key` and `materialize-retired-key`
+            (`sharing=`, `schedule=`, `partition=`, and on `#@ persist`
+            `realization=`); `persist-unparseable`,
+            `materialize-unparseable`, `rollup-unparseable`,
+            `persist-view-unparseable` and `persist-query-unparseable`; `persist-not-materializable` (a
+            `#@ persist` on a shape Malloy does not plan);
+            `rollup-not-a-measure`, `rollup-unknown-grain` and
+            `rollup-not-mergeable` (a rollup line on a field that is not
+            a measure, a grain naming no dimension, a measure no rollup
+            can merge);
+            `materialization-table-collision` (two sources whose
+            `name=` puts them on one table; under
+            `PERSIST_COLLISION_ENFORCE=false` a refusal instead); and
+            `materialization-near-miss` (a misspelled materialization
+            route or directive, such as `#(materialise)` or
+            `#@ persits`). `preaggregate-malformed` is retained and no
+            longer produced: it is `rollup-invalid` or
+            `rollup-unparseable` now. Retained, no longer produced:
+            `preaggregate-invalid`, `preaggregate-unknown-key`,
+            `preaggregate-unparseable`, `preaggregate-not-a-measure`,
+            `preaggregate-unknown-grain` and
+            `preaggregate-not-mergeable`, now `rollup-invalid`,
+            `rollup-unknown-key`, `rollup-unparseable`,
+            `rollup-not-a-measure`, `rollup-unknown-grain` and
+            `rollup-not-mergeable`. A measure or
+            source that carries both `#(rollup)` and `#(preaggregate)`
+            is `rollup-invalid`.
+            A VALID annotation Publisher cannot build here is refused
+            alone, answered live, while the package loads, and is
+            severity `warn`, never `error`. Every one is a
+            `BuildPlan.refusedSources` entry with a bounded `reason`,
+            and its warning's code names the mechanism:
+            `persist-not-built` (a `#@ persist` source; `subject` the
+            source), `materialize-not-built` (a `#(materialize)` source;
+            `subject` the source), `persist-view-not-built` and
+            `persist-query-not-built` (a persisted view or named query;
+            `subject` the view or query), and `rollup-not-built`
+            (a `#(rollup)` or `#@ preaggregate` rollup; `subject`
+            the base, or `<base>.<measure>` for one measure). The
+            message says why, and `reason` is the refusal record's
+            bounded reason. `preaggregate-not-built` is
+            `rollup-not-built`'s former name, retained, no longer
+            produced: 0.15.0 and 0.16 repeated each `rollup-not-built`
+            warning under it. `persist-source-refused`, the former name
+            of `persist-not-built` repeated beside it in 0.14.0, is no
+            longer produced.
+            Retained, no longer produced: the rollup sub-family
+            `preaggregate-hidden-field`, `-access-filter`, `-time-zone`,
+            `-current-time`, `-reads-given`, `-unreadable-measure`,
+            `-join-level` and `-name-clash`, now each
+            `rollup-not-built` with the reasons `hidden_field`,
+            `access_filter` (or `authorize`), `time_zone`,
+            `current_time`, `reads_given`,
+            `inherited_where_with_given` or
+            `given_where_over_unstored_field`, `unreadable_measure`,
+            `join_not_in_grain` and `partial_name_collision`.
+            `materialization-storage-mode`: a `storage=` source the
+            deployment's `PERSIST_STORAGE_MODE` (`off` or `write-only`)
+            does not serve from storage (`subject` the source, or a
+            rollup's base; `reason` `storage_mode`; `warn`).
+            `materialization-unreachable`,
+            `materialization-destination-missing` and
+            `materialization-connection-cannot-hold-table`: a source
+            whose serve verdict is `live` for the reason each names (no
+            published source reaches it; its `storage=` destination is not
+            configured; its connection creates no tables), with the
+            verdict's `message` and `fixes` (`subject` the source;
+            `reason` the verdict's; `warn`).
+            `materialize-pair-full-refresh`: a `#(materialize)` pair
+            table (an inlined `join_many`) whose `refresh="incremental"`
+            is not honoured: it is rebuilt in full on every refresh, and
+            served (`subject` the source; `warn`).
+            `materialize-extension-full-refresh`: an incremental
+            `#(materialize)` extension whose watermark is not the same
+            stored column as its incremental parent's: it is rebuilt in
+            full over the parent's table whenever that table changes, and
+            served (`subject` the extension; `warn`; the message names
+            both watermarks).
+            `materialize-extension-generation-unproven`: the newest run
+            rebuilt an incremental extension in full because it could not
+            prove which build of its parent's table it last read (neither
+            the run's ledger entry nor the bound manifest records it;
+            step reason `upstream_generation_skipped`) (`subject` the
+            extension; `warn`).
+            `rollup-join-one-key-repeated`: a rollup's last build found
+            a `join_one` key repeated in the data, so queries that read
+            that join beside other aggregates, or, for a `join_one` the
+            rollup's grain reads, queries that read nothing through it,
+            are answered live (`subject` the rollup's base; `warn`). Its
+            former name,
+            `preaggregate-join-one-key-repeated`, is retained, no longer
+            produced.
+            `served-copy-not-served`: the served copy (the author's own
+            files, each stored source re-rooted on its table) leaves a
+            source as written, so it answers live, or serves it with a
+            join read as written or left out; `reason` names why
+            (`compile_failed`, `cross_connection_unbuilt`,
+            `column_types`, `no_declaration`, `definition_not_parsed`,
+            `pair_join_not_found`, `pair_not_compiled`,
+            `fields_not_carried`, `read_terms_not_kept`,
+            `cross_connection_join`, `inline_join_kept`,
+            `reroot_not_compiled`, `classification_not_kept`,
+            `sql_embed_cross_connection`, `sql_embed_bare`; an open
+            set) (`subject` the source; `warn`).
+            `model-recompile-failed`: a model file that compiled before
+            did not compile when the package bound new tables, although
+            neither its text nor that of any file it imports changed
+            since (most often because a table it reads directly was
+            dropped), so the file keeps serving the model it last
+            compiled rather than answering every query on its sources
+            with the compile error, and the package reads `stale: true`
+            in `/status` `loadErrors`. A file an author edited that
+            fails to compile is never kept: it answers with its compile
+            error. The message carries the compile error and names the
+            file's sources, and which of them stopped serving their
+            stored tables because an upstream table they were built
+            from changed (those answer live, and read `incompatible`,
+            `upstream_altered`) (`model` the file; `reason`
+            `compile_failed`; `warn`). Cleared by the next bind or
+            reload that compiles the file.
+            `row-level-gate-unexpressible`: a row-level gate an entry
+            point inherits, whose field it no longer carries, so that
+            entry point denies every request; `row-level-gate-reads-no-given`:
+            a source-line gate that reads no given, a fixed predicate
+            rather than an access rule keyed on the caller;
+            `row-level-gate-negated-membership`: a source-line gate that
+            negates a membership test, which an empty given turns into
+            match-all, or that is too deep to check for one (its message
+            then says it is too deep to check, not that it negates one)
+            (`model` the
+            entry point's file, `subject` the entry point; `warn`; the
+            model still loads).
+            `annotation-near-miss` and `annotation-malformed-route`: an
+            annotation whose route or directive looks like a misspelled
+            one Publisher reads (`warn`); `annotation-gate-near-miss`: a
+            misspelled gate annotation (`#(authorise)`), which
+            `compile_model` refuses.
+            `persist-incremental-no-merge-key`: an incremental source
+            with no `merge_key=`, so each refresh replaces its watermark
+            range (`subject` the source; `warn`).
+            `persist-reads-current-time`: a `#@ persist` source,
+            persisted view or persisted named query whose stored
+            relation reads the current time (`now`, or a relative time
+            filter string such as `f'last 7 days'`), so its answers are
+            as of its last build and it is rebuilt on every run; the
+            message names where it reads the clock and how to answer as
+            of each query instead (one per table, `subject` the source,
+            the view as `<source> -> <view>`, or the query; `warn`).
+            `persist-incremental-shared-address`: sources that compile to
+            the same SQL on one connection, so they share one table and
+            one boundary, where at least one is incremental (one per
+            source; `warn`).
+            `persist-incremental-late-rows`: an incremental source whose
+            bound table a delta's late-row check found missing rows
+            stamped just below where a delta started reading, which no
+            later delta reads (its manifest entry's `lateRows`); it is
+            carried until the source is rebuilt in full (one per source;
+            `warn`).
+            `rollup-join-one-key-repeated`: a bound rollup whose last
+            build found the key of a `join_one` it reads repeated, so a
+            query reading that join beside other aggregates is answered
+            live, or, for a `join_one` its grain reads, a query reading
+            nothing through it; it clears once a build finds the key
+            unique (one per rollup and key; `warn`).
+            `preaggregate-join-one-key-repeated` is
+            retained, no longer produced: it is
+            `rollup-join-one-key-repeated` now.
+            `join-bypass`: an author join from a published source to one
+            with a stricter gate, which the join does not carry (one per
+            join, or one for a walk cut short at the join bound; always
+            a `warn`, never a load refusal; see docs/authorize.md).
+            `storage-column-type-mismatch`: a `storage=` table of any
+            kind (`#@ persist`, `#(materialize)`, a rollup, a persisted
+            view or query) stores a column as a type other than the one
+            its build declares, as its build wrote it (a change after
+            the build is `materialization-table-incompatible`). It is
+            read through a cast to the
+            declared type where that is faithful, and otherwise
+            answered live, never read as its stored type (one per
+            source and column, `model` the model
+            declaring it, `subject` the source, a rollup's base, or a
+            view's or query's build source, the message naming the
+            column, both types and which applies; `warn`; see
+            docs/materialization.md).
+            `database-column-type-mismatch` is retained, no longer
+            produced: a bound table altered outside a build is now
+            `materialization-table-incompatible`, answered live whole
+            until it is rebuilt, never read through a cast.
+            `materialization-table-incompatible`: a bound table, on
+            either tier, that no longer matches the column contract its
+            build recorded (a column gone, retyped or recollated since,
+            or its source now declaring another type than it was built
+            for); it is answered live until a build rebuilds it (one per
+            source, `subject` the source; `warn`; the serve verdict's
+            `incompatible` names the table and what changed).
+            `materialization-contract-missing`: a bound table whose
+            entry carries no column contract (built before contracts
+            were recorded); it is answered live until a build rebuilds
+            it in full (one per source, `subject` the source; `warn`).
+            `materialization-types-unrecorded` is retained, no longer
+            produced: a table with no recorded types is
+            `materialization-contract-missing` now.
+            `table-kept`: a table an auto-run replaced
+            when its source's table was renamed or moved, which
+            Publisher keeps rather than drops: one at an author's exact
+            `name=` (never dropped), one in a storage destination
+            that is no longer configured (which, when the destination
+            was renamed rather than removed, may be the table served
+            under the new name), or one a `storage=` or tier move left
+            under the name the source is served under now (which may
+            be the very table served, so it is never dropped).
+            Listed on the newest run's
+            `metadata.keptTables` until no committed run names it in
+            its place (its runs deleted; a delete is record-only),
+            a run finds it dropped by hand (never on Snowflake or
+            MySQL, whose catalogs hide tables), or its name is used
+            again in its own place
+            (one per table, `model` the model
+            declaring the source, `subject` the source or a rollup's
+            base, the message naming the table and where it is,
+            `reason` the kept table's `author_name`,
+            `destination_missing` or `may_be_served`; `warn`; see
+            docs/materialization.md).
+            `database-table-unread`: a bound table in a source's own
+            database whose columns could not be read when it was bound
+            (missing, unreadable, slower than the read's bound, or named
+            in more than one schema), so its queries are answered live
+            until a read succeeds; the message names the table or
+            rollup, one fixed reason (its connection could not be
+            opened, the catalog read timed out, the catalog query
+            failed, not found, a name matching more than one table, a
+            name the catalog cannot read; never the driver's text) and
+            whether a retry is pending, and the warning clears once the
+            table is read (only for a table a source of the package
+            reads; one per table, `model` the model declaring
+            its source, `subject` the source, or a rollup's base, when
+            the plan knows the table; `reason` one of
+            `connection_failed`, `timed_out`, `catalog_query_failed`,
+            `not_found`, `ambiguous`, `unparseable`, `not_read`; `warn`;
+            see docs/materialization.md).
+            `storage-table-unread`: the same, for a bound `storage=`
+            table whose columns its destination session could not read
+            when it was bound, or that a query's failed read left
+            unread until the package reads it again; the message names
+            the table or rollup and its destination; same fields and
+            reasons.
+            `database-native-type-missing`: a database table is bound
+            with no captured warehouse type (its manifest entry's
+            `nativeSchema`) for a column whose field Malloy types as a big
+            integer. On BigQuery the column is read as `INT64`, its only
+            integer type, and still serves; on any other dialect it is
+            left out, so a query that reads it is answered live. The next
+            full rebuild captures the types (one per source, `model` the
+            first model binding it, `subject` the source, the message
+            naming the columns and which applies; `warn`; see
+            docs/materialization.md). Its former name,
+            `stored-native-schema-missing`, is retained, no longer
+            produced.
+            `entities-…` (`entities-not-a-dimension`,
+            `entities-parameterized-source`,
+            `entities-multiple-required-filters`,
+            `entities-sharing-not-allowed-on-dimension`,
+            `entities-schedule-not-allowed-on-dimension`,
+            `entities-required-filter-missing-dimension`,
+            `entities-required-filter-non-public-dimension`): an
+            `#(index)` or required `#(filter)` an index cannot honor, left
+            out of `GET …/entities` (`model` its file; `warn`). The per-file
+            report findings (`notebook-…`, `report-…`) and the report
+            curation findings (`report-on-surface`,
+            `index-is-not-a-report`). The message wording may change; the
+            code does not.
+        reason:
+          type: string
+          description: >-
+            The bounded cause of a finding, so a client branches on it
+            rather than on the message (whose wording may change): the
+            refusal record's `reason` on a `*-not-built` warning; the served copy's reason on
+            `served-copy-not-served`; `compile_failed` on
+            `model-recompile-failed`; the unread reason on
+            `database-table-unread` and `storage-table-unread`; the kept table's reason on
+            `table-kept`; the serve verdict's reason on a
+            `materialization-*` verdict warning; `storage_mode` on
+            `materialization-storage-mode`; the rule a cell breaks on
+            `malloynb-cell-refused` (`off_surface`, `caller_annotation`,
+            `required_filter`, `restricted_mode`, `compile_error`). Always snake_case. An open
+            string; absent on a finding that has none.
+        sourceEntityId:
+          type: string
+          description: >-
+            The content address (its manifest key) of the stored table a
+            finding is about, so a client routes it without reading the
+            message: set on `database-table-unread` and
+            `storage-table-unread`, where `subject` names the source a
+            query names (a rollup's base) and this names the unread
+            table's own source. Absent on every other finding.
+        sourceName:
+          type: string
+          description: >-
+            The name of the source whose stored table a finding is about,
+            beside `sourceEntityId`: for a rollup's table, the rollup's
+            own source (`<base>__rollup__…`), not the base `subject`
+            names. Set on `database-table-unread` and
+            `storage-table-unread` when the build plan knows the table;
+            absent otherwise.
+        severity:
+          type: string
+          enum:
+            - error
+            - warn
+          description: >-
+            Finding severity, `error` or `warn` and nothing else; a
+            deprecated form that still loads (such as
+            `deprecated-malloynb-notebook`) is `warn`. Render-tag findings use both: `error` for
+            a tag malformed for the field it sits on, which renders as
+            "[object Object]" or an inline error at query time, and `warn`
+            for one that is well-formed but inert where it sits and so is
+            silently ignored (e.g. `# colspan` outside
+            `# dashboard { columns=N }`), where nothing looks broken at
+            query time and the layout simply is not what was written.
+            Those are the only two severities the renderer emits, so no
+            render finding is withheld. Materialization and dashboard
+            findings use both: `error` for something that cannot work as
+            written, such as a tile naming a view the source does not
+            have, and `warn` for something that works but not as the
+            author probably intended. The two findings about Publisher rather than about
+            the package split across both: a file that carries an artifact
+            tag and could not be read is `error`, because the dashboard it
+            should have produced does not exist, and a lint that stopped
+            early is `warn`, because the lint failing is not itself a
+            defect in the package. That `warn` does NOT mean the package is
+            free of `error`-severity findings, since the ones the lint
+            never reached are exactly what it cannot report.
+      required:
+        - message
+    SkillSetSummary:
       type: object
       readOnly: true
-      description: >-
-        The run limits an agent declares. Validated and exposed only: the
-        server never enforces them. A platform that runs the agent decides
-        how to apply them and may clamp each to its own maximum. Every field
-        is optional and only the fields the manifest sets are present; an
-        unset field keeps the platform's default. Absent when the manifest
-        sets none.
-      properties:
-        turns:
-          type: integer
-          minimum: 1
-        wall_clock_minutes:
-          type: integer
-          minimum: 1
-        llm_tokens:
-          type: integer
-          format: int64
-          minimum: 1
-        job_minutes:
-          type: integer
-          minimum: 1
-
-    AgentSummary:
-      type: object
-      readOnly: true
-      description: One agent a package declares, without its instructions or skills.
+      description: One skill set a package serves, without its skills.
       properties:
         name:
           type: string
-          description: The agent's name (its key in the manifest's `agents` object).
+          description: >-
+            The set's key under `skillSets` in the manifest, which is what a
+            chat picks it by and what a workflow lists. The folder's own name
+            never matters.
         description:
           type: string
-        model:
+          description: The set's description. Absent when the manifest sets none.
+        digest:
           type: string
-          description: The model the agent asks for; `inherit` when the manifest sets none.
-        schedules:
-          type: array
-          items:
-            $ref: "#/components/schemas/AgentSchedule"
-        budget:
-          $ref: "#/components/schemas/AgentBudget"
+          description: >-
+            SHA-256 over what the set serves: each served file's path and
+            as-written SHA-256, inline and listed files alike, each skill's
+            applied `.skillignore` SHA-256, and the set's sorted `overrides`. It
+            does not cover the set's name, path or description, so two sets with
+            the same content have the same digest and it is safe as a cache key.
+            A set read returns exactly what its digest covers.
+      required:
+        - name
+        - digest
 
-    AgentSkillFile:
+    SkillSetFile:
       type: object
       readOnly: true
       description: >-
-        One of an agent's skill files. The snake_case keys
-        (`relative_filepath`, `file_contents`) mirror the MCP `get_agent` tool
-        the shape is shared with, unlike the camelCase used elsewhere in this
-        API.
+        One of a set's inline skill files: a skill's `SKILL.md` and every
+        other Markdown file in its directory outside `assets/`, at any depth,
+        while they fit the set's 256 KiB inline budget. Markdown past the
+        budget is listed as a `SkillSetAsset` instead. The snake_case keys
+        (`relative_filepath`, `file_contents`) mirror the MCP `get_skill_set`
+        and `get_workflow` tools the shape is shared with, unlike the camelCase
+        used elsewhere in this API.
       properties:
         relative_filepath:
           type: string
           description: >-
-            Path relative to the agent's skills directory, for example
+            `<skill>/<file>`, relative to the set's folder, for example
             `analyst-conventions/SKILL.md` or
-            `analyst-conventions/reference/glossary.md`.
+            `analyst-conventions/references/glossary.md`.
         file_contents:
           type: string
           description: >-
-            A `SKILL.md` is re-emitted with only a quoted `name` and
-            `description` in its frontmatter; reference files are served raw.
-            Absent when the agent was fetched with `skills=summary`.
+            The file as written, byte for byte, a `SKILL.md`'s frontmatter
+            included. Absent when the set was fetched with `skills=summary`.
         name:
           type: string
-          description: A `SKILL.md`'s name. Only in the `skills=summary` view.
+          description: >-
+            A `SKILL.md`'s name, which is its skill's folder name: no skill
+            whose frontmatter name differs from its folder is served. In both
+            views; absent on a file that is not a `SKILL.md`.
         description:
           type: string
-          description: A `SKILL.md`'s description. Only in the `skills=summary` view.
+          description: >-
+            A `SKILL.md`'s description, read by the bounded frontmatter
+            reader. In both views; absent on a file that is not a `SKILL.md`,
+            and on a `SKILL.md` whose frontmatter yields none.
         bytes:
           type: integer
-          description: Size of `file_contents` in UTF-8 bytes. Only in the `skills=summary` view.
+          description: >-
+            The file's size on disk in bytes. Only in the `skills=summary`
+            view.
+      required:
+        - relative_filepath
 
-    AgentAsset:
+    SkillSetAsset:
       type: object
       readOnly: true
       description: >-
-        A text file a skill ships under `<skill>/assets/` for an agent to copy
-        into an app it builds and not read. Listed without its contents; fetch
-        one with `GET .../agents/{agentName}/skills/{relative_filepath}`.
+        A file of a skill's directory that is not inlined, for an agent to copy
+        and not read: a script, a template, an asset, or Markdown past the
+        inline budget, text or binary, anywhere in the skill but `SKILL.md`. A
+        skill's `.skillignore` decides which files the skill has. Listed
+        without its contents; fetch a text one with
+        `GET .../skill-sets/{skillSetName}/skills/{path}`, which
+        answers a binary one with a message naming its size.
       properties:
         relative_filepath:
           type: string
-          description: "`<skill>/assets/...`, relative to the agent's skill roots."
+          description: "`<skill>/<path>`, relative to the set's folder."
         bytes:
           type: integer
-          description: Size in UTF-8 bytes, under 1 MiB.
+          description: >-
+            Size of the file on disk in bytes, under 1 MiB. The file is served
+            unchanged, so this is also its size when fetched.
         sha256:
           type: string
           description: SHA-256 of the file's bytes.
+      required:
+        - relative_filepath
+        - bytes
+        - sha256
 
-    AgentSkillRead:
+    SkillSet:
       type: object
       readOnly: true
       description: >-
-        One agent skill file or asset, with the pin of the definition it
-        belongs to.
+        A skill set, whole: its skills' inline files and the files its skills
+        list. A set is served whole or refused whole, and its content depends
+        only on its own files and declaration. Inside a `Workflow`, each set is
+        byte-identical to the set route's reply minus `source`.
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+          description: The set's description. Absent when the manifest sets none.
+        path:
+          type: string
+          description: >-
+            Package-relative path of the set's folder, normalized: `./` and
+            `..` segments, doubled slashes and a trailing slash are resolved or
+            dropped from what the manifest wrote. Publisher always sets it; a
+            gateway in front of it may withhold it.
+        digest:
+          type: string
+          description: See `SkillSetSummary.digest`.
+        skills:
+          type: array
+          description: The set's inline skill files, sorted by `relative_filepath`.
+          items:
+            $ref: "#/components/schemas/SkillSetFile"
+        assets:
+          type: array
+          description: >-
+            Every file the set's skills list for copying, without contents and
+            sorted by `relative_filepath`. Absent when there are none and in
+            the `skills=summary` view.
+          items:
+            $ref: "#/components/schemas/SkillSetAsset"
+        warnings:
+          type: array
+          description: >-
+            The set's own findings, `skill-file-skipped` and `skill-finding`,
+            with the set's name as `subject`, as `Package.warnings` carries
+            them.
+          items:
+            $ref: "#/components/schemas/PackageWarning"
+        source:
+          $ref: "#/components/schemas/ServedSource"
+          description: >-
+            What the set was read from. Present only on the set route's reply,
+            not on a set inside a `Workflow`, whose own `source` covers it.
+      required:
+        - name
+        - digest
+        - skills
+        - warnings
+
+    SkillSetFileRead:
+      type: object
+      readOnly: true
+      description: >-
+        One skill set file or listed file, with the digest of the set it
+        belongs to and the pin of the load it was read from. A listed file that
+        is binary (not UTF-8 text, or holding a NUL byte) has no
+        `file_contents`: `message` says so and names its size.
       properties:
         relative_filepath:
           type: string
         file_contents:
           type: string
+          description: The file as written, byte for byte.
+        message:
+          type: string
+          description: >-
+            Set instead of `file_contents` when the file is binary and so is
+            never served as a body.
+        digest:
+          type: string
+          description: The set's `digest`.
         source:
-          $ref: "#/components/schemas/AgentSource"
+          $ref: "#/components/schemas/ServedSource"
+      required:
+        - relative_filepath
+        - digest
+        - source
 
-    AgentSource:
+    ServedSource:
       type: object
       readOnly: true
-      description: What a resolved agent was read from, so a runner can prove which bytes ran.
+      description: What a skill set or a workflow was read from, so a caller can prove which bytes it used.
       properties:
         environment:
           type: string
@@ -6715,79 +7060,89 @@ components:
         versionId:
           $ref: "#/components/schemas/VersionIdPattern"
           description: >-
-            The published version the definition was read from. Absent for a
+            The published version the reply was read from. Absent for a
             package that has no published versions. Pass it as `?versionId=`
-            to fetch the same definition again after `latest` moves.
+            to fetch the same reply again after `latest` moves.
         sourceContentSha:
           type: string
-          description: The package's `sourceContentSha` at the load this definition came from.
+          description: The package's `sourceContentSha` at the load this reply came from.
+        servedRevision:
+          type: string
+          description: The package's `servedRevision` at the load this reply came from.
         definitionSha:
           type: string
           description: >-
-            SHA-256 over this agent's canonical config, instructions, skill
-            files and task files. Editing another agent, or a model, does not
-            move it.
-        servedRevision:
-          type: string
-          description: The package's `servedRevision` at the load this definition came from.
+            SHA-256 over a workflow's name, description, the SHA-256 of its
+            instructions, and each listed set's name and digest, in the order
+            listed. Present on a `Workflow` and absent on a skill set. Editing
+            another workflow, or a model, does not move it.
+      required:
+        - environment
+        - package
+        - sourceContentSha
+        - servedRevision
 
-    Agent:
+    WorkflowSummary:
+      type: object
+      readOnly: true
+      description: One workflow a package declares, without its instructions or skills.
+      properties:
+        name:
+          type: string
+          description: The workflow's name (its key in the manifest's `workflows` object).
+        description:
+          type: string
+          description: The workflow's description. Absent when the manifest sets none.
+        skill_set_names:
+          type: array
+          description: >-
+            The names of the skill sets the workflow lists, in the order the
+            manifest lists them. Read each set at `GET .../skill-sets/{name}`.
+          items:
+            type: string
+      required:
+        - name
+        - skill_set_names
+
+    Workflow:
       type: object
       readOnly: true
       description: >-
-        An agent a package declares, resolved to its instructions, skill files
-        and schedules. Adopt it only when the user asks for it by name.
+        A workflow a package declares, resolved to its instructions and every
+        skill set it lists, whole. Adopt it only when the user asks for it by
+        name.
       properties:
         name:
           type: string
         description:
           type: string
-        model:
-          type: string
-          description: The model the agent asks for; `inherit` when the manifest sets none.
         instructions:
           type: string
-          description: The instructions file's Markdown, at most 16 KB.
-        skills:
-          type: array
-          description: The agent's own skill files, sorted by `relative_filepath`.
-          items:
-            $ref: "#/components/schemas/AgentSkillFile"
-        asset_roots:
-          type: object
-          description: >-
-            For each skill that ships assets, the package-relative directory
-            holding it. Absent when no skill does. Not in the
-            `skills=summary` view.
-          additionalProperties:
-            type: string
-        assets:
+          description: The instructions file's Markdown, at most 16 KiB.
+        skill_sets:
           type: array
           description: >-
-            Every asset the agent's skills ship, listed without contents and
-            sorted by `relative_filepath`. Absent when there are none and in
-            the `skills=summary` view.
+            Every skill set the workflow lists, whole, in the order the manifest
+            lists them. Each is byte-identical to the set route's reply minus
+            `source`.
           items:
-            $ref: "#/components/schemas/AgentAsset"
-        asset_counts:
-          type: object
-          description: >-
-            Only in the `skills=summary` view, and only when there are assets:
-            how many assets each skill ships.
-          additionalProperties:
-            type: integer
-        schedules:
-          type: array
-          items:
-            $ref: "#/components/schemas/AgentSchedule"
-        budget:
-          $ref: "#/components/schemas/AgentBudget"
+            $ref: "#/components/schemas/SkillSet"
         warnings:
           type: array
+          description: >-
+            A `skill-shadowed` finding for each skill name two of its sets both
+            hold, whose first-listed set's copy an installer keeps. Each set's
+            own findings travel on that set.
           items:
-            type: string
+            $ref: "#/components/schemas/PackageWarning"
         source:
-          $ref: "#/components/schemas/AgentSource"
+          $ref: "#/components/schemas/ServedSource"
+      required:
+        - name
+        - instructions
+        - skill_sets
+        - warnings
+        - source
 
     SkillSummary:
       type: object
@@ -6799,9 +7154,7 @@ components:
         name:
           type: string
           description: >-
-            The skill's name, and the identifier for fetching it. A name
-            containing a slash (`<skill>/<stem>`) is one skill's on-demand
-            reference file rather than a skill in its own right.
+            The skill's name, and the identifier for fetching it.
         description:
           type: string
           description: >-
@@ -6814,15 +7167,33 @@ components:
             - package
           description: >-
             `bundled` = shipped with this server. `package` = shipped by the
-            package under `skills/`, which includes a package skill whose name
-            matches a bundled one and therefore REPLACES it for this package.
+            package's `default` skill set. A `default` skill whose name matches
+            a bundled one replaces it for this package only when `default`'s
+            `overrides` lists that name; otherwise the bundled skill is served.
             Present so a caller can tell a replaced skill from the original,
             which is otherwise invisible.
+
+    SkillFileEntry:
+      type: object
+      readOnly: true
+      description: One file a skill holds.
+      required:
+        - path
+        - size
+      properties:
+        path:
+          type: string
+          description: Path relative to the skill's root. A package skill's file is read at `GET .../skill-sets/default/skills/{skill}/{path}`.
+        size:
+          type: integer
+          description: >-
+            Size of the file on disk in bytes. A skill's files are served
+            verbatim, so this is also the length of its `content`.
 
     Skill:
       type: object
       readOnly: true
-      description: An agent skill with its full Markdown body.
+      description: An agent skill's `SKILL.md`, with its frontmatter and the files it holds.
       properties:
         name:
           type: string
@@ -6830,15 +7201,38 @@ components:
         description:
           type: string
           description: One line saying when to read this skill.
+        path:
+          type: string
+          description: The file's path relative to the skill's root, always `SKILL.md`.
         content:
           type: string
-          description: The skill's full guidance, Markdown.
+          description: The `SKILL.md` text, verbatim.
+        frontmatter:
+          type: object
+          additionalProperties: true
+          description: >-
+            The YAML block of `SKILL.md` as an object, parsed as YAML 1.2 core
+            (so `yes` and `on` stay strings, `0755` is the number 755 and not
+            octal, and a plain
+            date stays the string as written; keys are strings). Empty when
+            the block did not parse.
+        files:
+          type: array
+          description: >-
+            Every file the skill holds. For a package skill exactly the set this
+            server serves.
+          items:
+            $ref: "#/components/schemas/SkillFileEntry"
         origin:
           type: string
           enum:
             - bundled
             - package
           description: Where this skill came from. See SkillSummary.origin.
+      required:
+        - name
+        - path
+        - origin
 
     PackageEmbeddingIndex:
       type: object
@@ -10378,6 +10772,28 @@ components:
                 package with no `latest` yet refuses none.
               * VERSION_NOT_FOUND (404): the package has no such version.
               * VERSION_ARCHIVED (410): the version is archived.
+              * SKILL_SETS_UNAVAILABLE (409): the package's skill sets could
+                not be read when it loaded, so its skill sets and workflows
+                are not served until it reloads. Nor are the skills routes
+                and `get_skill` when it declares a `default` set, bundled
+                names included, because a `default` skill can replace a
+                bundled one.
+              * WORKFLOW_NOT_SERVED (404): the workflow routes name a workflow
+                the manifest declares and Publisher refuses, or any workflow
+                while the manifest's whole declaration is refused. The
+                message is the refusal, the same text as the package's
+                `workflow-not-served` warning for it, or of the package warning
+                that refuses the whole declaration.
+              * WORKFLOW_NOT_DECLARED (404): the workflow routes name a
+                workflow the manifest does not declare.
+              * SKILL_SET_NOT_SERVED (404): the skill set routes name a set the
+                manifest declares and Publisher refuses, or any set while the
+                manifest's whole declaration is refused. The message is the
+                refusal, the same text as the package's `skill-set-not-served`
+                warning for it, or of the package warning that refuses the whole
+                declaration.
+              * SKILL_SET_NOT_DECLARED (404): the skill set routes name a set
+                the manifest does not declare.
 
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND, RESULT_TRUNCATED,
@@ -10389,7 +10805,9 @@ components:
             VERSION_CONFLICT, PACKAGE_IS_VERSIONED,
             PACKAGE_INSTALLED_FROM_LOCATION, FILE_EXISTS, VERSION_IS_LATEST,
             VERSION_IS_LAST_ACTIVE, VERSION_BUILDING, VERSION_ID_INVALID,
-            VERSION_NOT_LATEST, VERSION_NOT_FOUND, VERSION_ARCHIVED.
+            VERSION_NOT_LATEST, VERSION_NOT_FOUND, VERSION_ARCHIVED,
+            SKILL_SETS_UNAVAILABLE, WORKFLOW_NOT_SERVED, WORKFLOW_NOT_DECLARED,
+            SKILL_SET_NOT_SERVED, SKILL_SET_NOT_DECLARED.
         problems:
           type: array
           description: |

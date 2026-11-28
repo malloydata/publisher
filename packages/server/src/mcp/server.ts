@@ -14,13 +14,34 @@ import {
    RELOAD_FAILURE_IS_SAFE,
    RELOAD_NEEDS_WATCH_MODE,
 } from "./tools/reload_package_tool";
-import { registerGetAgentTool } from "./tools/get_agent_tool";
+import { registerGetSkillSetTool } from "./tools/get_skill_set_tool";
+import { registerGetWorkflowTool } from "./tools/get_workflow_tool";
 import { registerGetSkillTool } from "./tools/get_skill_tool";
 import { registerSearchDatabaseSchemaTool } from "./tools/search_database_schema_tool";
 import { registerGetStatusTool } from "./tools/get_status_tool";
 import { registerReportAppTools } from "./tools/report_app_tools";
-import { BUNDLED_SKILLS } from "../service/skills/package_skills";
+import { compareText } from "../compare_text";
+import {
+   parseSkill,
+   type BundledSkill,
+} from "../service/skills/build_skills_bundle";
+import { BUNDLED_CATALOG } from "../service/skills/package_skills";
+import { SKILL_MD } from "../service/skills/skill_files";
 import { SERVER_VERSION } from "../version";
+
+/** A bundled skill as a prompt: its body, then where to read its other files, since the relative paths in the text cannot be followed over MCP. */
+function promptOf({ name, bodies }: BundledSkill) {
+   const skill = parseSkill(bodies[SKILL_MD] ?? "", name);
+   const others = Object.keys(bodies)
+      .filter((file) => file !== SKILL_MD)
+      .sort(compareText);
+   if (others.length === 0) return skill;
+   const pointer = `## Other files over MCP\n\nThis skill's other files are not part of this prompt. Where the text above names a relative path, read that file with get_skill, passing skill_name \`${skill.name}\` and the path as \`path\`.\n\nAvailable: ${others.join(", ")}.`;
+   return { ...skill, body: `${skill.body}\n\n${pointer}` };
+}
+
+/** Parsed once at load: `initializeMcpServer` runs on every stateless MCP POST. */
+const BUNDLED_PROMPTS = BUNDLED_CATALOG.map(promptOf);
 
 const testServerInfo = {
    name: "malloy-publisher-mcp-server",
@@ -42,7 +63,7 @@ Start with get_context. Called with no arguments it lists the environments; with
 
 To build a model from a database rather than from an existing package, start with search_database_schema: it lists the connections, their schemas, and their tables, and ranks those tables against a plain-English description of the data you want. Each table it returns carries the source line to start from. It returns names and types only: no row value is returned.
 
-Task-specific guidance is served two ways. As prompts you can fetch by name: malloy-getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness. And through get_skill, which serves the same built-in guides plus any a PACKAGE ships about itself: call it with a package scope before answering questions against a package you have not worked in, because a package can document its own conventions and can replace a built-in guide with its own version for that package, which the prompts do not reflect.
+Task-specific guidance is served two ways. As prompts you can fetch by name: malloy-getting-started to begin, malloy-modeling to build or change a model, malloy-analysis to explore and answer questions, and malloy-review to check correctness. And through get_skill, which serves the same built-in guides plus any a PACKAGE ships about itself: call it with a package scope before answering questions against a package you have not worked in, because a package can document its own conventions and can replace a built-in guide with its own version for that package, which the prompts do not reflect. A guide's relative paths (references/joins.md, scripts/check.py) are read with get_skill(skill_name, path).
 
 To show the user a report (a dashboard or a data story the package defines), call list_reports for its path, then show_report: a host that supports MCP Apps draws it, filters and all, in the conversation, and every host gets its address in the Publisher web UI.
 
@@ -82,8 +103,9 @@ export function initializeMcpServer(services: McpServices): McpServer {
       retrieval,
    );
    registerGetStatusTool(mcpServer, environmentStore);
-   registerGetSkillTool(mcpServer, environmentStore, BUNDLED_SKILLS);
-   registerGetAgentTool(mcpServer, environmentStore);
+   registerGetSkillTool(mcpServer, environmentStore, BUNDLED_CATALOG);
+   registerGetWorkflowTool(mcpServer, environmentStore);
+   registerGetSkillSetTool(mcpServer, environmentStore);
    registerReportAppTools(mcpServer, {
       environmentStore,
       reportController,
@@ -96,19 +118,15 @@ export function initializeMcpServer(services: McpServices): McpServer {
    // same guidance. Skill-aware hosts (Claude Code/Desktop) use the native skill
    // files. Note: MCP prompts are on-demand, so always-on "prevention" skills
    // become on-demand here; see docs/agent-skills/design-principles.md.
-   for (const skill of BUNDLED_SKILLS) {
-      mcpServer.registerPrompt(
-         skill.name,
-         { description: skill.description },
-         () => ({
-            messages: [
-               {
-                  role: "user" as const,
-                  content: { type: "text" as const, text: skill.body },
-               },
-            ],
-         }),
-      );
+   for (const { name, description, body } of BUNDLED_PROMPTS) {
+      mcpServer.registerPrompt(name, { description }, () => ({
+         messages: [
+            {
+               role: "user" as const,
+               content: { type: "text" as const, text: body },
+            },
+         ],
+      }));
    }
 
    return mcpServer;

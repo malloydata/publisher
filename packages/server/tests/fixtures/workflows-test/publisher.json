@@ -1,0 +1,36 @@
+{
+   "name": "workflows-test",
+   "version": "0.0.1",
+   "description": "Package that ships skill sets and workflows.",
+   "skillSets": {
+      "default": {
+         "path": "skill_sets/house",
+         "overrides": ["malloy-analysis"]
+      },
+      "finance": { "path": "workflows/analyst/skill_sets/analysis" }
+   },
+   "workflows": {
+      "analyst": {
+         "description": "Answers questions using the house conventions",
+         "instructions": "workflows/analyst/instructions.md",
+         "skillSets": ["finance", "default"]
+      },
+      "weekly-summary": {
+         "description": "Summarizes last week's numbers",
+         "instructions": "workflows/weekly-summary/instructions.md"
+      },
+      "reviewer": {
+         "description": "Reviews work against the package's own skills",
+         "instructions": "workflows/reviewer/instructions.md",
+         "skillSets": ["default"]
+      },
+      "broken": {
+         "description": "Lists a skill set the package does not declare, so it is refused",
+         "instructions": "workflows/analyst/instructions.md",
+         "skillSets": ["missing"]
+      }
+   },
+   "agents": {
+      "analyst": { "instructions": "agents/analyst/instructions.md" }
+   }
+}

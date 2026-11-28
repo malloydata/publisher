@@ -5,10 +5,13 @@ import { beforeAll, describe, expect, it } from "bun:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { initializeMcpServer } from "./server";
+import { compareText } from "../compare_text";
+import { BUNDLED_CATALOG } from "../service/skills/package_skills";
 import {
    RELOAD_FAILURE_IS_SAFE,
    RELOAD_NEEDS_WATCH_MODE,
 } from "./tools/reload_package_tool";
+import { INSTALL_RULE } from "./tools/skill_reply";
 import packageJson from "../../package.json";
 import { mcpServicesFor } from "../test_helpers/mcp_services";
 
@@ -79,7 +82,19 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       // a tool rather than more prompts because a package's set is per-package
       // and changes on reload; see registerGetSkillTool.
       expect(names.has("get_skill")).toBe(true);
-      expect(names.has("get_agent")).toBe(true);
+      expect(names.has("get_workflow")).toBe(true);
+      expect(names.has("get_skill_set")).toBe(true);
+      expect(names.has("get_agent")).toBe(false);
+   });
+
+   it("puts the install rule right after the opening paragraph of both tools that serve a SKILL.md as written", async () => {
+      // A client that cuts a description cuts its tail first, and the rule is what protects an installing user.
+      const { tools } = await client.listTools();
+      for (const name of ["get_workflow", "get_skill_set"]) {
+         const description =
+            tools.find((t) => t.name === name)?.description ?? "";
+         expect(description.split("\n\n")[1]).toBe(INSTALL_RULE);
+      }
    });
 
    /**
@@ -198,10 +213,49 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       }
    });
 
-   it("exposes the skill set as dual-channel prompts", async () => {
+   it("exposes one prompt per bundled skill, and none for a file of a skill", async () => {
       const { prompts } = await client.listPrompts();
-      expect(prompts.length).toBeGreaterThanOrEqual(24);
+      expect(prompts.map((p) => p.name).sort()).toEqual(
+         BUNDLED_CATALOG.map((s) => s.name).sort(),
+      );
       expect(prompts.some((p) => p.name === "malloy-analysis")).toBe(true);
+      expect(prompts.some((p) => p.name.includes("/"))).toBe(false);
+   });
+
+   it("reads a bundled skill's SKILL.md and another of its files by path through get_skill", async () => {
+      const skill = BUNDLED_CATALOG.find(
+         (s) => Object.keys(s.bodies).length > 1,
+      )!;
+      const res = await client.callTool({
+         name: "get_skill",
+         arguments: { skill_name: skill.name },
+      });
+      const out = JSON.parse(
+         (res.content as Array<{ resource: { text: string } }>)[0]!.resource
+            .text,
+      );
+      expect(out.skill.content).toBe(skill.bodies["SKILL.md"]!);
+      expect(out.skill.path).toBe("SKILL.md");
+      expect(out.skill.frontmatter).toEqual(skill.frontmatter);
+      expect(out.skill.files.map((f: { path: string }) => f.path)).toContain(
+         "SKILL.md",
+      );
+      const other = Object.keys(skill.bodies).find((p) => p !== "SKILL.md");
+      expect(other).toBeDefined();
+      const file = await client.callTool({
+         name: "get_skill",
+         arguments: { skill_name: skill.name, path: other },
+      });
+      const read = JSON.parse(
+         (file.content as Array<{ resource: { text: string } }>)[0]!.resource
+            .text,
+      );
+      expect(read.skill).toEqual({
+         name: skill.name,
+         path: other,
+         content: skill.bodies[other!]!,
+         origin: "bundled",
+      });
    });
 
    it("names the real release in the initialize handshake", () => {
@@ -228,9 +282,12 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
          "In a watched environment, after every model edit, call reload_package before querying",
       );
       expect(instructions).toContain("get_status");
-      // Agents are an explicit user choice, so nothing pre-authorization names them.
-      expect(instructions).not.toContain("agent_name");
-      expect(instructions).not.toContain("get_agent");
+      // A guide's relative paths have one reader.
+      expect(instructions).toContain("get_skill(skill_name, path)");
+      // Workflows and skill sets are an explicit user choice, so nothing pre-authorization names them.
+      expect(instructions).not.toContain("workflow_name");
+      expect(instructions).not.toContain("get_workflow");
+      expect(instructions).not.toContain("get_skill_set");
    });
 
    it("orients a client to the sequence the schemas actually accept", async () => {
@@ -388,5 +445,28 @@ describe("MCP server over the MCP protocol (in-memory)", () => {
       const res = await client.getPrompt({ name: "malloy-analysis" });
       const content = res.messages[0].content as { text?: string };
       expect((content.text ?? "").length).toBeGreaterThan(200);
+   });
+
+   it("a skill prompt names the skill's other files and how to read them, and one with none has no pointer", async () => {
+      const textOf = async (name: string) =>
+         (
+            (await client.getPrompt({ name })).messages[0]!.content as {
+               text?: string;
+            }
+         ).text ?? "";
+      const withFiles = BUNDLED_CATALOG.find(
+         (skill) => Object.keys(skill.bodies).length > 1,
+      )!;
+      const others = Object.keys(withFiles.bodies)
+         .filter((file) => file !== "SKILL.md")
+         .sort(compareText);
+      const text = await textOf(withFiles.name);
+      expect(text).toContain("## Other files over MCP");
+      expect(text).toContain(`skill_name \`${withFiles.name}\``);
+      expect(text).toContain(`Available: ${others.join(", ")}.`);
+      const alone = BUNDLED_CATALOG.find(
+         (skill) => Object.keys(skill.bodies).length === 1,
+      )!;
+      expect(await textOf(alone.name)).not.toContain("Other files over MCP");
    });
 });

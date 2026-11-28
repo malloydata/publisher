@@ -3,19 +3,48 @@
 
 import { describe, expect, it } from "bun:test";
 import { SkillNotFoundError } from "../errors";
-import { BUNDLED_SKILLS } from "../service/skills/package_skills";
+import {
+   BUNDLED_CATALOG,
+   type ServedSkill,
+} from "../service/skills/package_skills";
 import { SkillController } from "./skill.controller";
 import { fakeOf } from "../test_helpers/store_fakes";
 import type { PackageLookup } from "../service/environment_ports";
 
-const bundled = BUNDLED_SKILLS[0]!;
+const bundled = BUNDLED_CATALOG[0]!;
+const bundledDescription = bundled.frontmatter.description as string;
 
+/** A package skill whose files are text. */
+const packageSkill = (
+   name: string,
+   description: string,
+   files: Record<string, string>,
+): ServedSkill => ({
+   name,
+   description,
+   catalog: {
+      name,
+      frontmatter: { name, description },
+      files: Object.fromEntries(
+         Object.entries(files).map(([p, f]) => [
+            p,
+            { digest: "sha256:0", size: f.length },
+         ]),
+      ),
+   },
+   read: async (p) => ({ text: files[p]! }),
+});
+
+/** `skills` as the package's `default` set holds them; `overrides` names the bundled skills they may replace. */
 const storeWith = (
-   skills: Array<{ name: string; description: string; body: string }>,
+   skills: ServedSkill[],
+   overrides: string[] = [],
 ): PackageLookup =>
    fakeOf<PackageLookup>({
       getEnvironment: async () => ({
-         getPackage: async () => ({ listSkills: () => skills }),
+         getPackage: async () => ({
+            defaultSkills: () => ({ skills, overrides }),
+         }),
       }),
    });
 
@@ -25,21 +54,47 @@ describe("SkillController skills", () => {
          "env",
          "pkg",
       );
-      expect(listed).toHaveLength(BUNDLED_SKILLS.length);
+      expect(listed).toHaveLength(BUNDLED_CATALOG.length);
       expect(listed[0]).toEqual({
          name: bundled.name,
-         description: bundled.description,
+         description: bundledDescription.trim(),
          origin: "bundled",
       });
-      expect(JSON.stringify(listed)).not.toContain('"body"');
+      expect(JSON.stringify(listed)).not.toContain('"content"');
    });
 
-   it("lets a package skill replace a bundled one and add a new one, marked by origin", async () => {
+   it("serves the bundled skill for a name the default set holds, and adds its new names, unless it overrides", async () => {
       const controller = new SkillController(
          storeWith([
-            { name: bundled.name, description: "ours", body: "OUR BODY" },
-            { name: "house-rules", description: "new", body: "RULES" },
+            packageSkill(bundled.name, "ours", { "SKILL.md": "OUR BODY" }),
+            packageSkill("house-rules", "new", { "SKILL.md": "RULES" }),
          ]),
+      );
+      const listed = await controller.listSkills("env", "pkg");
+      expect(listed.find((s) => s.name === bundled.name)).toEqual({
+         name: bundled.name,
+         description: bundledDescription.trim(),
+         origin: "bundled",
+      });
+      expect(listed.at(-1)).toEqual({
+         name: "house-rules",
+         description: "new",
+         origin: "package",
+      });
+      const read = await controller.getSkill("env", "pkg", bundled.name);
+      expect(read.content).toBe(bundled.bodies["SKILL.md"]);
+      expect(read.origin).toBe("bundled");
+   });
+
+   it("lets a package skill replace a bundled one that the default set overrides, marked by origin", async () => {
+      const controller = new SkillController(
+         storeWith(
+            [
+               packageSkill(bundled.name, "ours", { "SKILL.md": "OUR BODY" }),
+               packageSkill("house-rules", "new", { "SKILL.md": "RULES" }),
+            ],
+            [bundled.name],
+         ),
       );
       const listed = await controller.listSkills("env", "pkg");
       expect(listed.find((s) => s.name === bundled.name)).toEqual({
@@ -54,30 +109,58 @@ describe("SkillController skills", () => {
       });
       expect(await controller.getSkill("env", "pkg", bundled.name)).toEqual({
          name: bundled.name,
+         path: "SKILL.md",
          description: "ours",
          content: "OUR BODY",
          origin: "package",
+         frontmatter: { name: bundled.name, description: "ours" },
+         files: [{ path: "SKILL.md", size: 8 }],
       });
    });
 
-   it("fetches a bundled skill's body and a slash-named reference entry", async () => {
+   it("reads a bundled skill's SKILL.md verbatim, with its frontmatter and every file", async () => {
       const controller = new SkillController(storeWith([]));
       const skill = await controller.getSkill("env", "pkg", bundled.name);
-      expect(skill).toEqual({
-         name: bundled.name,
-         description: bundled.description,
-         content: bundled.body,
-         origin: "bundled",
+      expect(skill.content).toBe(bundled.bodies["SKILL.md"]);
+      expect(skill.path).toBe("SKILL.md");
+      expect(skill.origin).toBe("bundled");
+      expect(skill.frontmatter).toEqual(bundled.frontmatter);
+      expect(skill.files!.map((f) => f.path)).toEqual(
+         Object.keys(bundled.files).sort((a, b) =>
+            a === "SKILL.md" ? -1 : b === "SKILL.md" ? 1 : a < b ? -1 : 1,
+         ),
+      );
+   });
+
+   it("lists a package skill's other files with their sizes, and serves none of them", async () => {
+      const controller = new SkillController(
+         storeWith([
+            packageSkill("house", "d", {
+               "SKILL.md": "S",
+               "scripts/run.py": "print('x')\n",
+            }),
+         ]),
+      );
+      expect(await controller.getSkill("env", "pkg", "house")).toEqual({
+         name: "house",
+         path: "SKILL.md",
+         description: "d",
+         content: "S",
+         origin: "package",
+         frontmatter: { name: "house", description: "d" },
+         files: [
+            { path: "SKILL.md", size: 1 },
+            { path: "scripts/run.py", size: 11 },
+         ],
       });
-      const reference = BUNDLED_SKILLS.find((s) => s.name.includes("/"))!;
-      expect(
-         (await controller.getSkill("env", "pkg", reference.name)).content,
-      ).toBe(reference.body);
    });
 
    it("throws SkillNotFoundError for a name nothing defines", async () => {
+      const controller = new SkillController(
+         storeWith([packageSkill("house", "d", { "SKILL.md": "S" })]),
+      );
       await expect(
-         new SkillController(storeWith([])).getSkill("env", "pkg", "nope"),
+         controller.getSkill("env", "pkg", "nope"),
       ).rejects.toBeInstanceOf(SkillNotFoundError);
    });
 });

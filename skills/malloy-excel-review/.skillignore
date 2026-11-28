@@ -1,0 +1,4 @@
+*_test.py
+fixtures/*
+!fixtures/README.md
+build_fixture.py

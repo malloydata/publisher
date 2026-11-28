@@ -20,11 +20,12 @@ import {
    MaterializationsApi,
    ModelsApi,
    PackagesApi,
-   AgentsApi,
    PublisherApi,
    ReportsApi,
+   SkillSetsApi,
    VersionsApi,
    WatchModeApi,
+   WorkflowsApi,
 } from "../client";
 import { Configuration } from "../client/configuration";
 import { resolveMode } from "../theme/resolveTheme";
@@ -186,7 +187,8 @@ const getApiClients = (
       publisher: new PublisherApi(config, basePath, axiosInstance),
       environments: new EnvironmentsApi(config, basePath, axiosInstance),
       packages: new PackagesApi(config, basePath, axiosInstance),
-      agents: new AgentsApi(config, basePath, axiosInstance),
+      workflows: new WorkflowsApi(config, basePath, axiosInstance),
+      skillSets: new SkillSetsApi(config, basePath, axiosInstance),
       dataApps: new DataAppsApi(config, basePath, axiosInstance),
       reports: new ReportsApi(config, basePath, axiosInstance),
       connections: new ConnectionsApi(config, basePath, axiosInstance),

@@ -3,8 +3,7 @@
 
 /**
  * The exact 400 bodies the routes answer for a malformed parameter, before any
- * controller runs. Most are `{ code, message }`; one older route keeps a
- * shape of its own, pinned here so a shared parser cannot quietly change it.
+ * controller runs, each `{ code, message }`.
  */
 
 import { describe, expect, it, spyOn } from "bun:test";
@@ -121,12 +120,66 @@ it("givens that are not one JSON object answer { code, message }", async () => {
    });
 });
 
-it("an agent's bad skills value answers { message } without a code", async () => {
-   const res = await request(app).get(`${PKG}/agents/a?skills=some`);
+it("a workflow's bad skills value answers { code, message }", async () => {
+   const res = await request(app).get(`${PKG}/workflows/a?skills=some`);
    expect(res.status).toBe(400);
    expect(res.body).toEqual({
+      code: 400,
       message: `'skills' must be 'full' or 'summary', got "some".`,
    });
+});
+
+it("a skill set's bad skills value answers { code, message }", async () => {
+   const res = await request(app).get(`${PKG}/skill-sets/s?skills=some`);
+   expect(res.status).toBe(400);
+   expect(res.body).toEqual({
+      code: 400,
+      message: `'skills' must be 'full' or 'summary', got "some".`,
+   });
+});
+
+it("a repeated skills value is refused with the repeated values named", async () => {
+   const res = await request(app).get(
+      `${PKG}/workflows/a?skills=full&skills=summary`,
+   );
+   expect(res.status).toBe(400);
+   expect(res.body).toEqual({
+      code: 400,
+      message: `'skills' must be 'full' or 'summary', got ["full","summary"].`,
+   });
+});
+
+it("a workflow's skills are read through its sets, so the per-workflow skill routes are gone", async () => {
+   for (const path of [
+      `${PKG}/workflows/a/skills/s/SKILL.md`,
+      `${PKG}/workflows/a/skills/s/SKILL.md?skillSet=x`,
+   ]) {
+      const res = await request(app).get(path);
+      expect(res.status).toBe(404);
+   }
+});
+
+it("a malformed skills value on a set or a workflow is logged as a refusal", async () => {
+   const warn = spyOn(logger, "warn");
+   try {
+      await request(app).get(
+         `${API_PREFIX}/environments/workflow-marker/packages/pkg/skill-sets/a?skills=some`,
+      );
+      await request(app).get(
+         `${API_PREFIX}/environments/workflow-marker/packages/pkg/workflows/a?skills=some`,
+      );
+      expect(
+         linesMentioning(warn, "workflow-marker").map(([message, fields]) => [
+            message,
+            (fields as { status: number }).status,
+         ]),
+      ).toEqual([
+         ["Request refused", 400],
+         ["Request refused", 400],
+      ]);
+   } finally {
+      warn.mockRestore();
+   }
 });
 
 it("a malformed param is logged once as a refusal", async () => {

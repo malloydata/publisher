@@ -46,6 +46,8 @@ export interface JobFiles {
    texts: Map<string, string>;
    /** Each file's own `--! styles` data styles, by URL. */
    stylesByUrl: Map<string, DataStyles>;
+   /** The sha256 of each notebook's text, by `urlKey`; kept out of `texts` so no digest-keyed serving decision reads it. */
+   notebookShas: Map<string, string>;
    /**
     * The load's translations, by URL as Malloy spells it; give each model a
     * ModelCacheView over them.
@@ -89,6 +91,7 @@ export function jobFiles(inner: TextReader): JobFiles {
       reader,
       texts,
       stylesByUrl,
+      notebookShas: new Map<string, string>(),
       models: new Map<string, CachedModel>(),
       imported: new Set<string>(),
       stats: { stored: 0, reused: 0 },

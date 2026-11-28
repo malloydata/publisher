@@ -47,6 +47,7 @@ import type {
    PackageScope,
 } from "../service/package_manifest";
 import type { PackageRetrievalSettings } from "../service/package_retrieval_settings";
+import type { ApiPackageWarning } from "../service/classification";
 import type { DeprecatedManifestKey } from "../service/deprecated/manifest_keys";
 import type { ModelEntitiesPlan } from "../service/entities/plan";
 import type {
@@ -57,6 +58,7 @@ import type {
    TargetContainer,
    TargetContainerReadings,
 } from "../service/materialization/domain/target_containers";
+import type { PackageWorkflowsWire } from "../service/skills/package_workflows";
 
 /**
  * Version of this wire protocol. The worker stamps it on every
@@ -90,8 +92,16 @@ import type {
  *
  * 10: a served-copy compile's `virtualMap`
  * ({@link CompileServedCopyRequest.virtualMap}).
+ *
+ * 11: the skills walk ({@link LoadPackageRequest.readWorkflows}, which carries
+ * the bundled skills' names): the walk of the manifest's `skillSets` and
+ * `workflows`, read as one declaration, as wire data, or why it could not
+ * finish (`unavailable`), the declaration's refusal (`declarationRefusal`) and
+ * each listed file's `binary` flag ({@link WorkflowsRead}, `workflowsRead`);
+ * and the serving identity's `sourceContentSha`, which the worker hashes and
+ * ships whole. They replace `packageMetadata.workflows`.
  */
-export const PACKAGE_LOAD_PROTOCOL_VERSION = 10;
+export const PACKAGE_LOAD_PROTOCOL_VERSION = 11;
 
 // ──────────────────────────────────────────────────────────────────────
 // Direction: main ──▶ worker (load-package job)
@@ -186,6 +196,15 @@ export interface LoadPackageRequest {
     * thread connection's. Absent, the load reads cached schemas.
     */
    refreshTimestamp?: number;
+   /**
+    * Walk the package's skill sets and workflows, and hash the files its
+    * serving identity covers, in this job (`workflowsRead`,
+    * `sourceContentSha`): the main thread then only adopts them. Set by the
+    * loads that install a package; every other job skips the walk. Carries the
+    * names of the skills this server bundles, which the walk flags a package
+    * skill of the same name against.
+    */
+   readWorkflows?: { bundledSkillNames: readonly string[] };
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -271,6 +290,11 @@ export interface SerializedModel {
 
 export type { SerializedNotebookCell } from "./notebook_cell_wire";
 
+/** The package's skill sets and workflows as the worker walked them: what the serving identity installs, with no file left for the main thread to read. */
+export interface WorkflowsRead {
+   walk: PackageWorkflowsWire;
+}
+
 export interface LoadPackageResult {
    type: "load-package-result";
    requestId: string;
@@ -291,8 +315,10 @@ export interface LoadPackageResult {
       deprecatedManifestKeys?: DeprecatedManifestKey[];
       /** The manifest's `retrieval` block, validated, with prompt files read. */
       retrieval?: PackageRetrievalSettings;
-      /** The manifest's `agents` value, unvalidated: the main thread validates it and warns instead of throwing. */
-      agents?: unknown;
+      /** Findings with a code the manifest raised (a key an earlier release read). */
+      manifestFindings?: ApiPackageWarning[];
+      /** The manifest's workflows, read; present only for a job with `readWorkflows`. */
+      workflowsRead?: WorkflowsRead;
    };
    models: SerializedModel[];
    /** Whether the replacement path exactly matched an enumerated package file. */
@@ -310,6 +336,13 @@ export interface LoadPackageResult {
     * author's edit is never mistaken for one that failed on a dropped table.
     */
    fileDigests?: Record<string, string>;
+   /**
+    * The sha256 over what the package serves: each model's text this load's
+    * compile read (`UNREADABLE_SHA` for one it could not read), each file the
+    * walk read, and the declaration. Present only for a job with
+    * `readWorkflows`.
+    */
+   sourceContentSha?: string;
    /** Wall-clock ms inside the worker for the full package load. */
    loadDurationMs: number;
    /**

@@ -337,7 +337,7 @@ const mockModel = {
 const mockPackage = {
    listModels: async () => [{ path: "ecommerce.malloy" }],
    getModel: () => mockModel,
-   listSkills: () => [],
+   defaultSkills: () => ({ skills: [], overrides: [] }),
 };
 
 // A package with more than 10 sources, to prove the enumeration tier is not
@@ -355,7 +355,7 @@ const mockManySourceModel = {
 const mockManySourcePackage = {
    listModels: async () => [{ path: "many.malloy" }],
    getModel: () => mockManySourceModel,
-   listSkills: () => [],
+   defaultSkills: () => ({ skills: [], overrides: [] }),
 };
 
 /**
@@ -375,7 +375,7 @@ const envWith = (
    ({
       // Every package ships no skills unless a test says otherwise.
       getPackage: async () => ({
-         listSkills: () => [],
+         defaultSkills: () => ({ skills: [], overrides: [] }),
          ...((await getPackage()) as object),
       }),
       getStaleCompileErrors: () => staleCompileErrors,
@@ -425,7 +425,7 @@ const mockAliasModel = {
 const mockAliasPackage = {
    listModels: async () => [{ path: "b.malloy" }],
    getModel: () => mockAliasModel,
-   listSkills: () => [],
+   defaultSkills: () => ({ skills: [], overrides: [] }),
 };
 
 // Both carry an expression, and NEITHER is a bare reference to the other:
@@ -481,7 +481,7 @@ const mockDistinctSpellingModel = {
 const mockDistinctSpellingPackage = {
    listModels: async () => [{ path: "d.malloy" }],
    getModel: () => mockDistinctSpellingModel,
-   listSkills: () => [],
+   defaultSkills: () => ({ skills: [], overrides: [] }),
 };
 
 // A source whose doc is longer than SOURCE_DOC_MAX_CHARS, and one that
@@ -508,7 +508,7 @@ const mockLongDocModel = {
 const mockLongDocPackage = {
    listModels: async () => [{ path: "rooms.malloy" }],
    getModel: () => mockLongDocModel,
-   listSkills: () => [],
+   defaultSkills: () => ({ skills: [], overrides: [] }),
 };
 
 const mockTwoSourceModel = {
@@ -543,7 +543,7 @@ const mockTwoSourceModel = {
 const mockTwoSourcePackage = {
    listModels: async () => [{ path: "sales.malloy" }],
    getModel: () => mockTwoSourceModel,
-   listSkills: () => [],
+   defaultSkills: () => ({ skills: [], overrides: [] }),
 };
 
 describe("get_context discovery tiers", () => {
@@ -642,18 +642,21 @@ describe("get_context discovery tiers", () => {
       // only: bodies are what get_skill is for.
       const withSkills = {
          ...mockPackage,
-         listSkills: () => [
-            {
-               name: "storefront-conventions",
-               description: "What the measures actually count.",
-               body: "LONG BODY",
-            },
-            {
-               name: "storefront-conventions/margin",
-               description: "Reference detail.",
-               body: "REFERENCE BODY",
-            },
-         ],
+         defaultSkills: () => ({
+            skills: [
+               {
+                  name: "storefront-conventions",
+                  description: "What the measures actually count.",
+                  catalog: {
+                     name: "storefront-conventions",
+                     frontmatter: { license: "LONG FRONTMATTER" },
+                     files: { "SKILL.md": { digest: "sha256:0", size: 9 } },
+                  },
+                  read: () => ({ text: "LONG BODY" }),
+               },
+            ],
+            overrides: [],
+         }),
       };
       const handler = captureHandler({
          getEnvironment: async () => envWith(async () => withSkills),
@@ -664,8 +667,6 @@ describe("get_context discovery tiers", () => {
             scopes: [{ environment: "malloy-samples", package: "ecommerce" }],
          }),
       );
-      // The reference entry is addressed by its parent's pointer, so it is not
-      // one of the things a caller chooses from.
       expect(payload.skills).toEqual([
          {
             name: "storefront-conventions",
@@ -673,6 +674,7 @@ describe("get_context discovery tiers", () => {
          },
       ]);
       expect(JSON.stringify(payload)).not.toContain("LONG BODY");
+      expect(JSON.stringify(payload)).not.toContain("LONG FRONTMATTER");
       expect(typeof payload.skills_note).toBe("string");
    });
 
@@ -681,12 +683,13 @@ describe("get_context discovery tiers", () => {
          getEnvironment: async () =>
             envWith(async () => ({
                ...mockPackage,
-               listSkills: () =>
-                  ["a", "b", "c"].map((name) => ({
+               defaultSkills: () => ({
+                  skills: ["a", "b", "c"].map((name) => ({
                      name,
                      description: "x".repeat(3000),
-                     body: "",
                   })),
+                  overrides: [],
+               }),
             })),
       });
       const payload = parse(
@@ -708,7 +711,10 @@ describe("get_context discovery tiers", () => {
       // would then have to test.
       const handler = captureHandler({
          getEnvironment: async () =>
-            envWith(async () => ({ ...mockPackage, listSkills: () => [] })),
+            envWith(async () => ({
+               ...mockPackage,
+               defaultSkills: () => ({ skills: [], overrides: [] }),
+            })),
       });
       const payload = parse(
          await handler({
@@ -1369,7 +1375,7 @@ describe("get_context discovery tiers", () => {
                getPackage: async () => ({
                   listModels: async () => [{ path: "h.malloy" }],
                   getModel: () => hiddenModel,
-                  listSkills: () => [],
+                  defaultSkills: () => ({ skills: [], overrides: [] }),
                }),
             }) as never,
       });

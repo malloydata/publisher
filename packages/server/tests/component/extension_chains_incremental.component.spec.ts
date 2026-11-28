@@ -1534,8 +1534,7 @@ source: ext_amt is ev extend { dimension: big is amt > 5 }
                5,
                sumOf([...FIRST, ...TIED]),
             ]);
-            const warnings = ((await f.pkg.getPackageMetadata()).warnings ??
-               []) as { code?: string; subject?: string }[];
+            const warnings = (await f.pkg.getPackageMetadata()).warnings ?? [];
             const keyWarnings = warnings.filter(
                (w) => w.code === "persist-incremental-merge-key-not-unique",
             );

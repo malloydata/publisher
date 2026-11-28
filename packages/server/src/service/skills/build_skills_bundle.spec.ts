@@ -1,8 +1,214 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
-import { parseSkill, unquote } from "./build_skills_bundle";
+import { afterAll, beforeAll, describe, expect, it } from "bun:test";
+import { createHash } from "node:crypto";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+import { buildSkills, parseSkill } from "./build_skills_bundle";
+import { unquote } from "./frontmatter";
+
+const SKILL_MD =
+   "---\nname: pricing\ndescription: Price a thing.\n---\n<!--\nSPDX-License-Identifier: MIT\n-->\n# Pricing\n\nRun `scripts/run.py`.\n";
+const BINARY = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0, 1, 2, 3]);
+
+describe("buildSkills", () => {
+   let root: string;
+   let skillsDir: string;
+   const write = (file: string, data: string | Buffer) => {
+      const full = path.join(skillsDir, file);
+      fs.mkdirSync(path.dirname(full), { recursive: true });
+      fs.writeFileSync(full, data);
+   };
+
+   beforeAll(() => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-"));
+      skillsDir = path.join(root, "skills");
+      fs.mkdirSync(path.join(root, "manifests"));
+      fs.writeFileSync(
+         path.join(root, "manifests", "publisher-local.json"),
+         JSON.stringify({ auto_discovered: ["pricing"], supporting: [] }),
+      );
+      write("pricing/SKILL.md", SKILL_MD);
+      write("pricing/reference/rules.md", "# Rules\n\nDetail.\n");
+      write("pricing/references/more.md", "# More\n");
+      write("pricing/scripts/run.py", "print('hi')\n");
+      write("pricing/scripts/run_test.py", "assert True\n");
+      write("pricing/assets/logo.png", BINARY);
+      write("pricing/assets/notes.md", "# Notes\n");
+      write("pricing/.skillignore", "*_test.py\n");
+      write("pricing/.env", "SECRET=1\n");
+      // Neither is in the manifest, so neither is bundled.
+      write("other/SKILL.md", "---\nname: other\ndescription: x\n---\nbody\n");
+      write("credible-local/SKILL.md", "---\nname: credible-local\n---\n");
+   });
+   afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+
+   it("lists every file skillFiles returns, with the digest and size of its raw bytes", () => {
+      const [skill] = buildSkills(skillsDir);
+      expect(Object.keys(skill!.files)).toEqual([
+         "SKILL.md",
+         "assets/logo.png",
+         "assets/notes.md",
+         "reference/rules.md",
+         "references/more.md",
+         "scripts/run.py",
+      ]);
+      expect(skill!.files["assets/logo.png"]).toEqual({
+         digest: `sha256:${createHash("sha256").update(BINARY).digest("hex")}`,
+         size: BINARY.length,
+      });
+   });
+
+   it("embeds the verbatim text of Markdown files outside assets/ only, and the parsed frontmatter", () => {
+      const [skill] = buildSkills(skillsDir);
+      expect(skill!.name).toBe("pricing");
+      expect(skill!.frontmatter).toEqual({
+         name: "pricing",
+         description: "Price a thing.",
+      });
+      expect(skill!.bodies).toEqual({
+         "SKILL.md": SKILL_MD,
+         "reference/rules.md": "# Rules\n\nDetail.\n",
+         "references/more.md": "# More\n",
+      });
+   });
+
+   it("leaves out what .skillignore names and every dotfile", () => {
+      const [skill] = buildSkills(skillsDir);
+      expect(Object.keys(skill!.files)).not.toContain("scripts/run_test.py");
+      expect(Object.keys(skill!.files)).not.toContain(".env");
+      expect(Object.keys(skill!.files)).not.toContain(".skillignore");
+   });
+
+   it("bundles only the skills the manifest names", () => {
+      expect(buildSkills(skillsDir).map((s) => s.name)).toEqual(["pricing"]);
+   });
+
+   it("fails rather than bundle a skill whose walk or frontmatter had a finding", () => {
+      write("pricing/.skillignore", "*_test.py\n./scripts/run.py\n");
+      expect(() => buildSkills(skillsDir)).toThrow(/pricing.*starts with/);
+      write("pricing/.skillignore", "*_test.py\n");
+      write("pricing/SKILL.md", "---\nname: [\n---\nbody\n");
+      expect(() => buildSkills(skillsDir)).toThrow(/not valid YAML/);
+      write("pricing/SKILL.md", SKILL_MD);
+   });
+});
+
+describe("buildSkills ships what the npm pack ships", () => {
+   let root: string;
+   beforeAll(() => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-shipped-"));
+      fs.mkdirSync(path.join(root, "manifests"));
+      fs.writeFileSync(
+         path.join(root, "manifests", "publisher-local.json"),
+         JSON.stringify({ auto_discovered: ["pricing"], supporting: [] }),
+      );
+      const write = (file: string, data: string) => {
+         const full = path.join(root, "skills", "pricing", file);
+         fs.mkdirSync(path.dirname(full), { recursive: true });
+         fs.writeFileSync(full, data);
+      };
+      write("SKILL.md", SKILL_MD);
+      write("scripts/run.py", "print('hi')\n");
+      write("scripts/run.py.orig", "old\n");
+      write("backup.orig/old.md", "# Old\n");
+      write("credible-notes/n.md", "# Credible\n");
+      write("Credible-Extra.md", "# Credible\n");
+      write("npm-debug.log", "log\n");
+      write("__proto__", "plain\n");
+   });
+   afterAll(() => fs.rmSync(root, { recursive: true, force: true }));
+
+   it("leaves out an editor backup file or directory, a credible-* path at any depth and npm debris", () => {
+      const [skill] = buildSkills(path.join(root, "skills"));
+      expect(Object.keys(skill!.files).sort()).toEqual([
+         "SKILL.md",
+         "__proto__",
+         "scripts/run.py",
+      ]);
+      expect(Object.keys(skill!.bodies)).toEqual(["SKILL.md"]);
+   });
+
+   it("keeps a root file named __proto__ as an own entry", () => {
+      const [skill] = buildSkills(path.join(root, "skills"));
+      expect(Object.hasOwn(skill!.files, "__proto__")).toBe(true);
+   });
+});
+
+describe("buildSkills refuses a link, which would be followed to whatever it names", () => {
+   // Each case builds a skill `pricing` in `skills/` whose one odd entry is a link, beside a target outside it.
+   const cases: Array<[string, (root: string) => void, RegExp]> = [
+      [
+         "a file link",
+         (root) => {
+            fs.writeFileSync(path.join(root, "outside.txt"), "secret\n");
+            fs.symlinkSync(
+               "../../../outside.txt",
+               path.join(root, "skills/pricing/scripts/run.py"),
+            );
+         },
+         /skill 'pricing': 'scripts\/run\.py' is a link/,
+      ],
+      [
+         "a linked Markdown file",
+         (root) => {
+            fs.writeFileSync(path.join(root, "outside.md"), "# Secret\n");
+            fs.symlinkSync(
+               "../../../outside.md",
+               path.join(root, "skills/pricing/reference/more.md"),
+            );
+         },
+         /skill 'pricing': 'reference\/more\.md' is a link/,
+      ],
+      [
+         "a linked directory",
+         (root) => {
+            fs.mkdirSync(path.join(root, "outside"));
+            fs.symlinkSync(
+               "../../outside",
+               path.join(root, "skills/pricing/data"),
+            );
+         },
+         /skill 'pricing': 'data' is a link/,
+      ],
+      [
+         "a linked skill root",
+         (root) => {
+            fs.renameSync(
+               path.join(root, "skills/pricing"),
+               path.join(root, "elsewhere"),
+            );
+            fs.symlinkSync("../elsewhere", path.join(root, "skills/pricing"));
+         },
+         /skill 'pricing' is a link/,
+      ],
+   ];
+
+   for (const [label, setup, message] of cases) {
+      it(`throws for ${label}`, () => {
+         const root = fs.mkdtempSync(path.join(os.tmpdir(), "bundle-link-"));
+         try {
+            fs.mkdirSync(path.join(root, "manifests"));
+            fs.writeFileSync(
+               path.join(root, "manifests", "publisher-local.json"),
+               JSON.stringify({ auto_discovered: ["pricing"], supporting: [] }),
+            );
+            const skill = path.join(root, "skills/pricing");
+            fs.mkdirSync(path.join(skill, "scripts"), { recursive: true });
+            fs.mkdirSync(path.join(skill, "reference"));
+            fs.writeFileSync(path.join(skill, "SKILL.md"), SKILL_MD);
+            setup(root);
+            expect(() => buildSkills(path.join(root, "skills"))).toThrow(
+               message,
+            );
+         } finally {
+            fs.rmSync(root, { recursive: true, force: true });
+         }
+      });
+   }
+});
 
 describe("build_skills_bundle parseSkill", () => {
    it("parses name, description, and body from frontmatter", () => {

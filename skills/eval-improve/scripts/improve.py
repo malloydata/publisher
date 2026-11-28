@@ -161,7 +161,7 @@ def git(args: list[str], cwd: pathlib.Path) -> str:
 def candidate_diff(model_dir: pathlib.Path, extra: tuple[str, ...] = ()) -> str:
     """The agent's edit: tracked changes plus new files, minus our own helper.
 
-    `git diff` alone omits untracked files, so a new skills/ file left an empty
+    `git diff` alone omits untracked files, so a new skill file left an empty
     patch that `git clean` then deleted. `--no-index` diffs each against
     /dev/null without touching the index.
     """
@@ -195,7 +195,7 @@ MAKING YOUR EDIT REACH THE SERVER
 After each edit run `bash ./sync_and_reload.sh`. It prints `sourceContentSha`.
 If that value does not change, your edit did NOT reach the server and every
 probe you run afterwards is testing the old model. This covers a package skill
-under skills/ as well as a .malloy file: both are part of the hash.
+in a skill set as well as a .malloy file: both are part of the hash.
 
 One edit for the cluster's shared root cause, not one per case.
 

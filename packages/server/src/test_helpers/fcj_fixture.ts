@@ -311,7 +311,7 @@ export async function compileFcjFixture(
       getPackageName: () => FCJ_PACKAGE,
       getPackagePath: inner.getPackagePath,
       getRetrievalSettings: () => retrieval,
-      listSkills: () => [],
+      defaultSkills: () => ({ skills: [], overrides: [] }),
       listModels: served
          ? async () =>
               (await inner.listModels()).filter((m) => served.includes(m.path))

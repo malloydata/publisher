@@ -1,0 +1,2572 @@
+// Copyright (c) Credible Data Inc.
+// SPDX-License-Identifier: MIT
+
+import { createHash } from "crypto";
+import fs from "fs";
+import * as path from "path";
+import type { SkillCatalogEntry } from "./build_skills_bundle";
+import { parseFrontmatter } from "./frontmatter";
+import {
+   ASSET_MAX_DEPTH,
+   ASSET_PATH_MAX_CHARS,
+   builtInExcluded,
+   capText,
+   decodeText,
+   isInlineMarkdown,
+   isReferenceDir,
+   listBounded,
+   mayChangeSkill,
+   mayChangeSkillExactly,
+   newWalkBudget,
+   readFilled,
+   readUnfollowedFlags,
+   REFERENCE_DIRS,
+   REFERENCE_MAX_EXAMINED,
+   SKILL_MD,
+   skillFiles,
+   underAssets,
+   type WalkBudget,
+} from "./skill_files";
+import { compareText } from "../../compare_text";
+import {
+   FCJ_MAX_CHARS,
+   MODEL_FILE_SUFFIX,
+   NOTEBOOK_FILE_SUFFIX,
+} from "../../constants";
+import type { components } from "../../api";
+import {
+   canonicalSha,
+   MANIFEST_DECLARATION_MAX_BYTES,
+   shasOf,
+   UNREADABLE_DECLARATION,
+   type ManifestDeclaration,
+} from "../package_revision";
+import {
+   confinedPackagePathSync,
+   ImportOutsidePackageError,
+} from "../../utils";
+import { pathToFileURL } from "url";
+import { callerVisibleText } from "../../package_relative_text";
+
+/** The root directory an earlier release read as the package's skills; nothing reads it now. */
+const PACKAGE_SKILLS_DIR = "skills";
+
+/** Largest single skill file served. A markdown guide never needs more. */
+export const PACKAGE_SKILL_FILE_MAX_BYTES = 256 * 1024;
+
+/**
+ * `p` resolved inside the package at `packageRoot` (spelled as `p` is: the
+ * walk resolves both), by the package's own walk, which never looks outside
+ * it; undefined when `p` leads out, to anything or to nothing, so what lies
+ * outside decides nothing.
+ */
+function insidePackage(packageRoot: string, p: string): string | undefined {
+   try {
+      return confinedPackagePathSync(packageRoot, pathToFileURL(p));
+   } catch (error) {
+      if (error instanceof ImportOutsidePackageError) return undefined;
+      throw error;
+   }
+}
+
+const sha256 = (data: string | Buffer) =>
+   createHash("sha256").update(data).digest("hex");
+
+type PackageWarning = components["schemas"]["PackageWarning"];
+type SkillSetFile = components["schemas"]["SkillSetFile"];
+type SkillSetAsset = components["schemas"]["SkillSetAsset"];
+
+/** `PackageWarning.code` of a workflow the manifest declares and this server refuses; `subject` is its name. */
+export const WORKFLOW_NOT_SERVED = "workflow-not-served";
+/** `PackageWarning.code` of a skill set the manifest declares and this server refuses; `subject` is its name. */
+export const SKILL_SET_NOT_SERVED = "skill-set-not-served";
+/** `PackageWarning.code` of a skill name two of a workflow's sets both hold; `subject` is the workflow's name. */
+export const SKILL_SHADOWED = "skill-shadowed";
+/** `PackageWarning.code` of a served skill with a file of its directory left out; `subject` is the skill set's name. */
+export const SKILL_FILE_SKIPPED = "skill-file-skipped";
+/** `PackageWarning.code` of any other finding of a skill set; `subject` is the set's name. */
+export const SKILL_FINDING = "skill-finding";
+/** The walk failed, so no skill set or workflow is served until the package reloads. */
+export const SKILL_SETS_UNAVAILABLE = "skill-sets-unavailable";
+
+const warning = (
+   code: string,
+   subject: string,
+   message: string,
+): PackageWarning => ({ code, subject, message, severity: "warn" });
+
+/** A finding of one skill set before it is published: its code, and its text without the set's prefix. */
+interface SetFinding {
+   code: typeof SKILL_FILE_SKIPPED | typeof SKILL_FINDING;
+   message: string;
+}
+const skipped = (message: string): SetFinding => ({
+   code: SKILL_FILE_SKIPPED,
+   message,
+});
+const finding = (message: string): SetFinding => ({
+   code: SKILL_FINDING,
+   message,
+});
+
+const ABSENT = "does not exist";
+
+/** What an author wrote wrong, by errno: a path that is not there, loops or is too long. Any other errno is a disk that cannot be read, which `strict` reads rethrow so it never refuses a workflow. */
+const AUTHOR_PATH_FAULTS = new Map([
+   ["ENOENT", ABSENT],
+   ["ENOTDIR", ABSENT],
+   ["ELOOP", "is part of a link loop"],
+   ["ENAMETOOLONG", "has a name that is too long"],
+]);
+
+const pathFault = (error: unknown) =>
+   AUTHOR_PATH_FAULTS.get((error as NodeJS.ErrnoException).code ?? "");
+
+const isAuthorPathError = (error: unknown) => pathFault(error) !== undefined;
+
+/**
+ * Where a Markdown file really is and how big, or why it cannot be served; no
+ * byte is read. The real path must sit inside the real package root: a symlink
+ * in a package can point anywhere, and this text is returned over
+ * unauthenticated MCP and REST. An in-package link to a `.md` file is followed.
+ */
+function markdownInside(
+   packageRoot: string,
+   file: string,
+   strict: boolean,
+): { real: string; size: number } | { problem: string; link?: true } {
+   try {
+      const real = insidePackage(packageRoot, file);
+      if (real === undefined) {
+         return {
+            problem: "resolves outside the package through a link",
+            link: true,
+         };
+      }
+      // A link inside the package can still point at publisher.json or data.
+      if (!real.toLowerCase().endsWith(".md")) {
+         return { problem: "resolves to a file that is not Markdown" };
+      }
+      const stat = fs.statSync(real);
+      // Reading a FIFO would block the main thread.
+      if (!stat.isFile()) {
+         return { problem: "resolves to something that is not a regular file" };
+      }
+      return { real, size: stat.size };
+   } catch (error) {
+      if (strict && !isAuthorPathError(error)) throw error;
+      return {
+         problem:
+            pathFault(error) ??
+            `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
+      };
+   }
+}
+
+/** A Markdown file's text, or why it cannot be served; `size` is set when the file is over `maxBytes`, which is checked before it is read. */
+function readFileInside(
+   packageRoot: string,
+   file: string,
+   maxBytes: number,
+   strict = false,
+):
+   | { text: string; raw: Buffer }
+   | { problem: string; link?: true; size?: number } {
+   const found = markdownInside(packageRoot, file, strict);
+   if ("problem" in found) return found;
+   if (found.size > maxBytes) {
+      return {
+         problem: `is ${found.size} bytes, over the ${capText(maxBytes)} cap`,
+         size: found.size,
+      };
+   }
+   try {
+      const raw = fs.readFileSync(found.real);
+      return { text: raw.toString("utf8"), raw };
+   } catch (error) {
+      if (strict && !isAuthorPathError(error)) throw error;
+      return {
+         problem:
+            pathFault(error) ??
+            `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
+      };
+   }
+}
+
+/** How much of a listed file the first pass looks at to tell a binary one apart. */
+const ASSET_SNIFF_BYTES = 8 * 1024;
+
+/**
+ * A listed file's bytes, or why they cannot be served. The file may not be a
+ * link, and its real path must sit inside the skill's own directory, so a link
+ * swapped in after the listing leads nowhere. Given `headBytes`, a file longer
+ * than that is read for its first `headBytes` only (`whole` is false).
+ */
+function readListedBytes(
+   packageRoot: string,
+   skillDir: string,
+   file: string,
+   maxBytes: number,
+   headBytes?: number,
+): { bytes: Buffer; whole: boolean } | { problem: string; link?: true } {
+   try {
+      if (fs.lstatSync(file).isSymbolicLink()) {
+         return { problem: "is a link", link: true };
+      }
+      const real = insidePackage(skillDir, file);
+      if (real === undefined) {
+         return {
+            problem: "resolves outside the skill through a link",
+            link: true,
+         };
+      }
+      const stat = fs.statSync(real);
+      if (!stat.isFile()) {
+         return { problem: "resolves to something that is not a regular file" };
+      }
+      if (stat.size > maxBytes) {
+         return {
+            problem: `is ${stat.size} bytes, at or over the ${capText(maxBytes + 1)} cap`,
+         };
+      }
+      if (headBytes !== undefined && stat.size > headBytes) {
+         const fd = fs.openSync(real, "r");
+         try {
+            const head = Buffer.alloc(headBytes);
+            const read = fs.readSync(fd, head, 0, headBytes, 0);
+            return { bytes: head.subarray(0, read), whole: false };
+         } finally {
+            fs.closeSync(fd);
+         }
+      }
+      return { bytes: fs.readFileSync(real), whole: true };
+   } catch (error) {
+      return {
+         problem: `cannot be read (${callerVisibleText((error as Error).message, packageRoot)})`,
+      };
+   }
+}
+
+/** Largest instructions file a workflow serves. */
+export const WORKFLOW_INSTRUCTIONS_MAX_BYTES = 16 * 1024;
+
+/** Largest total of a skill set's inline Markdown. A file past it is listed instead; SKILL.md files are charged first and a skill whose SKILL.md does not fit is skipped. */
+export const SKILL_SET_MARKDOWN_MAX_BYTES = 256 * 1024;
+/** Inline Markdown files one skill set serves, `SKILL.md` included. Reference Markdown is counted per skill and a zero-byte file passes the byte budget, so without this a set could inline about 64 skills x 1,000 files. */
+export const SKILL_SET_INLINE_MAX_FILES = 1000;
+
+/** A listed file of this size or more is refused; the draft store refuses a 1 MiB file. */
+export const PACKAGE_ASSET_FILE_MAX_BYTES = 1024 * 1024;
+const SKILL_SET_ASSETS_MAX_BYTES = 4 * 1024 * 1024;
+export const SKILL_SET_ASSETS_MAX_FILES = 200;
+/** Counted once per package path, however many sets share the skill; charged to a set whole, in set-name order. */
+const PACKAGE_ASSETS_MAX_BYTES = 8 * 1024 * 1024;
+/** Individually named skip warnings per skill set; the rest are counted in one line. */
+const ASSET_WARNINGS_MAX = 20;
+/** Skills one set serves; the walk reads no further, so a set cannot outrun the load job's timeout. */
+export const SKILLS_PER_SET_MAX = 64;
+/** Individually named skill findings per set, capped like its skipped assets because every reply that carries the set carries them. */
+export const SKILL_FINDINGS_MAX = 20;
+const ASSET_SEGMENT = /^[A-Za-z0-9_][A-Za-z0-9._-]*$/;
+/** Casefolded basenames the agent computer reads with authority, refused anywhere below a skill's root (a SKILL.md only below the root one). */
+const RESERVED_BASENAMES = new Set([
+   "skill.md",
+   "claude.md",
+   "claude.local.md",
+   "agents.md",
+   "publisher.json",
+]);
+
+/**
+ * What a read of one listed file of a skill gives: its text; a message when
+ * the server does not carry it; `binary` when it is not text; or `changed`
+ * when it is no longer the file that was listed.
+ */
+export type SkillFileRead =
+   | { text: string }
+   | { message: string }
+   | { binary: true }
+   | { changed: true };
+
+/** A skill served from a package or the bundle: its catalog entry and how to read a file the entry lists. */
+export interface ServedSkill {
+   name: string;
+   description: string;
+   catalog: SkillCatalogEntry;
+   /** Reads a path of `catalog.files`; never joins a caller's path onto the filesystem. */
+   read(path: string): Promise<SkillFileRead>;
+}
+
+/** One listed file: its path is `<skill>/<path>`, relative to its skill set. */
+export interface ListedFile {
+   relative_filepath: string;
+   bytes: number;
+   sha256: string;
+   /** Not strict UTF-8 text, so a read answers without opening the file. */
+   binary: boolean;
+}
+
+/** What one set's assets charge against the package-wide budget, by package-relative path. */
+type AssetCharges = Map<string, { bytes: number; sha256: string }>;
+
+/** What every set read in one load shares: the package-wide asset budget, charged once per distinct path a set at a time in set-name order, and the reads of listed files. */
+interface PackageAssetBudget {
+   bytes: number;
+   paths: Set<string>;
+   /** Each listed file's hash by package path, so a skill's second pass, or another set's walk of the same file, reuses what was read. */
+   reads: Map<string, AssetRead>;
+}
+
+type AssetRead =
+   | {
+        sha256: string;
+        bytes: number;
+        binary: boolean;
+        /** Text `get_skill` cannot return whole. */
+        unreturnable: boolean;
+     }
+   /** A NUL in its first bytes made it binary: not read in full or hashed until a budget takes it. */
+   | { unread: true }
+   | { problem: string; link?: true };
+
+/** Whether `get_skill` can answer with this text: it travels JSON-escaped inside a payload that is escaped again in the reply. An estimate made at load, which leaves out the reply's own envelope. */
+function fitsReply(text: string): boolean {
+   // Escaping never shortens a text and grows a character at most sevenfold, so a long one is over and a short one under with no measuring.
+   if (text.length > FCJ_MAX_CHARS) return false;
+   return (
+      text.length <= Math.floor(FCJ_MAX_CHARS / 7) - 1 ||
+      JSON.stringify(JSON.stringify(text)).length <= FCJ_MAX_CHARS
+   );
+}
+
+const unreturnableWarning = (shown: string) =>
+   skipped(
+      `Package skill file '${shown}' is over the ${FCJ_MAX_CHARS}-character reply budget of get_skill, so get_skill cannot return it whole`,
+   );
+
+/**
+ * A listed file as the budgets see it. With `peek` (the first pass) a file whose
+ * first bytes hold a NUL is left unread; any other is read whole and hashed,
+ * and is binary when its bytes are not strict UTF-8 without a NUL.
+ */
+function readAsset(
+   packageRoot: string,
+   skillDir: string,
+   file: string,
+   peek: boolean,
+): AssetRead {
+   const maxBytes = PACKAGE_ASSET_FILE_MAX_BYTES - 1;
+   let fresh = readListedBytes(
+      packageRoot,
+      skillDir,
+      file,
+      maxBytes,
+      peek ? ASSET_SNIFF_BYTES : undefined,
+   );
+   if ("bytes" in fresh && !fresh.whole) {
+      if (fresh.bytes.includes(0)) return { unread: true };
+      fresh = readListedBytes(packageRoot, skillDir, file, maxBytes);
+   }
+   if ("problem" in fresh) return fresh;
+   const text = decodeText(fresh.bytes);
+   return {
+      sha256: sha256(fresh.bytes),
+      bytes: fresh.bytes.length,
+      binary: text === undefined,
+      unreturnable: text !== undefined && !fitsReply(text),
+   };
+}
+
+const RESERVED_WHY =
+   "is named like a file the agent computer reads with authority";
+/** The agent computer refuses a skill with one of these in its path, and a POSIX file name can carry one. */
+// eslint-disable-next-line no-control-regex
+const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
+const CONTROL_CHARS_WHY = "has a control character in its path";
+
+/** Why a skill's directory name cannot be served, by the rules a path inside the skill is held to; undefined when it can. */
+function dirNameProblem(name: string): string | undefined {
+   if (CONTROL_CHARS.test(name)) return "has a control character in its name";
+   if (name.includes("..")) return "has '..' in its name";
+   return ASSET_SEGMENT.test(name)
+      ? undefined
+      : "has a name outside [A-Za-z0-9_][A-Za-z0-9._-]*";
+}
+
+/** A path as a warning shows it: control characters escaped, so a file name cannot reshape the message. */
+const displayPath = (p: string) =>
+   p.replace(
+      new RegExp(CONTROL_CHARS, "g"),
+      (c) => `\\u${c.charCodeAt(0).toString(16).padStart(4, "0")}`,
+   );
+
+/** What one skill set's listed files have taken so far, against its caps and the package's. */
+interface AssetWalk {
+   files: number;
+   bytes: number;
+   /** Each listed or inlined path and its directories, lower-cased, to the spelling that took it: two that differ only by case collide. */
+   lower: Map<string, string>;
+   charges: AssetCharges;
+   skipped: string[];
+   /** What every set of the package shares. */
+   shared: PackageAssetBudget;
+}
+
+const newWalk = (shared: PackageAssetBudget): AssetWalk => ({
+   files: 0,
+   bytes: 0,
+   lower: new Map(),
+   charges: new Map(),
+   skipped: [],
+   shared,
+});
+
+/** The skips a walk names, at most ASSET_WARNINGS_MAX of them, and one line counting the rest. */
+function skippedWarnings(walk: AssetWalk): SetFinding[] {
+   const named = walk.skipped.slice(0, ASSET_WARNINGS_MAX).map(skipped);
+   if (walk.skipped.length > ASSET_WARNINGS_MAX) {
+      named.push(
+         skipped(
+            `${walk.skipped.length - ASSET_WARNINGS_MAX} further assets are not served, for the same kinds of reasons`,
+         ),
+      );
+   }
+   return named;
+}
+
+/** The findings a set names, at most SKILL_FINDINGS_MAX of each code in discovery order, and one line per code counting the rest, so a count never elides what its code does not say. */
+function cappedFindings(findings: SetFinding[]): SetFinding[] {
+   const named: SetFinding[] = [];
+   const kept = new Map<SetFinding["code"], number>();
+   const elided = new Map<SetFinding["code"], number>();
+   for (const found of findings) {
+      const count = kept.get(found.code) ?? 0;
+      if (count < SKILL_FINDINGS_MAX) {
+         kept.set(found.code, count + 1);
+         named.push(found);
+      } else {
+         elided.set(found.code, (elided.get(found.code) ?? 0) + 1);
+      }
+   }
+   for (const [code, count] of elided) {
+      named.push({
+         code,
+         message: `${count} further ${code === SKILL_FILE_SKIPPED ? "skipped files" : "skill findings"} are not named, for the same kinds of reasons`,
+      });
+   }
+   return named;
+}
+
+/** A Markdown file directly in `reference/` or `references/`: the places a skill's Markdown beside SKILL.md is always served. */
+const isReferenceMarkdown = (relative: string) => {
+   const [dir, name, ...deeper] = relative.split("/");
+   return (
+      deeper.length === 0 &&
+      isReferenceDir(dir!) &&
+      name !== undefined &&
+      name.endsWith(".md")
+   );
+};
+
+/** `p` resolved, when it leads to a directory inside the package; undefined for anything else. */
+function directoryInside(packageRoot: string, p: string): string | undefined {
+   try {
+      const real = insidePackage(packageRoot, p);
+      return real !== undefined && fs.statSync(real).isDirectory()
+         ? real
+         : undefined;
+   } catch {
+      return undefined;
+   }
+}
+
+/**
+ * Why a skill is not served when its `assets/` is a link, or a directory
+ * that does not resolve inside the skill. Settled on the real tree before any
+ * `.skillignore` can hide it. Never throws; what it cannot read, skillFiles says.
+ */
+function assetsRefusal(
+   realSkillDir: string,
+   skillDir: string,
+   skillRel: string,
+): string | undefined {
+   const assetsDir = path.join(skillDir, "assets");
+   try {
+      const stat = fs.lstatSync(assetsDir);
+      if (stat.isSymbolicLink()) {
+         return `'${skillRel}/assets' is a link; replace it with a real directory`;
+      }
+      if (
+         stat.isDirectory() &&
+         fs.realpathSync(assetsDir) !== path.join(realSkillDir, "assets")
+      ) {
+         return `'${skillRel}/assets' resolves outside the skill's own directory`;
+      }
+   } catch {
+      // Absent is the common case; anything else is reported when the directory is listed.
+   }
+   return undefined;
+}
+
+/** A skill's name and description, parsed by the bounded frontmatter reader; the name is the directory's when none is declared. */
+export interface SkillMeta {
+   name: string;
+   description: string;
+}
+
+/** A skill whose SKILL.md has been read; the rest of its directory is named but not yet checked or read. */
+interface ScannedSkill {
+   dirName: string;
+   /** Package-relative skill directory. */
+   rel: string;
+   dir: string;
+   skillMd: { text: string; raw: Buffer };
+   meta: SkillMeta;
+   frontmatter: Record<string, unknown>;
+   /** The sha256 of the `.skillignore` that was applied; null when there is none or it was refused. */
+   skillignoreSha: string | null;
+   /** What skillFiles found besides SKILL.md. */
+   candidates: string[];
+   assetsRefusal?: string;
+   /** Why a publisher.json inside the skill sets it aside. */
+   manifestRefusal?: string;
+}
+
+interface Scan {
+   packageRoot: string;
+   skills: ScannedSkill[];
+   warnings: string[];
+   /** The set holds more skill directories than {@link SKILLS_PER_SET_MAX}; the rest were not read. */
+   pastCap: boolean;
+   /** The folder holds a SKILL.md itself, so it is a skill and not a set of them; nothing in it was read. */
+   isSkill: boolean;
+}
+
+const skillNotServed = (rel: string, problem: string) =>
+   problem === ABSENT
+      ? `Package skill '${rel}' has no ${SKILL_MD}, so it is not served. Fix: add ${rel}/${SKILL_MD}, or remove the directory.`
+      : `Package skill '${rel}/${SKILL_MD}' ${problem}, so it is not served. Fix: make ${rel}/${SKILL_MD} a UTF-8 file inside the package, under the size cap, or remove the directory.`;
+
+/**
+ * Read the skills under `<package>/<dirRel>/<name>/SKILL.md`, and name what else
+ * each skill's directory holds. A skill set is read through here, once per load.
+ *
+ * Parsing is shared with the repo's own skills; selection is not. A package
+ * ships what it contains: no manifest gating, and no `credible-*` exclusion,
+ * which would silently drop a customer's skill by name. Each skill's walk takes
+ * from `budget`, which the caller shares across the set's skills.
+ */
+function scanSkills(
+   packagePath: string,
+   dirRel: string,
+   budget: WalkBudget,
+): Scan {
+   const root = path.join(packagePath, dirRel);
+   const scan: Scan = {
+      packageRoot: path.resolve(packagePath),
+      skills: [],
+      warnings: [],
+      pastCap: false,
+      isSkill: false,
+   };
+   const { packageRoot } = scan;
+   // One budget for every skill's search in this set, so the time a set can cost is bounded whatever its skills hold.
+   const manifestEntries = { left: REFERENCE_MAX_EXAMINED };
+   const unserved = (message: string) => {
+      scan.warnings.push(message);
+   };
+
+   // Settled before anything is looked at through it: a skills directory
+   // that leads out is refused whatever it leads to.
+   const inside = insidePackage(packageRoot, root);
+   const escapes = inside === undefined;
+   // The folder was checked at declaration, so a failure to list it now throws and makes the walk unavailable.
+   const entries =
+      inside === undefined
+         ? []
+         : fs.readdirSync(inside, { withFileTypes: true });
+   if (escapes) {
+      unserved(
+         `Skills directory '${dirRel}' resolves outside the package through a link, so it is not served. Fix: copy the skills into the package.`,
+      );
+      return scan;
+   }
+
+   if (entries.some((entry) => entry.name === SKILL_MD)) {
+      const parent = path.posix.dirname(dirRel);
+      scan.isSkill = true;
+      unserved(
+         `this is a skill, not a skill set (it holds a ${SKILL_MD}), so none of it is served. Fix: ${parent === "." ? "move it into a folder and list that folder" : `list its parent folder '${parent}'`}, or, if its subfolders are the skills, remove its ${SKILL_MD}`,
+      );
+      return scan;
+   }
+
+   let examined = 0;
+   /** The directory names this set serves, lower-cased, to the spelling that took each: two that differ only by case collide. */
+   const byLower = new Map<string, string>();
+   for (const entry of [...entries].sort((a, b) =>
+      compareText(a.name, b.name),
+   )) {
+      if (entry.name.startsWith(".")) continue;
+      const skillDir = path.join(root, entry.name);
+      // A skill directory that leads out is not looked through: it is refused
+      // below, the same whatever it leads to.
+      const skillInside = insidePackage(packageRoot, skillDir);
+      if (skillInside !== undefined) {
+         try {
+            if (!fs.statSync(skillInside).isDirectory()) continue;
+         } catch {
+            continue;
+         }
+      }
+      if (examined === SKILLS_PER_SET_MAX) {
+         scan.pastCap = true;
+         break;
+      }
+      examined++;
+      const rel = `${dirRel}/${entry.name}`;
+      const badName = dirNameProblem(entry.name);
+      if (badName !== undefined) {
+         unserved(
+            `Package skill '${displayPath(rel)}' ${badName}, so it is not served. Fix: rename the directory.`,
+         );
+         continue;
+      }
+      if (skillInside === undefined) {
+         unserved(
+            skillNotServed(rel, "resolves outside the package through a link"),
+         );
+         continue;
+      }
+      // A SKILL.md that is a directory, a link out or unreadable leaves the
+      // skill unserved, and nothing else in its directory is looked at.
+      const read = readFileInside(
+         packageRoot,
+         path.join(skillDir, SKILL_MD),
+         PACKAGE_SKILL_FILE_MAX_BYTES,
+      );
+      if ("problem" in read) {
+         unserved(skillNotServed(rel, read.problem));
+         continue;
+      }
+      // Its text is served and carried inline, so a lossy decode would be the skill.
+      if (decodeText(read.raw) === undefined) {
+         unserved(skillNotServed(rel, "is not UTF-8 text"));
+         continue;
+      }
+
+      const fm = parseFrontmatter(read.text, entry.name);
+      for (const w of fm.warnings) {
+         scan.warnings.push(`Package skill '${rel}/${SKILL_MD}' ${w}.`);
+      }
+      if (!fm.description) {
+         // The description is what a caller reads before deciding to fetch the
+         // body, so a skill without one is invisible in every listing.
+         scan.warnings.push(
+            `Package skill '${fm.name}' has no description in its frontmatter, so nothing tells a caller when to read it. Fix: add a one-line 'description:' to ${rel}/${SKILL_MD}.`,
+         );
+      }
+      // The directory name is what callers install under, so it must be the name.
+      if (fm.name !== entry.name) {
+         unserved(
+            `Package skill '${rel}' declares the name '${fm.name}', which is not its directory name '${entry.name}', so it is not served. Fix: make 'name:' in ${rel}/${SKILL_MD} equal '${entry.name}'.`,
+         );
+         continue;
+      }
+      const taken = byLower.get(entry.name.toLowerCase());
+      if (taken !== undefined) {
+         unserved(
+            `Package skill '${rel}' differs from '${dirRel}/${taken}' only by case, so it is not served. Fix: rename one.`,
+         );
+         continue;
+      }
+      byLower.set(entry.name.toLowerCase(), entry.name);
+
+      const found = skillFiles(skillDir, {
+         budget,
+         followReference: (link) => directoryInside(packageRoot, link),
+      });
+      for (const w of found.warnings) {
+         scan.warnings.push(`Package skill '${rel}': ${w}.`);
+      }
+      const nested = skillManifest(packageRoot, skillDir, manifestEntries);
+      scan.skills.push({
+         dirName: entry.name,
+         rel,
+         dir: skillDir,
+         skillMd: read,
+         meta: { name: fm.name, description: fm.description },
+         frontmatter: fm.frontmatter,
+         skillignoreSha:
+            found.skillignore === null ? null : sha256(found.skillignore),
+         candidates: found.files.filter((f) => f !== SKILL_MD),
+         assetsRefusal: assetsRefusal(skillInside, skillDir, rel),
+         ...(nested.found !== undefined && {
+            manifestRefusal: `'${rel}/${displayPath(nested.found)}' is a publisher.json, which would make its directory a second package root; remove it or rename it`,
+         }),
+         ...(nested.unchecked === "over" && {
+            manifestRefusal: `'${rel}' has more entries under assets/ to check for a publisher.json than the set's search budget of ${REFERENCE_MAX_EXAMINED} entries has left; remove files from it`,
+         }),
+         ...(nested.unchecked === "spent" && {
+            manifestRefusal: `'${rel}' could not be checked for a publisher.json: the set's search budget of ${REFERENCE_MAX_EXAMINED} entries was already spent on earlier skills`,
+         }),
+      });
+   }
+   return scan;
+}
+
+/** One skill's directory, split: Markdown inline, every other file listed. */
+export interface ReadSkill {
+   dirName: string;
+   rel: string;
+   meta: SkillMeta;
+   /** The sha256 of the `.skillignore` applied to the skill; null when none was. */
+   skillignoreSha: string | null;
+   /** SKILL.md first, then the rest in path order, each as written; `relative` is within the skill. */
+   inline: Array<{ relative: string; text: string }>;
+   /** `relative_filepath` is `<skill>/<path>`. */
+   listed: ListedFile[];
+   catalog: SkillCatalogEntry;
+}
+
+interface FinishContext {
+   packageRoot: string;
+   /** Whether `get_skill` serves this set, the only tool its reply-size warnings are about. */
+   advertised: boolean;
+   walk: AssetWalk;
+   /** The set's walk budget, whose `inline` counts the inline files it has served. */
+   budget: WalkBudget;
+   /** Bytes of inline Markdown the set still has free. */
+   inline: { left: number };
+   warnings: SetFinding[];
+   /** What the strict rules for `assets/` set a whole skill aside for. */
+   refusals: string[];
+}
+
+/**
+ * A skill between its two passes. Every skill's first pass runs before any
+ * second, so what a skill has always served is charged to the budgets before
+ * anything its whole directory adds, and a new file can never push an old one out.
+ */
+interface SkillDraft {
+   s: ScannedSkill;
+   inline: ReadSkill["inline"];
+   files: SkillCatalogEntry["files"];
+   listed: ListedFile[];
+   /** What the second pass reads: Markdown outside `reference/`, and every file to list, which includes Markdown that did not fit and a binary under `assets/`. */
+   later: { markdown: string[]; list: string[] };
+   /** Why a Markdown file is listed in place of inlined; said only when the listing takes it, so a file the listing then skips gets one warning. */
+   instead: Map<string, string>;
+}
+
+/**
+ * Why a path below a skill is not served, from its name alone, and the finding
+ * that sets the whole skill aside when the path sits under `assets/`. Spells
+ * the path into `walk.lower`, so two paths that differ only by case collide
+ * whether they are inline or listed.
+ */
+function nameProblem(
+   s: ScannedSkill,
+   relative: string,
+   walk: AssetWalk,
+): { why: string; refusal?: string } | undefined {
+   const shown = `${s.rel}/${relative}`;
+   const segments = relative.split("/");
+   if (segments.some((segment) => segment.includes(".."))) {
+      return {
+         why: "its name has '..' in it",
+         refusal: `asset '${shown}' has '..' in its name; rename it`,
+      };
+   }
+   let spelled = s.dirName;
+   for (const segment of segments) {
+      spelled = `${spelled}/${segment}`;
+      const taken = walk.lower.get(spelled.toLowerCase());
+      if (taken !== undefined && taken !== spelled) {
+         return {
+            why: "its name differs from another file's only by case",
+            refusal: `asset '${shown}' differs from another asset only by case; rename one`,
+         };
+      }
+      walk.lower.set(spelled.toLowerCase(), spelled);
+   }
+   if (!segments.every((segment) => ASSET_SEGMENT.test(segment))) {
+      return { why: "its name is outside [A-Za-z0-9_][A-Za-z0-9._-]*" };
+   }
+   if (`${s.dirName}/${relative}`.length > ASSET_PATH_MAX_CHARS) {
+      return { why: `its path is over ${ASSET_PATH_MAX_CHARS} characters` };
+   }
+   return undefined;
+}
+
+/**
+ * Inline a Markdown file while it fits the set's inline budget, judged by its
+ * size before it is read, else list it instead. Warn when its name or its
+ * bytes cannot be served at all.
+ */
+function inlineMarkdown(
+   d: SkillDraft,
+   relative: string,
+   ctx: FinishContext,
+): void {
+   const shown = `${d.s.rel}/${relative}`;
+   const problem = nameProblem(d.s, relative, ctx.walk);
+   if (problem) {
+      ctx.warnings.push(
+         skipped(
+            `Package skill file '${shown}' ${problem.why}, so it is not served.`,
+         ),
+      );
+      return;
+   }
+   if (ctx.budget.inline.left <= 0) {
+      ctx.warnings.push(
+         skipped(
+            `Package skill file '${shown}' would take the skill set over its ${SKILL_SET_INLINE_MAX_FILES} inline Markdown files, so it is not served. Fix: remove Markdown files, or move a skill to another skill set.`,
+         ),
+      );
+      return;
+   }
+   const read = readFileInside(
+      ctx.packageRoot,
+      path.join(d.s.dir, relative),
+      Math.min(ctx.inline.left, PACKAGE_SKILL_FILE_MAX_BYTES),
+   );
+   if ("problem" in read && read.size === undefined) {
+      ctx.warnings.push(
+         skipped(
+            `Package skill reference '${shown}' ${read.problem}, so it is not served.`,
+         ),
+      );
+      return;
+   }
+   // Decoded text can outgrow the bytes it came from, so the size alone is not the last word.
+   const overBudget = `would take the skill set's Markdown over the ${capText(SKILL_SET_MARKDOWN_MAX_BYTES)} cap`;
+   const tooBig =
+      "problem" in read
+         ? read.size! > PACKAGE_SKILL_FILE_MAX_BYTES
+            ? `is ${read.size} bytes, over the ${capText(PACKAGE_SKILL_FILE_MAX_BYTES)} per-file cap`
+            : overBudget
+         : Buffer.byteLength(read.text) > ctx.inline.left
+           ? overBudget
+           : undefined;
+   if (tooBig !== undefined) {
+      d.instead.set(relative, tooBig);
+      d.later.list.push(relative);
+      return;
+   }
+   if (!("text" in read)) return;
+   // A .md that is not strict UTF-8 text is listed like any binary file, never served as lossy text.
+   if (decodeText(read.raw) === undefined) {
+      d.instead.set(relative, "is not UTF-8 text");
+      d.later.list.push(relative);
+      return;
+   }
+   ctx.inline.left -= Buffer.byteLength(read.text);
+   ctx.budget.inline.left--;
+   d.inline.push({ relative, text: read.text });
+   d.files[relative] = {
+      digest: `sha256:${sha256(read.raw)}`,
+      size: read.raw.length,
+   };
+   if (ctx.advertised && !fitsReply(read.text)) {
+      ctx.warnings.push(unreturnableWarning(shown));
+   }
+}
+
+const recordListed = (d: SkillDraft, relative: string, asset: ListedFile) => {
+   d.listed.push(asset);
+   d.files[relative] = { digest: `sha256:${asset.sha256}`, size: asset.bytes };
+};
+
+/**
+ * A scanned skill's first pass: what a skill has always served. A Markdown file
+ * directly in `reference/` is inlined while it fits `ctx.inline`, and a text
+ * file below `assets/` is listed within the caps; every other file is left for
+ * `readRest`. A file named like one the agent computer reads with authority, or
+ * with a control character in its path, is skipped here with a warning.
+ */
+function readFirst(s: ScannedSkill, ctx: FinishContext): SkillDraft {
+   const d: SkillDraft = {
+      s,
+      inline: [{ relative: SKILL_MD, text: s.skillMd.text }],
+      // No prototype, so a root file named `__proto__` is listed like any other.
+      files: Object.assign(Object.create(null) as SkillDraft["files"], {
+         [SKILL_MD]: {
+            digest: `sha256:${sha256(s.skillMd.raw)}`,
+            size: s.skillMd.raw.length,
+         },
+      }),
+      listed: [],
+      later: { markdown: [], list: [] },
+      instead: new Map(),
+   };
+   const references: string[] = [];
+   const assetFiles: string[] = [];
+   for (const relative of s.candidates) {
+      const lowerName = path.posix.basename(relative).toLowerCase();
+      const controlChar = CONTROL_CHARS.test(relative);
+      if (!controlChar && !RESERVED_BASENAMES.has(lowerName)) {
+         if (isReferenceMarkdown(relative)) references.push(relative);
+         else if (isInlineMarkdown(relative)) d.later.markdown.push(relative);
+         else if (underAssets(relative)) assetFiles.push(relative);
+         else d.later.list.push(relative);
+         continue;
+      }
+      const shown = displayPath(`${s.rel}/${relative}`);
+      const why = controlChar ? CONTROL_CHARS_WHY : RESERVED_WHY;
+      if (isInlineMarkdown(relative)) {
+         ctx.warnings.push(
+            skipped(
+               `Package skill reference '${shown}' ${why}, so it is not served.`,
+            ),
+         );
+      } else {
+         ctx.walk.skipped.push(`asset '${shown}' is not served: it ${why}`);
+         // A publisher.json below assets/ sets the skill aside in scanSkills; so does a SKILL.md there, here.
+         if (
+            !controlChar &&
+            underAssets(relative) &&
+            lowerName === "skill.md"
+         ) {
+            ctx.refusals.push(
+               `asset '${shown}' is named like a package manifest or skill; remove or rename it`,
+            );
+         }
+      }
+   }
+   for (const relative of references) inlineMarkdown(d, relative, ctx);
+   for (const relative of assetFiles) {
+      const asset = listFile(s, relative, ctx, d.later.list);
+      if (asset) recordListed(d, relative, asset);
+   }
+   return d;
+}
+
+/**
+ * A skill's second pass: what its whole directory adds. Markdown outside
+ * `reference/` is inlined while it fits and listed when it does not; every file
+ * left to list has its checks and caps applied and its bytes hashed, not kept.
+ * Under `assets/` a link, a `..` name or a case collision sets the skill aside;
+ * anywhere else the same finding skips the file with a warning.
+ */
+function readRest(d: SkillDraft, ctx: FinishContext): ReadSkill {
+   for (const relative of d.later.markdown) inlineMarkdown(d, relative, ctx);
+   for (const relative of d.later.list.sort(compareText)) {
+      const asset = listFile(d.s, relative, ctx);
+      if (!asset) continue;
+      recordListed(d, relative, asset);
+      const why = d.instead.get(relative);
+      if (why !== undefined) {
+         ctx.warnings.push(
+            finding(
+               `Package skill file '${d.s.rel}/${relative}' ${why}, so it is listed instead of inlined.`,
+            ),
+         );
+      }
+   }
+   const { s } = d;
+   return {
+      dirName: s.dirName,
+      rel: s.rel,
+      meta: s.meta,
+      skillignoreSha: s.skillignoreSha,
+      inline: d.inline.sort(
+         (a, b) =>
+            Number(b.relative === SKILL_MD) - Number(a.relative === SKILL_MD) ||
+            compareText(a.relative, b.relative),
+      ),
+      listed: d.listed.sort((a, b) =>
+         compareText(a.relative_filepath, b.relative_filepath),
+      ),
+      catalog: {
+         name: s.meta.name,
+         frontmatter: s.frontmatter,
+         files: Object.fromEntries(
+            Object.entries(d.files).sort(([a], [b]) => compareText(a, b)),
+         ),
+      },
+   };
+}
+
+/**
+ * One file of a skill listed for an agent to copy: its checks, its caps, then
+ * its bytes hashed. Undefined when it is skipped (warned, named) or, under
+ * `assets/`, set aside (`ctx.refusals`). A binary file is hashed and then, given
+ * `defer`, put there to be charged later instead of now.
+ */
+function listFile(
+   s: ScannedSkill,
+   relative: string,
+   ctx: FinishContext,
+   defer?: string[],
+): ListedFile | undefined {
+   const { walk } = ctx;
+   const shown = `${s.rel}/${relative}`;
+   const listed = `${s.dirName}/${relative}`;
+   const strict = underAssets(relative);
+   const skip = (why: string) =>
+      walk.skipped.push(`asset '${shown}' is not served: ${why}`);
+   const reject = (refusal: string, why: string) => {
+      skip(why);
+      // Every refusal is found in the first pass; a later one means the file changed since, and is only skipped.
+      if (strict && defer) ctx.refusals.push(refusal);
+   };
+
+   // Nothing more fits once the file cap is reached; only a file below assets/ is still looked at, for the findings that set a skill aside.
+   if (!strict && walk.files >= SKILL_SET_ASSETS_MAX_FILES) {
+      skip(
+         `the skill set already has ${SKILL_SET_ASSETS_MAX_FILES} assets, the per-set file cap`,
+      );
+      return undefined;
+   }
+
+   const absolute = path.join(s.dir, relative);
+   let stat: fs.Stats;
+   try {
+      stat = fs.lstatSync(absolute);
+   } catch (error) {
+      skip(
+         `it cannot be read (${callerVisibleText((error as Error).message, ctx.packageRoot)})`,
+      );
+      return undefined;
+   }
+   if (stat.isSymbolicLink()) {
+      reject(
+         `asset '${shown}' is a link; replace it with a regular file`,
+         insidePackage(ctx.packageRoot, absolute) === undefined
+            ? "it is a link that resolves outside the package"
+            : "it is a link",
+      );
+      return undefined;
+   }
+   const problem = nameProblem(s, relative, walk);
+   if (problem) {
+      if (problem.refusal) reject(problem.refusal, problem.why);
+      else skip(problem.why);
+      return undefined;
+   }
+   if (!stat.isFile()) {
+      skip("it is not a regular file");
+      return undefined;
+   }
+   const lowerName = path.posix.basename(relative).toLowerCase();
+   if (
+      lowerName.endsWith(MODEL_FILE_SUFFIX) ||
+      lowerName.endsWith(NOTEBOOK_FILE_SUFFIX)
+   ) {
+      skip("a Malloy file cannot be listed");
+      return undefined;
+   }
+
+   const { size } = stat;
+   if (size >= PACKAGE_ASSET_FILE_MAX_BYTES) {
+      skip(
+         `it is ${size} bytes, at or over the ${capText(PACKAGE_ASSET_FILE_MAX_BYTES)} file cap`,
+      );
+   } else if (walk.files >= SKILL_SET_ASSETS_MAX_FILES) {
+      skip(
+         `the skill set already has ${SKILL_SET_ASSETS_MAX_FILES} assets, the per-set file cap`,
+      );
+   } else if (walk.bytes + size > SKILL_SET_ASSETS_MAX_BYTES) {
+      skip(
+         `it would take the skill set's assets over the ${capText(SKILL_SET_ASSETS_MAX_BYTES)} per-set cap`,
+      );
+   } else {
+      let read = walk.shared.reads.get(shown);
+      if (!read || (!defer && "unread" in read)) {
+         read = readAsset(
+            ctx.packageRoot,
+            s.dir,
+            absolute,
+            defer !== undefined,
+         );
+         walk.shared.reads.set(shown, read);
+      }
+      if ("problem" in read) {
+         // A link or an escape that appeared after the listing is the same threat as one found in it.
+         if (read.link) {
+            reject(
+               `asset '${shown}' ${read.problem}; replace it with a regular file`,
+               read.problem,
+            );
+         } else {
+            skip(read.problem);
+         }
+         return undefined;
+      }
+      if (defer && ("unread" in read || read.binary)) {
+         defer.push(relative);
+         return undefined;
+      }
+      // Only the first pass leaves a file unread, and it defers it above.
+      if ("unread" in read) return undefined;
+      walk.files++;
+      walk.bytes += read.bytes;
+      walk.charges.set(shown, { bytes: read.bytes, sha256: read.sha256 });
+      if (ctx.advertised && read.unreturnable) {
+         ctx.warnings.push(unreturnableWarning(shown));
+      }
+      return {
+         relative_filepath: listed,
+         bytes: read.bytes,
+         sha256: read.sha256,
+         binary: read.binary,
+      };
+   }
+   return undefined;
+}
+
+const SHA_PREFIX = "sha256:";
+
+/** The load-time sha of each inline file and of the `.skillignore` applied, so the content hash covers the bytes read at load and nothing reads them again. */
+function inlineShas(read: ReadSkill, shas: Map<string, string>) {
+   for (const f of read.inline) {
+      shas.set(
+         `${read.rel}/${f.relative}`,
+         read.catalog.files[f.relative]!.digest.slice(SHA_PREFIX.length),
+      );
+   }
+   if (read.skillignoreSha !== null) {
+      shas.set(`${read.rel}/.skillignore`, read.skillignoreSha);
+   }
+}
+
+/** A package skill as `get_skill` and the REST routes read it: inline Markdown from what load read, every listed file from disk against its listed sha. A listed binary file is answered from its listing. */
+export function packageSkill(
+   packagePath: string,
+   read: ReadSkill,
+): ServedSkill {
+   const texts = new Map(read.inline.map((f) => [f.relative, f.text]));
+   const binary = new Set(
+      read.listed
+         .filter((f) => f.binary)
+         .map((f) => f.relative_filepath.slice(read.dirName.length + 1)),
+   );
+   return {
+      name: read.meta.name,
+      description: read.meta.description,
+      catalog: read.catalog,
+      async read(relative) {
+         const text = texts.get(relative);
+         if (text !== undefined) return { text };
+         if (binary.has(relative)) return { binary: true };
+         const listed = await readListedFile(
+            packagePath,
+            read.rel,
+            relative,
+            read.catalog.files[relative]!.digest.slice(SHA_PREFIX.length),
+         );
+         return listed ?? { changed: true };
+      },
+   };
+}
+
+/** The skill set that is always selected, and whose skills are the package's own. */
+export const DEFAULT_SKILL_SET = "default";
+/** A skill set's or workflow's name, which is its key in the manifest. */
+const NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
+const NAME_MAX = 64;
+const validName = (name: string) => NAME.test(name) && name.length <= NAME_MAX;
+const NAME_RULE =
+   "its name must be 1-64 characters of lowercase letters, digits and single hyphens";
+const WORKFLOW_KEYS = ["description", "instructions", "skillSets"];
+const SKILL_SET_KEYS = ["path", "description", "overrides"];
+/** Skill sets one workflow lists. */
+export const WORKFLOW_SKILL_SETS_MAX = 8;
+/** What one manifest declares: past either the whole declaration is refused. */
+export const DECLARED_SKILL_SETS_MAX = 32;
+const DECLARED_WORKFLOWS_MAX = 64;
+/** Skill names one set's `overrides` lists. */
+const OVERRIDES_MAX = 64;
+
+const isObject = (v: unknown): v is Record<string, unknown> =>
+   typeof v === "object" && v !== null && !Array.isArray(v);
+
+/** Keys that are neither known nor an `x-` author note. */
+const unknownKeys = (obj: Record<string, unknown>, known: string[]) =>
+   Object.keys(obj).filter((k) => !known.includes(k) && !k.startsWith("x-"));
+
+/** Thrown inside one workflow's read to refuse that workflow with a message. */
+class WorkflowProblem extends Error {}
+
+/** A manifest path as a normalized package-relative path, or a WorkflowProblem. */
+function manifestPath(value: unknown, what: string): string {
+   if (typeof value !== "string" || value === "" || value.includes("\0")) {
+      throw new WorkflowProblem(
+         `${what} must be a non-empty package-relative path`,
+      );
+   }
+   if (path.posix.isAbsolute(value) || path.win32.isAbsolute(value)) {
+      throw new WorkflowProblem(`${what} '${value}' is an absolute path`);
+   }
+   if (value.includes("\\")) {
+      throw new WorkflowProblem(
+         `${what} '${value}' contains a backslash; write it with forward slashes`,
+      );
+   }
+   const normalized = path.posix.normalize(value).replace(/\/+$/, "");
+   if (
+      normalized === "." ||
+      normalized === ".." ||
+      normalized.startsWith("../")
+   ) {
+      throw new WorkflowProblem(`${what} '${value}' is outside the package`);
+   }
+   return normalized;
+}
+
+const isManifest = (name: string) => name.toLowerCase() === "publisher.json";
+
+/** The name of a publisher.json sitting directly in `dir`, which must resolve inside the package; undefined when there is none. A skill's `reference/` is read as skillFiles reads it, so a link to a huge directory is not listed whole. With `strict`, a directory that exists and cannot be read throws, since not knowing is not the same as none. */
+function manifestIn(
+   packageRoot: string,
+   dir: string,
+   reference = false,
+   strict = false,
+): string | undefined {
+   try {
+      const inside = insidePackage(packageRoot, dir);
+      if (inside === undefined) return undefined;
+      const names = reference
+         ? listBounded(inside, (entry) => isManifest(entry.name)).entries.map(
+              (entry) => entry.name,
+           )
+         : fs.readdirSync(inside);
+      return names.find(isManifest);
+   } catch (error) {
+      if (strict && !isAuthorPathError(error)) throw error;
+      return undefined;
+   }
+}
+
+/** What one `readPackageWorkflows` call has already looked up, so a path that many workflows name is checked once. */
+interface PathChecks {
+   /** A directory's publisher.json, by the directory's path. */
+   manifests: Map<string, string | undefined>;
+   /** A skill set directory's verdict by its manifest path: what refused it, or nothing. */
+   roots: Map<string, { problem?: unknown }>;
+}
+
+const newPathChecks = (): PathChecks => ({
+   manifests: new Map(),
+   roots: new Map(),
+});
+
+/** {@link manifestIn} for a plain directory, asked once per path in a call. */
+function manifestAt(
+   checks: PathChecks,
+   packageRoot: string,
+   dir: string,
+): string | undefined {
+   if (!checks.manifests.has(dir)) {
+      checks.manifests.set(dir, manifestIn(packageRoot, dir, false, true));
+   }
+   return checks.manifests.get(dir);
+}
+
+/**
+ * The path, relative to the skill directory, of the first publisher.json inside
+ * a skill: in the directory, in its `reference/` or `references/`, or anywhere
+ * below its `assets/`. `unchecked` when the search could not finish, which the
+ * caller treats as a find, since a manifest it did not reach is still one: `over`
+ * when this skill ran `entries`, the set's budget, out (or holds a directory
+ * past the listing bound), `spent` when earlier skills had spent it already. It
+ * reads the real tree, folders a `.skillignore` ignores included: that file
+ * decides what a skill is made of, never what may sit in it. It does not look
+ * under `node_modules`, `__pycache__` or a path over `ASSET_PATH_MAX_CHARS`,
+ * which nothing serves, but it lists and counts every entry it meets, a skipped
+ * one included, so it fails closed on any skill once the budget is spent, one
+ * with only dot files under `assets/` too. It follows a link only to a
+ * directory inside the package and lists each directory, a linked `assets/`
+ * among them, for at most `REFERENCE_MAX_EXAMINED` entries, so a link cannot
+ * make it scan the filesystem, list a huge directory whole, or report on files
+ * outside the package.
+ */
+function skillManifest(
+   packageRoot: string,
+   skillDir: string,
+   entries: { left: number },
+): { found?: string; unchecked?: "over" | "spent" } {
+   const result: { unchecked?: "over" | "spent" } = {};
+   let charged = 0;
+   const below = (
+      dir: string,
+      rel: string,
+      depth: number,
+   ): string | undefined => {
+      let listed: ReturnType<typeof listBounded>;
+      try {
+         const inside = insidePackage(packageRoot, dir);
+         if (inside === undefined) return undefined;
+         // assets/ itself can be a link leading anywhere in the package; a linked entry below it is never descended.
+         listed = listBounded(inside, () => false);
+      } catch {
+         return undefined;
+      }
+      for (const entry of listed.entries.sort((a, b) =>
+         compareText(a.name, b.name),
+      )) {
+         if (entries.left-- <= 0) {
+            result.unchecked = charged > 0 ? "over" : "spent";
+            return undefined;
+         }
+         charged++;
+         const relative = `${rel}/${entry.name}`;
+         if (
+            builtInExcluded(entry.name, entry.isDirectory()) ||
+            relative.length > ASSET_PATH_MAX_CHARS
+         ) {
+            continue;
+         }
+         if (isManifest(entry.name)) return relative;
+         if (entry.isDirectory() && depth < ASSET_MAX_DEPTH) {
+            const deeper = below(
+               path.join(dir, entry.name),
+               relative,
+               depth + 1,
+            );
+            if (deeper !== undefined || result.unchecked !== undefined) {
+               return deeper;
+            }
+         }
+      }
+      if (listed.cut) result.unchecked = "over";
+      return undefined;
+   };
+   for (const place of ["", ...REFERENCE_DIRS]) {
+      const found = manifestIn(
+         packageRoot,
+         path.join(skillDir, place),
+         place !== "",
+      );
+      if (found !== undefined) return { found: path.posix.join(place, found) };
+   }
+   const found = below(path.join(skillDir, "assets"), "assets", 1);
+   return found !== undefined ? { found } : result;
+}
+
+/** Read a Markdown file a workflow serves as its instructions, capped at 16 KiB. */
+function readInstructions(
+   packagePath: string,
+   packageRoot: string,
+   value: unknown,
+   what: string,
+   checks: PathChecks,
+): { rel: string; text: string; sha: string } {
+   const rel = manifestPath(value, what);
+   if (!rel.toLowerCase().endsWith(".md")) {
+      throw new WorkflowProblem(`${what} '${rel}' is not a .md file`);
+   }
+   // A nested manifest beside or above the file would make it a second package
+   // root for tools that import by manifest.
+   for (
+      let dir = path.posix.dirname(rel);
+      dir !== ".";
+      dir = path.posix.dirname(dir)
+   ) {
+      if (manifestAt(checks, packageRoot, path.join(packagePath, dir))) {
+         throw new WorkflowProblem(
+            `${what} '${rel}' sits under a nested publisher.json at '${dir}'`,
+         );
+      }
+   }
+   const read = readFileInside(
+      packageRoot,
+      path.join(packagePath, rel),
+      WORKFLOW_INSTRUCTIONS_MAX_BYTES,
+      true,
+   );
+   if ("problem" in read) {
+      throw new WorkflowProblem(`${what} '${rel}' ${read.problem}`);
+   }
+   // Served as text, so a lossy decode would be the instructions.
+   if (decodeText(read.raw) === undefined) {
+      throw new WorkflowProblem(`${what} '${rel}' is not UTF-8 text`);
+   }
+   return { rel, text: read.text, sha: sha256(read.raw) };
+}
+
+/** A listed file of the skill at `skillRel`, served only when its bytes still hash to `sha`, which is also the guard against a parent directory swapped for a link, since no path check looks through one. */
+async function readListedFile(
+   packagePath: string,
+   skillRel: string,
+   relative: string,
+   sha: string,
+): Promise<{ text: string } | { binary: true } | undefined> {
+   let handle: fs.promises.FileHandle | undefined;
+   try {
+      handle = await fs.promises.open(
+         path.join(packagePath, skillRel, relative),
+         readUnfollowedFlags(),
+      );
+      const stat = await handle.stat();
+      if (!stat.isFile() || stat.size > PACKAGE_ASSET_FILE_MAX_BYTES - 1) {
+         return undefined;
+      }
+      const bytes = Buffer.allocUnsafe(stat.size + 1);
+      const length = await readFilled(handle, bytes);
+      // A length other than the stat size means the file changed after the stat.
+      if (length !== stat.size) return undefined;
+      const read = bytes.subarray(0, length);
+      if (sha256(read) !== sha) return undefined;
+      const text = decodeText(read);
+      return text === undefined ? { binary: true } : { text };
+   } catch {
+      return undefined;
+   } finally {
+      await handle?.close().catch(() => undefined);
+   }
+}
+
+/** A skill a set serves: what was read, and the skill as `get_skill` and the REST routes read it. */
+export interface SetSkill extends ReadSkill {
+   served: ServedSkill;
+}
+
+/** One skill set, declared once by name and read once per load, whichever workflows list it. */
+export interface SkillSet {
+   /** Its key in the manifest, which is what a chat or a workflow picks it by. */
+   name: string;
+   /** Package-relative, normalized, as the manifest's `path` names it. */
+   path: string;
+   description?: string;
+   /** The skill names this set may serve in place of a bundled skill, sorted. */
+   overrides: string[];
+   /** sha256 over what the set serves: each file's path and as-written sha256, each skill's applied `.skillignore` sha256 and the `overrides`. It covers every skill in the set and not the set's name, path or description. */
+   digest: string;
+   skills: SetSkill[];
+   /** Each finding as it is published, once per set. */
+   findings: PackageWarning[];
+}
+
+/** One workflow as the manifest declares it, resolved to what a caller adopts. */
+export interface PackageWorkflow {
+   name: string;
+   description?: string;
+   instructions: { path: string; text: string };
+   /** Every listed set, whole, in the order the manifest lists them. */
+   sets: SkillSet[];
+   /** A skill name two of its sets both hold: both sets are served whole, and an installer keeps the first-listed set's copy. */
+   shadowing: PackageWarning[];
+   definitionSha: string;
+}
+
+/** What a package serves of its declaration: everything the main thread holds. */
+export interface ServedWorkflows {
+   workflows: Map<string, PackageWorkflow>;
+   /** Every served skill set, by name in name order, whether or not a workflow lists it. */
+   sets: Map<string, SkillSet>;
+   /** Why each refused workflow or set is not served, or a served workflow's shadowing findings, in manifest order; then each set's findings, once, in name order. */
+   warnings: PackageWarning[];
+   /** Package-relative paths whose edit changes what is served: each declared skill set's folder and each instructions file. */
+   watched: string[];
+   /** A root `skills/` directory exists and no declared set reads it, so nothing does. */
+   skillsDirNotRead: boolean;
+   /** Why the manifest's whole declaration is refused, which refuses every set and workflow name; the same text as its package warning, which has no code. Absent when it was read. */
+   declarationRefusal?: string;
+   /** Why the walk could not finish, and the workflow and skill set names the manifest declares: a declared name answers the reason, an undeclared one is still absent. */
+   unavailable?: {
+      reason: string;
+      declared: string[];
+      declaredSets: string[];
+   };
+}
+
+/** A walk as the worker reads it: what is served, and the sha256 of the bytes read of each file the serving identity covers, by package-relative path, so the content hash reads nothing again. */
+export interface PackageWorkflows extends ServedWorkflows {
+   contentShas: Map<string, string>;
+}
+
+/** The package-relative path of every file a walk serves that the source content sha covers: each served set's catalog files and applied `.skillignore`, and each served workflow's instructions. */
+function* servedPaths(
+   walk: Pick<PackageWorkflows, "sets" | "workflows">,
+): Generator<string> {
+   for (const set of walk.sets.values()) {
+      for (const skill of set.skills) {
+         for (const relative of Object.keys(skill.catalog.files)) {
+            yield `${skill.rel}/${relative}`;
+         }
+         if (skill.skillignoreSha !== null) yield `${skill.rel}/.skillignore`;
+      }
+   }
+   for (const workflow of walk.workflows.values()) {
+      yield workflow.instructions.path;
+   }
+}
+
+/** The shas the source content sha covers, once every path the walk serves is known to have one: a walk change that serves a file without recording its sha throws here, instead of leaving that file out of the hash unseen. */
+export function servedContentShas(
+   walk: Pick<PackageWorkflows, "sets" | "workflows" | "contentShas">,
+): ReadonlyMap<string, string> {
+   shasOf(servedPaths(walk), walk.contentShas);
+   return walk.contentShas;
+}
+
+/** What a package serves before its manifest has been read: no workflows. */
+export const emptyWorkflows = (): ServedWorkflows => ({
+   workflows: new Map(),
+   sets: new Map(),
+   warnings: [],
+   watched: [],
+   skillsDirNotRead: false,
+});
+
+/** What a set's replies are cut from, sorted by path: its inline files in each view, and the files its skills list. */
+export interface SkillSetRows {
+   full: SkillSetFile[];
+   summary: SkillSetFile[];
+   assets: SkillSetAsset[];
+}
+
+/** The rows of `set`: each inline file as `<skill>/<file>` with its text as written and its size on disk, a SKILL.md with its parsed name and description (a description it does not have is left off). */
+export function skillSetRows(set: SkillSet): SkillSetRows {
+   const files = set.skills
+      .flatMap((skill) =>
+         skill.inline.map((f) => ({
+            relative_filepath: `${skill.dirName}/${f.relative}`,
+            text: f.text,
+            bytes: skill.catalog.files[f.relative]!.size,
+            ...(f.relative === SKILL_MD && {
+               name: skill.meta.name,
+               ...(skill.meta.description !== "" && {
+                  description: skill.meta.description,
+               }),
+            }),
+         })),
+      )
+      .sort((a, b) => compareText(a.relative_filepath, b.relative_filepath));
+   return {
+      full: files.map(({ relative_filepath, text, name, description }) => ({
+         relative_filepath,
+         file_contents: text,
+         ...(name !== undefined && { name }),
+         ...(description !== undefined && { description }),
+      })),
+      summary: files.map(({ relative_filepath, name, description, bytes }) => ({
+         relative_filepath,
+         ...(name !== undefined && { name }),
+         ...(description !== undefined && { description }),
+         bytes,
+      })),
+      assets: set.skills
+         .flatMap((skill) => skill.listed)
+         .map(({ relative_filepath, bytes, sha256 }) => ({
+            relative_filepath,
+            bytes,
+            sha256,
+         }))
+         .sort((a, b) => compareText(a.relative_filepath, b.relative_filepath)),
+   };
+}
+
+/** Charges a set's listed files to the package's budget, once per path: false, with nothing recorded, when they would take it over its cap, which refuses the set whole. */
+function chargePackage(budget: PackageAssetBudget, walk: AssetWalk): boolean {
+   let added = 0;
+   for (const [assetPath, { bytes }] of walk.charges) {
+      if (!budget.paths.has(assetPath)) added += bytes;
+   }
+   if (budget.bytes + added > PACKAGE_ASSETS_MAX_BYTES) return false;
+   for (const assetPath of walk.charges.keys()) budget.paths.add(assetPath);
+   budget.bytes += added;
+   return true;
+}
+
+/** What a skill's first pass changed in the set's walk, so a skill set aside can be taken back out. */
+interface WalkMark {
+   files: number;
+   bytes: number;
+   charges: number;
+   lower: number;
+   skipped: number;
+   warnings: number;
+   refusals: number;
+   inline: number;
+   inlineFiles: number;
+}
+
+const markOf = (ctx: FinishContext): WalkMark => ({
+   files: ctx.walk.files,
+   bytes: ctx.walk.bytes,
+   charges: ctx.walk.charges.size,
+   lower: ctx.walk.lower.size,
+   skipped: ctx.walk.skipped.length,
+   warnings: ctx.warnings.length,
+   refusals: ctx.refusals.length,
+   inline: ctx.inline.left,
+   inlineFiles: ctx.budget.inline.left,
+});
+
+/** Takes back what one skill's first pass charged. A Map keeps insertion order, so what the pass added is its tail. */
+function rollBack(ctx: FinishContext, mark: WalkMark): void {
+   const { walk } = ctx;
+   walk.files = mark.files;
+   walk.bytes = mark.bytes;
+   for (const key of [...walk.charges.keys()].slice(mark.charges)) {
+      walk.charges.delete(key);
+   }
+   for (const key of [...walk.lower.keys()].slice(mark.lower)) {
+      walk.lower.delete(key);
+   }
+   walk.skipped.length = mark.skipped;
+   ctx.warnings.length = mark.warnings;
+   ctx.refusals.length = mark.refusals;
+   ctx.inline.left = mark.inline;
+   ctx.budget.inline.left = mark.inlineFiles;
+}
+
+const setFinding = (
+   setName: string,
+   { code, message }: SetFinding,
+): PackageWarning =>
+   warning(
+      code,
+      setName,
+      `Skill set '${setName}' skill finding: ${message.replace(/\.$/, "")}.`,
+   );
+
+const skillSetAside = (s: ScannedSkill, why: string) =>
+   `Package skill '${s.rel}' is not served: ${why}`;
+
+/**
+ * Read the skill set `decl` declares once: each skill's two passes against the
+ * set's own caps, whatever else the package holds, so what it serves depends
+ * only on its own files and declaration. A bad skill, a skill whose `assets/`
+ * breaks a strict rule, a publisher.json inside a skill and a SKILL.md past the
+ * inline budget are left out with a finding; none of them refuses the set. The
+ * returned `walk` holds its listed files, for the caller to charge to the
+ * package's cap, which refuses the set whole. A throw is the caller's to turn
+ * into an unavailable walk.
+ */
+function readSkillSet(
+   packagePath: string,
+   packageRoot: string,
+   decl: DeclaredSkillSet,
+   budget: PackageAssetBudget,
+   bundled: ReadonlySet<string>,
+): { set: SkillSet; shas: Map<string, string>; walk: AssetWalk } {
+   const setPath = decl.path;
+   const advertised = decl.name === DEFAULT_SKILL_SET;
+   const walkBudget = newWalkBudget("skill set", SKILL_SET_INLINE_MAX_FILES);
+   const scan = scanSkills(packagePath, setPath, walkBudget);
+   const found = scan.warnings.map(finding);
+   if (decl.overridesProblem !== undefined) {
+      found.push(finding(decl.overridesProblem));
+   }
+   if (scan.skills.length === 0 && !scan.isSkill) {
+      found.push(
+         finding(
+            "the skill set holds no skills. Fix: add <skill>/SKILL.md under it or remove the entry",
+         ),
+      );
+   }
+   // A skill the strict assets/ rules set aside is only found after the budget has dropped a later skill for its SKILL.md, so the set is read again without it.
+   const refused = new Map<ScannedSkill, string>();
+   const fit = () => {
+      const findings: string[] = [];
+      const newRefusals: Array<[ScannedSkill, string]> = [];
+      let overBudget = false;
+      // Every SKILL.md is charged before any other Markdown, so the budget can only list a reference, never cost a skill that fit. A skill set aside is charged nothing.
+      let inlineLeft = SKILL_SET_MARKDOWN_MAX_BYTES;
+      const fitted: ScannedSkill[] = [];
+      for (const s of scan.skills) {
+         const refusal = refused.get(s) ?? s.assetsRefusal ?? s.manifestRefusal;
+         if (refusal) {
+            findings.push(skillSetAside(s, refusal));
+            continue;
+         }
+         const bytes = Buffer.byteLength(s.skillMd.text);
+         if (bytes > inlineLeft) {
+            overBudget = true;
+            findings.push(
+               `Package skill '${s.rel}/${SKILL_MD}' would take the skill set's Markdown over the ${capText(SKILL_SET_MARKDOWN_MAX_BYTES)} cap, so it is not served. Fix: shorten the skills, or move one to another skill set`,
+            );
+            continue;
+         }
+         inlineLeft -= bytes;
+         fitted.push(s);
+      }
+      // A pass starts its inline count over; the scan charged none of it.
+      walkBudget.inline.left = SKILL_SET_INLINE_MAX_FILES - fitted.length;
+      const walk = newWalk(budget);
+      const ctx: FinishContext = {
+         packageRoot,
+         advertised,
+         walk,
+         budget: walkBudget,
+         inline: { left: inlineLeft },
+         warnings: [],
+         refusals: [],
+      };
+      const drafts: SkillDraft[] = [];
+      for (const s of fitted) {
+         const mark = markOf(ctx);
+         const draft = readFirst(s, ctx);
+         if (ctx.refusals.length > mark.refusals) {
+            const refusal = ctx.refusals[mark.refusals]!;
+            findings.push(skillSetAside(s, refusal));
+            newRefusals.push([s, refusal]);
+            rollBack(ctx, mark);
+            // Its SKILL.md was charged above, before this refusal was known.
+            ctx.inline.left += Buffer.byteLength(s.skillMd.text);
+            ctx.budget.inline.left++;
+            continue;
+         }
+         drafts.push(draft);
+      }
+      return { findings, newRefusals, overBudget, walk, ctx, drafts };
+   };
+   let pass = fit();
+   while (pass.newRefusals.length > 0 && pass.overBudget) {
+      for (const [s, refusal] of pass.newRefusals) refused.set(s, refusal);
+      pass = fit();
+   }
+   const { walk, ctx, drafts } = pass;
+   found.push(...pass.findings.map(finding));
+   const skills = drafts
+      .map((d) => readRest(d, ctx))
+      .map(
+         (read): SetSkill => ({
+            ...read,
+            served: packageSkill(packagePath, read),
+         }),
+      );
+   for (const skill of skills) {
+      if (advertised && !fitsReply(skill.inline[0]!.text)) {
+         ctx.warnings.push(unreturnableWarning(`${skill.rel}/${SKILL_MD}`));
+      }
+      // The walk refuses a skill whose frontmatter name is not its folder's, so one name is both.
+      if (
+         bundled.has(skill.dirName) &&
+         !decl.overrides.includes(skill.dirName)
+      ) {
+         ctx.warnings.push(
+            finding(
+               advertised
+                  ? `Package skill '${skill.rel}' is named like a bundled skill. Fix: add '${skill.dirName}' to 'skillSets.${decl.name}.overrides' if it is meant to replace the bundled one, or rename the skill`
+                  : `Package skill '${skill.rel}' is named like a bundled skill, and only the '${DEFAULT_SKILL_SET}' skill set can replace one. Fix: rename the skill`,
+            ),
+         );
+      }
+   }
+
+   const shas = new Map<string, string>();
+   for (const skill of skills) inlineShas(skill, shas);
+   for (const [assetPath, { sha256 }] of walk.charges) {
+      shas.set(assetPath, sha256);
+   }
+
+   // Every served file is in the catalog with its as-written sha, inline or listed.
+   const digest = canonicalSha({
+      skills: skills.map((skill) => ({
+         name: skill.dirName,
+         files: Object.fromEntries(
+            Object.entries(skill.catalog.files).map(([relative, file]) => [
+               relative,
+               file.digest,
+            ]),
+         ),
+         ...(skill.skillignoreSha !== null && {
+            skillignore: skill.skillignoreSha,
+         }),
+      })),
+      overrides: decl.overrides,
+   });
+   return {
+      set: {
+         name: decl.name,
+         path: setPath,
+         ...(decl.description !== undefined && {
+            description: decl.description,
+         }),
+         overrides: decl.overrides,
+         digest,
+         skills,
+         findings: [
+            ...cappedFindings([...found, ...ctx.warnings]),
+            ...(scan.pastCap
+               ? [
+                    finding(
+                       `the skill set holds more than ${SKILLS_PER_SET_MAX} skill directories, so the first ${SKILLS_PER_SET_MAX} by name are served and the rest are not read. Fix: move some to another skill set`,
+                    ),
+                 ]
+               : []),
+            ...skippedWarnings(walk),
+         ].map((finding) => setFinding(decl.name, finding)),
+      },
+      shas,
+      walk,
+   };
+}
+
+/** One skill set's declaration after its own checks. */
+interface DeclaredSkillSet {
+   name: string;
+   /** Package-relative and normalized. */
+   path: string;
+   description?: string;
+   /** Distinct skill names, sorted; empty when the value was bad. */
+   overrides: string[];
+   /** Why a bad `overrides` value was read as empty, said once as a finding of the set. */
+   overridesProblem?: string;
+}
+
+/** One workflow's declaration after its own checks: what it names, resolved to the files it names. */
+interface DeclaredWorkflow {
+   name: string;
+   description?: string;
+   instructions: { rel: string; text: string; sha: string };
+   /** Skill set names, in the order listed. */
+   sets: string[];
+}
+
+/** A skill set directory's own checks, which depend on its path alone: it resolves inside the package, is a directory, and has no publisher.json at or above it. Throws a WorkflowProblem. */
+function checkSkillSetRoot(
+   packagePath: string,
+   packageRoot: string,
+   root: string,
+   checks: PathChecks,
+): void {
+   // Settled before it is looked at: one that leads out of the package
+   // is refused the same whether or not what it names exists.
+   const rootInside = insidePackage(packageRoot, path.join(packagePath, root));
+   if (rootInside === undefined) {
+      throw new WorkflowProblem(
+         `skill set directory '${root}' resolves outside the package`,
+      );
+   }
+   let isDirectory: boolean;
+   try {
+      isDirectory = fs.statSync(rootInside).isDirectory();
+   } catch (error) {
+      if (!isAuthorPathError(error)) throw error;
+      throw new WorkflowProblem(
+         `skill set directory '${root}' ${pathFault(error)}`,
+      );
+   }
+   if (!isDirectory) {
+      throw new WorkflowProblem(
+         `skill set directory '${root}' is not a folder`,
+      );
+   }
+   // One at the set's root or above makes it a second package; one inside a skill only sets that skill aside.
+   for (let dir = root; dir !== "."; dir = path.posix.dirname(dir)) {
+      const nested = manifestAt(
+         checks,
+         packageRoot,
+         path.join(packagePath, dir),
+      );
+      if (nested === undefined) continue;
+      throw new WorkflowProblem(
+         dir === root
+            ? `skill set directory '${root}' contains a nested publisher.json at '${displayPath(nested)}'`
+            : `skill set directory '${root}' sits under a nested publisher.json at '${dir}'`,
+      );
+   }
+}
+
+/** A set's `overrides` after its check: distinct skill names, at most 64. A bad value never refuses the set; it is read as empty, with the reason. */
+function declareOverrides(raw: unknown): {
+   overrides: string[];
+   problem?: string;
+} {
+   if (raw === undefined) return { overrides: [] };
+   const bad = (why: string) => ({
+      overrides: [],
+      problem: `'overrides' ${why}, so it is read as empty. Fix: list each skill name once, at most ${OVERRIDES_MAX} of them`,
+   });
+   if (!Array.isArray(raw)) return bad("must be a list of skill names");
+   if (raw.length > OVERRIDES_MAX) {
+      return bad(
+         `lists ${raw.length} names, over the limit of ${OVERRIDES_MAX}`,
+      );
+   }
+   const names = new Set<string>();
+   for (const entry of raw) {
+      if (typeof entry !== "string" || !validName(entry)) {
+         return bad(
+            "holds an entry that is not a skill name (1-64 characters of lowercase letters, digits and single hyphens)",
+         );
+      }
+      if (names.has(entry)) return bad(`lists '${entry}' twice`);
+      names.add(entry);
+   }
+   return { overrides: [...names].sort(compareText) };
+}
+
+/** One entry of `skillSets` after its own checks. Throws a WorkflowProblem naming the first rule it breaks. */
+function declareSkillSet(
+   packagePath: string,
+   packageRoot: string,
+   name: string,
+   raw: unknown,
+   checks: PathChecks,
+): DeclaredSkillSet {
+   if (!validName(name)) throw new WorkflowProblem(NAME_RULE);
+   if (!isObject(raw)) throw new WorkflowProblem("its entry must be an object");
+   const unrecognized = unknownKeys(raw, SKILL_SET_KEYS);
+   if (unrecognized.length > 0) {
+      throw new WorkflowProblem(
+         `it sets '${unrecognized.join("', '")}', which this server does not know, and a key it does not know might change what the set serves. Allowed keys: ${SKILL_SET_KEYS.join(", ")}; prefix a note with 'x-' to have it ignored`,
+      );
+   }
+   if (
+      raw.description !== undefined &&
+      (typeof raw.description !== "string" || raw.description.trim() === "")
+   ) {
+      throw new WorkflowProblem("'description' must be a non-empty string");
+   }
+   if (raw.path === undefined) {
+      throw new WorkflowProblem(
+         "'path' is required: the package-relative folder that holds its skills",
+      );
+   }
+   const root = manifestPath(raw.path, "'path'");
+   let verdict = checks.roots.get(root);
+   if (!verdict) {
+      verdict = {};
+      try {
+         checkSkillSetRoot(packagePath, packageRoot, root, checks);
+      } catch (error) {
+         verdict = { problem: error };
+      }
+      checks.roots.set(root, verdict);
+   }
+   if (verdict.problem !== undefined) throw verdict.problem;
+   const declared = declareOverrides(raw.overrides);
+   // Only the default set's list is read, so a list on another set is said to be ignored and read as empty.
+   const ignored = name !== DEFAULT_SKILL_SET && declared.overrides.length > 0;
+   return {
+      name,
+      path: root,
+      ...(raw.description !== undefined && { description: raw.description }),
+      overrides: ignored ? [] : declared.overrides,
+      ...((ignored || declared.problem !== undefined) && {
+         overridesProblem: ignored
+            ? `'overrides' is read only on the '${DEFAULT_SKILL_SET}' skill set, so it is ignored here. Fix: remove it from 'skillSets.${name}'`
+            : declared.problem,
+      }),
+   };
+}
+
+/** The names a workflow lists, after its checks; `listable` throws a WorkflowProblem for a name that is undeclared or not served. */
+function declareWorkflowSets(
+   raw: unknown,
+   listable: (name: string) => void,
+): string[] {
+   if (raw === undefined) return [];
+   if (!Array.isArray(raw)) {
+      throw new WorkflowProblem(
+         "'skillSets' must be a list of skill set names, each declared under the top-level 'skillSets'",
+      );
+   }
+   if (raw.length > WORKFLOW_SKILL_SETS_MAX) {
+      throw new WorkflowProblem(
+         `'skillSets' lists ${raw.length} skill sets, over the limit of ${WORKFLOW_SKILL_SETS_MAX}`,
+      );
+   }
+   const listed = new Set<string>();
+   for (const entry of raw) {
+      if (typeof entry !== "string") {
+         throw new WorkflowProblem(
+            "'skillSets' entry must be a skill set name",
+         );
+      }
+      listable(entry);
+      if (listed.has(entry)) {
+         throw new WorkflowProblem(`'skillSets' lists '${entry}' twice`);
+      }
+      listed.add(entry);
+   }
+   return [...listed];
+}
+
+function declareWorkflow(
+   packagePath: string,
+   packageRoot: string,
+   name: string,
+   raw: unknown,
+   listable: (name: string) => void,
+   checks: PathChecks,
+): DeclaredWorkflow {
+   if (!validName(name)) throw new WorkflowProblem(NAME_RULE);
+   if (!isObject(raw)) throw new WorkflowProblem("its entry must be an object");
+   const unrecognized = unknownKeys(raw, WORKFLOW_KEYS);
+   if (unrecognized.length > 0) {
+      throw new WorkflowProblem(
+         `it sets '${unrecognized.join("', '")}', which this server does not know, and a key it does not know might limit the workflow. Allowed keys: ${WORKFLOW_KEYS.join(", ")}; prefix a note with 'x-' to have it ignored`,
+      );
+   }
+   if (
+      raw.description !== undefined &&
+      (typeof raw.description !== "string" || raw.description.trim() === "")
+   ) {
+      throw new WorkflowProblem("'description' must be a non-empty string");
+   }
+   if (raw.instructions === undefined) {
+      throw new WorkflowProblem(
+         "'instructions' is required: a .md file in the package that says what the workflow does",
+      );
+   }
+   const instructions = readInstructions(
+      packagePath,
+      packageRoot,
+      raw.instructions,
+      "'instructions'",
+      checks,
+   );
+   const sets = declareWorkflowSets(raw.skillSets, listable);
+   return {
+      name,
+      ...(raw.description !== undefined && { description: raw.description }),
+      instructions,
+      sets,
+   };
+}
+
+const underSkillsDir = (value: string) => {
+   const normalized = path.posix.normalize(value).replace(/\/+$/, "");
+   return (
+      normalized === PACKAGE_SKILLS_DIR ||
+      normalized.startsWith(`${PACKAGE_SKILLS_DIR}/`)
+   );
+};
+
+/** A link out of the package decides nothing, whatever it leads to. */
+function hasSkillsDir(packagePath: string): boolean {
+   return (
+      directoryInside(
+         path.resolve(packagePath),
+         path.join(packagePath, PACKAGE_SKILLS_DIR),
+      ) !== undefined
+   );
+}
+
+/** Every set's path, normalized, that the manifest names, declared or refused. Lexical: it names what to watch and reads nothing. */
+function declaredSetPaths(rawSets: unknown): string[] {
+   const found = new Set<string>();
+   if (!isObject(rawSets)) return [];
+   for (const entry of Object.values(rawSets)) {
+      if (!isObject(entry) || entry.path === undefined) continue;
+      try {
+         found.add(manifestPath(entry.path, "path"));
+      } catch {
+         // Not a path inside the package, so there is nothing to watch.
+      }
+   }
+   return [...found].sort(compareText);
+}
+
+/** Every set path and instructions file the manifest names, served or not, so fixing a refused set or workflow recompiles. */
+function declaredPaths(declaration: {
+   skillSets?: unknown;
+   workflows?: unknown;
+}): string[] {
+   const found = new Set(declaredSetPaths(declaration.skillSets));
+   if (isObject(declaration.workflows)) {
+      for (const entry of Object.values(declaration.workflows)) {
+         if (!isObject(entry) || entry.instructions === undefined) continue;
+         try {
+            found.add(manifestPath(entry.instructions, "path"));
+         } catch {
+            // Not a path inside the package, so there is nothing to watch.
+         }
+      }
+   }
+   return [...found].sort(compareText);
+}
+
+/**
+ * Where an edit to `relative` (package-relative) lands among the `watched` paths of its package: `true` when it changes
+ * what a workflow serves whatever it holds (an instructions file, or a manifest: the package's own, which declares the
+ * workflows, or one at or above a watched path, which refuses it), else the skills it lies in, each with its directory
+ * and the path inside it. A file loose in a set's folder is no skill's, and a dot-named folder is none either, as the
+ * set's scan skips it.
+ */
+function workflowFileSkills(
+   packagePath: string,
+   watched: readonly string[],
+   relative: string,
+): true | Array<{ dir: string; within: string }> {
+   if (isManifest(path.posix.basename(relative))) {
+      const dir = path.posix.dirname(relative);
+      if (
+         dir === "." ||
+         watched.some((w) => w === dir || w.startsWith(`${dir}/`))
+      ) {
+         return true;
+      }
+   }
+   const skills: Array<{ dir: string; within: string }> = [];
+   for (const watchedPath of watched) {
+      if (relative === watchedPath) return true;
+      if (!relative.startsWith(`${watchedPath}/`)) continue;
+      const [skill, ...within] = relative
+         .slice(watchedPath.length + 1)
+         .split("/");
+      if (within.length > 0 && !skill!.startsWith(".")) {
+         skills.push({
+            dir: path.join(packagePath, watchedPath, skill!),
+            within: within.join("/"),
+         });
+      }
+   }
+   return skills;
+}
+
+/** Whether an edit to `relative` can change what a workflow serves, judged by names alone: a watcher's per-file filter, which cannot wait on a `.skillignore`. */
+export function workflowFileServed(
+   packagePath: string,
+   watched: readonly string[],
+   relative: string,
+): boolean {
+   const at = workflowFileSkills(packagePath, watched, relative);
+   return at === true || at.some(({ within }) => mayChangeSkill(within));
+}
+
+/** {@link workflowFileServed}, and then what the skill's own `.skillignore` rules out. */
+export async function workflowFileServedExactly(
+   packagePath: string,
+   watched: readonly string[],
+   relative: string,
+): Promise<boolean> {
+   const at = workflowFileSkills(packagePath, watched, relative);
+   if (at === true) return true;
+   for (const { dir, within } of at) {
+      if (await mayChangeSkillExactly(dir, within)) return true;
+   }
+   return false;
+}
+
+const refusal = (
+   code: typeof WORKFLOW_NOT_SERVED | typeof SKILL_SET_NOT_SERVED,
+   name: string,
+   why: string,
+) =>
+   code === WORKFLOW_NOT_SERVED
+      ? warning(
+           code,
+           name,
+           `Workflow '${name}' is not served: ${why}. Fix: correct the 'workflows.${name}' entry in publisher.json and the files it names.`,
+        )
+      : warning(
+           code,
+           name,
+           `Skill set '${name}' is not served: ${why}. Fix: correct the 'skillSets.${name}' entry in publisher.json and the folder it names.`,
+        );
+
+const cannotRead = (error: unknown, packagePath: string) =>
+   callerVisibleText(
+      error instanceof Error ? error.message : String(error),
+      packagePath,
+   );
+
+/** A walk that could not finish: nothing is served, and the declared paths stay watched so fixing the cause reloads. */
+function unavailableWorkflows(
+   declaration: ManifestDeclaration | undefined,
+   reason: string,
+   declared?: { workflows: string[]; skillSets: string[] },
+   refusals: PackageWarning[] = [],
+): PackageWorkflows {
+   let watched: string[] = [];
+   let names = declared;
+   try {
+      if (isObject(declaration)) {
+         watched = declaredPaths(declaration);
+         names ??= {
+            workflows: isObject(declaration.workflows)
+               ? Object.keys(declaration.workflows)
+               : [],
+            skillSets: isObject(declaration.skillSets)
+               ? Object.keys(declaration.skillSets)
+               : [],
+         };
+      }
+   } catch {
+      // The declaration is what threw; there is nothing to watch or name.
+   }
+   return {
+      ...emptyWorkflows(),
+      contentShas: new Map(),
+      watched,
+      warnings: [
+         ...refusals,
+         {
+            code: SKILL_SETS_UNAVAILABLE,
+            message: `Skill sets and workflows could not be read: ${reason}. None is served until the package reloads. Fix: correct the cause named here, then reload the package.`,
+            severity: "warn",
+         },
+      ],
+      unavailable: {
+         reason,
+         declared: names?.workflows ?? [],
+         declaredSets: names?.skillSets ?? [],
+      },
+   };
+}
+
+/**
+ * The skill sets and workflows a package's `publisher.json` declares, each
+ * resolved to the files it names. `declaration` is the manifest's `skillSets`
+ * and `workflows` as one value, unvalidated, and `bundledSkillNames` the names
+ * of the skills this server bundles. This never throws: a set or workflow that
+ * is wrong must not take the model offline, so it is left out with a warning
+ * saying why and the rest still serve. A set that cannot be read, or a walk
+ * that throws, is `unavailable` instead, which no reader may take for a package
+ * without skill sets.
+ *
+ * Every declared set is read once, in name order, each against its own caps,
+ * and its listed files are charged to the package's 8 MiB cap in that order: a
+ * set that would cross it is refused whole, so what a set serves depends only
+ * on its own files and declaration. Adding a set can refuse a later-named one.
+ */
+export function readPackageWorkflows(
+   packagePath: string,
+   declaration: ManifestDeclaration | undefined,
+   bundledSkillNames: readonly string[],
+): PackageWorkflows {
+   try {
+      return walkPackageWorkflows(packagePath, declaration, bundledSkillNames);
+   } catch (error) {
+      return unavailableWorkflows(declaration, cannotRead(error, packagePath));
+   }
+}
+
+function walkPackageWorkflows(
+   packagePath: string,
+   declaration: ManifestDeclaration | undefined,
+   bundledSkillNames: readonly string[],
+): PackageWorkflows {
+   const skillsDir = hasSkillsDir(packagePath);
+   // Nothing reads it until a declared set is under it.
+   const result: PackageWorkflows = {
+      ...emptyWorkflows(),
+      contentShas: new Map(),
+      skillsDirNotRead: skillsDir,
+   };
+   if (declaration === undefined) return result;
+   const refuseAll = (why: string, fix: string) => {
+      const message = `Package manifest ${why}, so no skill set or workflow is served. Fix: ${fix}.`;
+      result.warnings.push({ severity: "warn", message });
+      result.declarationRefusal = message;
+      return result;
+   };
+   if (declaration === UNREADABLE_DECLARATION) {
+      return refuseAll(
+         `'skillSets' and 'workflows' are too deeply nested or over ${capText(MANIFEST_DECLARATION_MAX_BYTES)} together`,
+         "shorten them; a real declaration is a few KiB",
+      );
+   }
+   const { skillSets: rawSets, workflows: rawWorkflows } = declaration;
+   if (rawSets !== undefined && !isObject(rawSets)) {
+      return refuseAll(
+         "'skillSets' must be an object keyed by skill set name",
+         'write "skillSets": { "<name>": { "path": ... } }',
+      );
+   }
+   if (rawWorkflows !== undefined && !isObject(rawWorkflows)) {
+      return refuseAll(
+         "'workflows' must be an object keyed by workflow name",
+         'write "workflows": { "<name>": { "description": ..., "instructions": ..., "skillSets": [...] } }',
+      );
+   }
+   const setEntries = Object.entries(rawSets ?? {});
+   const workflowEntries = Object.entries(rawWorkflows ?? {});
+   if (setEntries.length > DECLARED_SKILL_SETS_MAX) {
+      return refuseAll(
+         `'skillSets' declares ${setEntries.length} skill sets, over the limit of ${DECLARED_SKILL_SETS_MAX}`,
+         "remove skill sets",
+      );
+   }
+   if (workflowEntries.length > DECLARED_WORKFLOWS_MAX) {
+      return refuseAll(
+         `'workflows' declares ${workflowEntries.length} workflows, over the limit of ${DECLARED_WORKFLOWS_MAX}`,
+         "remove workflows",
+      );
+   }
+   let packageRoot: string;
+   try {
+      fs.realpathSync(packagePath);
+      packageRoot = path.resolve(packagePath);
+   } catch (error) {
+      return unavailableWorkflows(declaration, cannotRead(error, packagePath));
+   }
+   const checks = newPathChecks();
+   const bundled = new Set(bundledSkillNames);
+
+   // The sets first: a workflow lists them by name, so it needs to know which are served.
+   const declaredSets = new Map<string, DeclaredSkillSet>();
+   const refusedSets = new Map<string, string>();
+   let unavailable: string | undefined;
+   for (const [name, entry] of setEntries) {
+      try {
+         declaredSets.set(
+            name,
+            declareSkillSet(packagePath, packageRoot, name, entry, checks),
+         );
+      } catch (error) {
+         // Only what the author wrote refuses a set; a disk that cannot be read makes the walk unavailable.
+         if (error instanceof WorkflowProblem) {
+            refusedSets.set(name, error.message);
+         } else {
+            unavailable ??= cannotRead(error, packagePath);
+         }
+      }
+   }
+   const byPath = new Map<string, string[]>();
+   for (const [name, { path: setPath }] of declaredSets) {
+      byPath.set(setPath, [...(byPath.get(setPath) ?? []), name]);
+   }
+   for (const [setPath, names] of byPath) {
+      if (names.length < 2) continue;
+      for (const name of names) {
+         declaredSets.delete(name);
+         refusedSets.set(
+            name,
+            `its path '${setPath}' is also the path of ${names
+               .filter((other) => other !== name)
+               .map((other) => `'${other}'`)
+               .join(", ")}, and two sets cannot read one folder`,
+         );
+      }
+   }
+   // By manifest position, so the warnings read in manifest order.
+   const setNotes = setEntries.flatMap(([name]) => {
+      const why = refusedSets.get(name);
+      return why === undefined
+         ? []
+         : [refusal(SKILL_SET_NOT_SERVED, name, why)];
+   });
+
+   const budget: PackageAssetBudget = {
+      bytes: 0,
+      paths: new Set(),
+      reads: new Map(),
+   };
+   const capNotes: PackageWarning[] = [];
+   const findings: PackageWarning[] = [];
+   if (unavailable === undefined) {
+      for (const name of [...declaredSets.keys()].sort(compareText)) {
+         const decl = declaredSets.get(name)!;
+         let one: ReturnType<typeof readSkillSet>;
+         try {
+            one = readSkillSet(packagePath, packageRoot, decl, budget, bundled);
+         } catch (error) {
+            unavailable = `skill set directory '${decl.path}' cannot be read (${cannotRead(error, packagePath)})`;
+            break;
+         }
+         if (!chargePackage(budget, one.walk)) {
+            const why = `its listed files would take the package's assets over the ${capText(PACKAGE_ASSETS_MAX_BYTES)} per-package cap, which sets are charged against in name order, so one that sorts earlier is charged first`;
+            refusedSets.set(name, why);
+            capNotes.push(refusal(SKILL_SET_NOT_SERVED, name, why));
+            continue;
+         }
+         result.sets.set(name, one.set);
+         for (const [filePath, sha] of one.shas) {
+            result.contentShas.set(filePath, sha);
+         }
+         findings.push(...one.set.findings);
+      }
+   }
+
+   const setNames = Object.keys(rawSets ?? {});
+   const listable = (name: string) => {
+      const why = refusedSets.get(name);
+      if (why !== undefined) {
+         throw new WorkflowProblem(
+            `it lists the skill set '${name}', which is not served: ${why}`,
+         );
+      }
+      if (!setNames.includes(name)) {
+         throw new WorkflowProblem(
+            `it lists the skill set '${name}', which the top-level 'skillSets' does not declare${setNames.length > 0 ? ` (declared: ${setNames.map((n) => `'${n}'`).join(", ")})` : ""}; declare it there with a 'path', and list its name here`,
+         );
+      }
+   };
+   const notes: PackageWarning[][] = workflowEntries.map(() => []);
+   const declared = new Map<string, DeclaredWorkflow>();
+   const refused = new Set<string>();
+   workflowEntries.forEach(([name, entry], i) => {
+      try {
+         declared.set(
+            name,
+            declareWorkflow(
+               packagePath,
+               packageRoot,
+               name,
+               entry,
+               listable,
+               checks,
+            ),
+         );
+      } catch (error) {
+         if (!(error instanceof WorkflowProblem)) {
+            unavailable ??= cannotRead(error, packagePath);
+            return;
+         }
+         refused.add(name);
+         notes[i]!.push(refusal(WORKFLOW_NOT_SERVED, name, error.message));
+      }
+   });
+   if (unavailable !== undefined) {
+      return unavailableWorkflows(
+         declaration,
+         unavailable,
+         {
+            workflows: workflowEntries
+               .map(([name]) => name)
+               .filter((name) => !refused.has(name)),
+            skillSets: setEntries
+               .map(([name]) => name)
+               .filter((name) => !refusedSets.has(name)),
+         },
+         [...setNotes, ...capNotes, ...notes.flat()],
+      );
+   }
+
+   workflowEntries.forEach(([name], i) => {
+      const decl = declared.get(name);
+      if (!decl) return;
+      const shadowing: PackageWarning[] = [];
+      const holder = new Map<string, string>();
+      const sets = decl.sets.map((setName) => {
+         const set = result.sets.get(setName)!;
+         for (const skill of set.skills) {
+            const first = holder.get(skill.dirName);
+            if (first === undefined) {
+               holder.set(skill.dirName, setName);
+               continue;
+            }
+            shadowing.push(
+               warning(
+                  SKILL_SHADOWED,
+                  name,
+                  `Workflow '${name}' lists skill '${skill.dirName}' in both '${first}' and '${setName}'; both sets are served whole and an installer keeps the copy in '${first}', listed first. Fix: rename one of the two skills, or list only one of the sets.`,
+               ),
+            );
+         }
+         return set;
+      });
+      result.workflows.set(name, {
+         name,
+         ...(decl.description !== undefined && {
+            description: decl.description,
+         }),
+         instructions: {
+            path: decl.instructions.rel,
+            text: decl.instructions.text,
+         },
+         sets,
+         shadowing,
+         definitionSha: canonicalSha({
+            name,
+            ...(decl.description !== undefined && {
+               description: decl.description,
+            }),
+            instructions: decl.instructions.sha,
+            skillSets: sets.map((set) => ({
+               name: set.name,
+               digest: set.digest,
+            })),
+         }),
+      });
+      result.contentShas.set(decl.instructions.rel, decl.instructions.sha);
+      notes[i]!.push(...shadowing);
+   });
+   result.skillsDirNotRead =
+      skillsDir && !declaredSetPaths(rawSets).some(underSkillsDir);
+   result.watched = declaredPaths(declaration);
+   result.warnings.push(...setNotes, ...capNotes, ...notes.flat(), ...findings);
+   return result;
+}
+
+interface SkillSetWire extends Omit<SkillSet, "skills"> {
+   skills: ReadSkill[];
+}
+
+interface PackageWorkflowWire extends Omit<PackageWorkflow, "sets"> {
+   sets: SkillSetWire[];
+}
+
+/** A walk as it crosses the worker boundary: structured clone keeps the maps and every shared skill, but not `served`, a function, which {@link adoptWorkflows} rebuilds, and no content sha, which the worker hashed into the source pin. */
+export interface PackageWorkflowsWire
+   extends Omit<ServedWorkflows, "workflows" | "sets"> {
+   workflows: Map<string, PackageWorkflowWire>;
+   sets: Map<string, SkillSetWire>;
+}
+
+/** `walk` without its readers or content shas, sharing each skill between the sets and workflows that hold it as the walk does. */
+export function workflowsToWire(walk: PackageWorkflows): PackageWorkflowsWire {
+   const { contentShas: _contentShas, ...served } = walk;
+   const skills = new Map<SetSkill, ReadSkill>();
+   const skillOf = (skill: SetSkill): ReadSkill => {
+      let read = skills.get(skill);
+      if (!read) {
+         const { served: _served, ...rest } = skill;
+         read = rest;
+         skills.set(skill, read);
+      }
+      return read;
+   };
+   const sets = new Map<string, SkillSetWire>();
+   const setOf = (set: SkillSet): SkillSetWire => {
+      let wire = sets.get(set.name);
+      if (!wire) {
+         wire = { ...set, skills: set.skills.map(skillOf) };
+         sets.set(set.name, wire);
+      }
+      return wire;
+   };
+   for (const set of walk.sets.values()) setOf(set);
+   return {
+      ...served,
+      sets,
+      workflows: new Map(
+         [...walk.workflows].map(([name, workflow]) => [
+            name,
+            {
+               ...workflow,
+               sets: workflow.sets.map(setOf),
+            },
+         ]),
+      ),
+   };
+}
+
+/** A walk read in the worker, with each skill's reader rebuilt over `packagePath`. */
+export function adoptWorkflows(
+   packagePath: string,
+   wire: PackageWorkflowsWire,
+): ServedWorkflows {
+   const skills = new Map<ReadSkill, SetSkill>();
+   const skillOf = (read: ReadSkill): SetSkill => {
+      let skill = skills.get(read);
+      if (!skill) {
+         skill = { ...read, served: packageSkill(packagePath, read) };
+         skills.set(read, skill);
+      }
+      return skill;
+   };
+   const sets = new Map<SkillSetWire, SkillSet>();
+   const setOf = (wire: SkillSetWire): SkillSet => {
+      let set = sets.get(wire);
+      if (!set) {
+         set = { ...wire, skills: wire.skills.map(skillOf) };
+         sets.set(wire, set);
+      }
+      return set;
+   };
+   return {
+      ...wire,
+      sets: new Map([...wire.sets].map(([name, set]) => [name, setOf(set)])),
+      workflows: new Map(
+         [...wire.workflows].map(([name, workflow]) => [
+            name,
+            {
+               ...workflow,
+               sets: workflow.sets.map(setOf),
+            },
+         ]),
+      ),
+   };
+}

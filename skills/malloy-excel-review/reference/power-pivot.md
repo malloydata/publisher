@@ -113,7 +113,7 @@ The workbook has two halves, and you work both.
 |---|---|
 | Sheet formulas, Tables, named ranges, worksheet-source pivots | this skill: `translate-formulas.md`, `cookbook-pivot.md`, the cookbooks |
 | The model: tables, relationships, DAX measures, calculated columns, RLS roles | `skill:malloy-powerbi-review` |
-| A data-model pivot's fields and values | the measures it names, translated by the Power BI skill; the pivot's *layout* (rows, columns, filters) is rebuilt here from `cookbook-pivot.md` P1 to P6 |
+| A data-model pivot's fields and values | the measures it names, translated by the Power BI skill; the pivot's *layout* (rows, columns, filters) is rebuilt here from `cookbook-pivot.md` P1 to P4 and `cookbook-pivot-2.md` P5 and P6 |
 | A `CUBEVALUE("ThisWorkbookDataModel", "[Measures].[Total Sales]", ...)` cell | a query of the translated measure at the member context the formula names |
 | The Power Query that fills the model | `discover.md`, "Decide the data question": the model's tables are a cache of those sources |
 

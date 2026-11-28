@@ -151,7 +151,7 @@ for (const shape of SHAPES) {
 
       it("warns no file that the join crosses connections", () => {
          const warnings = (
-            (fixture?.pkg.getPackageMetadata().warnings ?? []) as {
+            (fixture?.pkg.getPackageMetadata().warnings ?? []) as readonly {
                code?: string;
             }[]
          ).filter((w) => w.code === "served-copy-not-served");

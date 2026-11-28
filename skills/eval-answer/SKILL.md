@@ -259,7 +259,7 @@ otherwise a modelling agent is dispatched to fix a model that is already right.
 
 Append to `<workdir>/runs/<runId>/events.jsonl` with `caseId` set (the run
 directory `eval.py run` printed; the workdir is the set's, from `eval.toml`). Shapes
-live in `reference/ledger-schema.md`.
+live in `reference/ledger-schema-events.md`.
 
 1. `attempt`: qid, sample, phase, question_sha, submitted, final_query,
    served revision, call counts, contamination verdict, transcript path.

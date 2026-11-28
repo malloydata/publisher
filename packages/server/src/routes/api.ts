@@ -497,6 +497,17 @@ function givensParam(
    throw new BadRequestError("givens must be one JSON object");
 }
 
+/** The `skills` query value of a set or workflow read: `full` (the default) or `summary`; any other shape is a 400. */
+function skillsViewParam(req: express.Request): "full" | "summary" {
+   const skills = req.query.skills ?? "full";
+   if (skills !== "full" && skills !== "summary") {
+      throw new BadRequestError(
+         `'skills' must be 'full' or 'summary', got ${JSON.stringify(skills)}.`,
+      );
+   }
+   return skills;
+}
+
 function registerPackageRoutes(
    app: express.Express,
    apiPrefix: string,
@@ -620,9 +631,6 @@ function registerPackageRoutes(
       }),
    );
 
-   // A skill or agent-skill name can carry a slash (`<skill>/<stem>` for a
-   // reference file), so it is a wildcard rather than a named parameter.
-   // Express has already decoded the wildcard; decoding again throws on a bare %.
    app.get(
       `${pkg}/skills`,
       apiRoute((req) =>
@@ -634,12 +642,12 @@ function registerPackageRoutes(
       ),
    );
    app.get(
-      `${pkg}/skills/*`,
+      `${pkg}/skills/:skillName`,
       apiRoute((req) =>
          skillController.getSkill(
             req.params.environmentName,
             req.params.packageName,
-            wildcardParam(req) ?? "",
+            req.params.skillName,
             versionRefOf(req),
          ),
       ),
@@ -698,9 +706,9 @@ function registerPackageRoutes(
       );
    }
    app.get(
-      `${pkg}/agents`,
+      `${pkg}/workflows`,
       apiRoute((req) =>
-         skillController.listAgents(
+         skillController.listWorkflows(
             req.params.environmentName,
             req.params.packageName,
             versionRefOf(req),
@@ -708,31 +716,49 @@ function registerPackageRoutes(
       ),
    );
    app.get(
-      `${pkg}/agents/:agentName`,
-      apiRoute((req, res) => {
-         const skills = req.query.skills ?? "full";
-         if (skills !== "full" && skills !== "summary") {
-            res.status(400).json({
-               message: `'skills' must be 'full' or 'summary', got ${JSON.stringify(skills)}.`,
-            });
-            return;
-         }
-         return skillController.getAgent(
+      `${pkg}/workflows/:workflowName`,
+      apiRoute((req) =>
+         skillController.getWorkflow(
             req.params.environmentName,
             req.params.packageName,
-            req.params.agentName,
-            skills,
+            req.params.workflowName,
+            skillsViewParam(req),
             versionRefOf(req),
-         );
-      }),
+         ),
+      ),
    );
    app.get(
-      `${pkg}/agents/:agentName/skills/*`,
+      `${pkg}/skill-sets`,
       apiRoute((req) =>
-         skillController.getAgentSkillFile(
+         skillController.listSkillSets(
             req.params.environmentName,
             req.params.packageName,
-            req.params.agentName,
+            versionRefOf(req),
+         ),
+      ),
+   );
+   app.get(
+      `${pkg}/skill-sets/:skillSetName`,
+      apiRoute((req) =>
+         skillController.getSkillSet(
+            req.params.environmentName,
+            req.params.packageName,
+            req.params.skillSetName,
+            skillsViewParam(req),
+            versionRefOf(req),
+         ),
+      ),
+   );
+   // A skill set file path carries slashes, so it is a wildcard rather than a
+   // named parameter. Express has already decoded the wildcard; decoding again
+   // throws on a bare %.
+   app.get(
+      `${pkg}/skill-sets/:skillSetName/skills/*`,
+      apiRoute((req) =>
+         skillController.getSkillSetFile(
+            req.params.environmentName,
+            req.params.packageName,
+            req.params.skillSetName,
             wildcardParam(req) ?? "",
             versionRefOf(req),
          ),

@@ -182,7 +182,7 @@ export async function compileJoinFixture(
    await duckdb.close();
    return {
       pkg: {
-         listSkills: () => [],
+         defaultSkills: () => ({ skills: [], overrides: [] }),
          listModels: async () => [{ path: modelPath }],
          getModel: (path: string) => (path === modelPath ? model : undefined),
       },
@@ -247,7 +247,7 @@ export async function compileModelFiles(
    return {
       pkg: {
          getPackagePath: () => fileURLToPath(ROOT),
-         listSkills: () => [],
+         defaultSkills: () => ({ skills: [], overrides: [] }),
          listModels: async () => Object.keys(files).map((path) => ({ path })),
          getModel: (path: string) => models.get(path),
       },

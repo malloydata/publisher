@@ -284,6 +284,41 @@ describe("checkLoadPackageResult", () => {
          ),
       ).toThrow(/serialized model "m\.malloy" has givens of kind number/);
    });
+
+   describe("the serving identity a load ships", () => {
+      const walk = () => ({ workflows: new Map(), sets: new Map() });
+      const withRead = (workflowsRead: unknown) =>
+         result({ packageMetadata: { workflowsRead } });
+
+      it("accepts a walk and the source content sha the worker computed", () => {
+         const msg = {
+            ...withRead({ walk: walk() }),
+            sourceContentSha: "a".repeat(64),
+         };
+         expect(checkLoadPackageResult(msg)).toBe(msg as never);
+      });
+
+      it("rejects a source content sha that is not a string", () => {
+         for (const sourceContentSha of [{}, 1, ["a"], new Map()]) {
+            expect(() =>
+               checkLoadPackageResult(result({ sourceContentSha })),
+            ).toThrow(/sourceContentSha that is not a string/);
+         }
+      });
+
+      it("rejects a workflowsRead whose walk lost a map in transit", () => {
+         for (const lost of ["workflows", "sets"]) {
+            const broken: Record<string, unknown> = walk();
+            broken[lost] = {};
+            expect(() =>
+               checkLoadPackageResult(withRead({ walk: broken })),
+            ).toThrow(/workflowsRead that is not a walk/);
+         }
+         expect(() => checkLoadPackageResult(withRead({}))).toThrow(
+            /workflowsRead that is not a walk/,
+         );
+      });
+   });
 });
 
 describe("checkCompileServedCopyResult", () => {

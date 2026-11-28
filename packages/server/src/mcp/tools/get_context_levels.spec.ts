@@ -22,7 +22,7 @@ type EnvSpec = {
 
 /** One package with a source, two fields, and a join, enough to list. */
 const servedPackage = {
-   listSkills: () => [],
+   defaultSkills: () => ({ skills: [], overrides: [] }),
    listModels: async () => [{ path: "shop.malloy" }],
    getModel: () => ({
       getSourceInfos: () => [

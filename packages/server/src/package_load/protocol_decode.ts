@@ -316,6 +316,28 @@ export function checkLoadPackageResult(raw: unknown): LoadPackageResult {
          `a load-package-result has fileDigests that are not strings`,
       );
    }
+   if (
+      raw.sourceContentSha !== undefined &&
+      typeof raw.sourceContentSha !== "string"
+   ) {
+      throw new PackageLoadProtocolError(
+         `a load-package-result has a sourceContentSha that is not a string`,
+      );
+   }
+   const workflowsRead = raw.packageMetadata.workflowsRead;
+   if (
+      workflowsRead !== undefined &&
+      !(
+         isRecord(workflowsRead) &&
+         isRecord(workflowsRead.walk) &&
+         workflowsRead.walk.workflows instanceof Map &&
+         workflowsRead.walk.sets instanceof Map
+      )
+   ) {
+      throw new PackageLoadProtocolError(
+         `a load-package-result has a workflowsRead that is not a walk`,
+      );
+   }
    for (const model of raw.models) decodeSerializedModel(model);
    return raw as unknown as LoadPackageResult;
 }

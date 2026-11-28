@@ -86,6 +86,20 @@ export function assertOutcomeStagesAvailable(
    );
 }
 
+/** Checked before anything is installed, so a worker that left out the walk or the source content sha fails the load instead of half of a reload. */
+export function assertServingIdentityShipped(
+   outcome: LoadPackageOutcome,
+): void {
+   if (
+      !outcome.packageMetadata.workflowsRead ||
+      outcome.sourceContentSha === undefined
+   ) {
+      throw new PackageLoadProtocolError(
+         `a load-package-result for an installing load has no workflows walk or source content sha`,
+      );
+   }
+}
+
 /**
  * Fail-safe at load: a bad explores entry doesn't fail the package
  * (its models still load and listModels hides the unmatched entry — it

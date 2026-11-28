@@ -63,14 +63,14 @@ confirm it with the user before building on it. `--json` adds `class_reason`.
 | Class | The rule the script applied | What to do |
 |---|---|---|
 | `data` | holds an Excel Table, or a tall block of constants | A source (`recover-sources.md`). Several data sheets are several sources. |
-| `lookup` | small, mostly constants, and some other formula reads it as the table argument of `VLOOKUP`, `MATCH`, `XLOOKUP` or `INDEX` | A dimension to join, or a bracket table (`cookbook-lookup-aggregate.md#la8` to `#la10`). |
+| `lookup` | small, mostly constants, and some other formula reads it as the table argument of `VLOOKUP`, `MATCH`, `XLOOKUP` or `INDEX` | A dimension to join, or a bracket table (`cookbook-lookup-aggregate.md#la8` to `cookbook-lookup-aggregate-2.md#la10`). |
 | `report` | formula-dominated and aggregates other sheets, or the sheet is a pivot table | The deliverable. Every formula region gets a route; every cell gets a parity row (`parity.md`). |
 | `input` | few constants, read from elsewhere by absolute reference | One `given:` per cell (`cookbook-scenario.md#sc1`). |
 | `calc` | formula-dominated and its regions read each other on the sheet | The model: roll-forwards, recurrences, circularities (`cookbook-scenario.md`). |
 | `scratch` | empty or almost empty (under 5 cells) | Ask why it is there; usually leave out. |
 | `config` | `veryHidden`, or named `config`, `configuration`, `settings`, `credentials`, `secrets` or `connections` | No values are shown. Ask what it holds; it often holds the keys to the rest. |
 
-On the bundled fixture the classes are: `Data` data, `Ledger` data, `Lookup` lookup,
+On the repository's fixture the classes are: `Data` data, `Ledger` data, `Lookup` lookup,
 `Report` report, `Assumptions` input, `Forecast` calc, `MonteCarlo` calc, `_Config` config
 (`veryHidden`). The script gets them right on a workbook built to be classified; on a real
 one, expect to correct some. Treat a `report` sheet that is mostly constants, or a `data`
@@ -115,9 +115,9 @@ its tell, separately, and routes it. Anything that leaves no trace is in `limita
 | `CUBEVALUE`, `CUBEMEMBER` and the other `CUBE*` functions (`cube`) | formula tokens | NR | `power-pivot.md`. |
 | `WEBSERVICE`, `FILTERXML` (`webservice`) | formula tokens | X, security flag | Never fetch. |
 | Linked data types, `IMAGE` (`rich_data`) | `vm=` cells, `xl/richData/` | NR | The base value is a placeholder. |
-| Form controls (`form_control`) | `xl/ctrlProps/` with `fmlaLink` | T | The linked cell is an input: a `given:`. The report's Form controls block (`form_controls` in `--json`) lists each control's type, linked cell, list range, min, max, step and selection by reference, with no caption text. `cookbook-scenario.md#sc10`. |
+| Form controls (`form_control`) | `xl/ctrlProps/` with `fmlaLink` | T | The linked cell is an input: a `given:`. The report's Form controls block (`form_controls` in `--json`) lists each control's type, linked cell, list range, min, max, step and selection by reference, with no caption text. `cookbook-scenario-2.md#sc10`. |
 | Scenario Manager (`scenario_manager`) | `<scenarios>` in the sheet XML | T | A scenario table and a `given:`. |
-| Solver (`solver`) | hidden `solver_*` defined names | X | `cookbook-scenario.md#sc9`. |
+| Solver (`solver`) | hidden `solver_*` defined names | X | `cookbook-scenario-2.md#sc9`. |
 | Named `LAMBDA` (`lambda_name`) | a defined name that is a `LAMBDA` | C | Inline it at each call site, or make it a dimension or measure when it is row-local. |
 | Ribbon callbacks (`custom_ui`) | `customUI/customUI*.xml` with `onAction` | flag | Flag only. |
 | Conditional formatting by expression, data validation (`cf_expression`, `data_validation`) | `cfRule type="expression"`, `dataValidations` | flag | A validation list is a free enum for a `given:`. `code_attached.data_validation.entries` lists sheet, range, type and the inline items (first 20) or the list's source range, on visible sheets only; a masked sheet is counted, never listed. |

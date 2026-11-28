@@ -2,28 +2,39 @@
 // SPDX-License-Identifier: MIT
 
 import { components } from "../api";
-import { AgentNotFoundError, SkillNotFoundError } from "../errors";
-import { type SkillEntry } from "../service/skills/build_skills_bundle";
 import {
-   BUNDLED_SKILLS,
+   SkillNotFoundError,
+   SkillSetNotFoundError,
+   WorkflowNotFoundError,
+} from "../errors";
+import {
+   BUNDLED_CATALOG,
+   fileChangedMessage,
    resolveSkills,
+   skillFileView,
+   type ResolvedSkill,
 } from "../service/skills/package_skills";
+import { SKILL_MD } from "../service/skills/skill_files";
 import type { PackageLookup } from "../service/environment_ports";
 import { VersionRef } from "../service/identity";
 import { loadedPackage } from "./loaded_package";
 
-type ApiAgent = components["schemas"]["Agent"];
-type ApiAgentSummary = components["schemas"]["AgentSummary"];
-type ApiAgentSkillRead = components["schemas"]["AgentSkillRead"];
+type ApiWorkflow = components["schemas"]["Workflow"];
+type ApiWorkflowSummary = components["schemas"]["WorkflowSummary"];
+type ApiSkillSet = components["schemas"]["SkillSet"];
+type ApiSkillSetSummary = components["schemas"]["SkillSetSummary"];
+type ApiSkillSetFileRead = components["schemas"]["SkillSetFileRead"];
 type ApiSkill = components["schemas"]["Skill"];
 type ApiSkillSummary = components["schemas"]["SkillSummary"];
 
 /**
- * The REST half of the `get_skill` and `get_agent` MCP tools: the bundled
- * guides, shadowed by the package's own `skills/` of the same name, and the
- * package's declared agents. Serves state read at load; nothing compiles.
- * Every route takes the package's `versionId`, so a version's own skills and
- * agents are served, never `latest`'s.
+ * The REST half of the `get_skill`, `get_skill_set` and `get_workflow` MCP
+ * tools: the bundled guides with the package's `default` skill set's added
+ * (replacing a bundled one only where that set's `overrides` says so), the
+ * package's declared skill sets, whose file route is the one REST read of a
+ * skill's other files, and its declared workflows. Serves state read at load;
+ * nothing compiles. Every route takes the package's `versionId`, so a version's
+ * own skills, sets and workflows are served, never `latest`'s.
  */
 export class SkillController {
    private environmentStore: PackageLookup;
@@ -49,9 +60,9 @@ export class SkillController {
       environmentName: string,
       packageName: string,
       versionId: VersionRef,
-   ): Promise<Array<SkillEntry & { origin: "bundled" | "package" }>> {
+   ): Promise<ResolvedSkill[]> {
       const p = await this.packageOf(environmentName, packageName, versionId);
-      return resolveSkills(BUNDLED_SKILLS, p.listSkills());
+      return resolveSkills(BUNDLED_CATALOG, p.defaultSkills());
    }
 
    /** Name, description and origin for every skill in force for the package. */
@@ -72,12 +83,7 @@ export class SkillController {
       }));
    }
 
-   /**
-    * One skill with its body.
-    *
-    * `skillName` may name a reference file as `<skill>/<stem>`, so a caller
-    * that received that pointer in a body can fetch what it points at.
-    */
+   /** A skill's `SKILL.md`, verbatim as `content`, with its `frontmatter` and every file it holds. */
    public async getSkill(
       environmentName: string,
       packageName: string,
@@ -89,64 +95,96 @@ export class SkillController {
          packageName,
          versionId,
       );
-      const match = resolved.find((skill) => skill.name === skillName);
-      if (!match) {
+      const skill = resolved.find((s) => s.name === skillName);
+      if (!skill) {
          throw new SkillNotFoundError(
             `Skill '${skillName}' not found in package '${packageName}'.`,
          );
       }
+      // A SKILL.md is held inline from the load, so it always reads as text.
+      const { text } = (await skill.read(SKILL_MD)) as { text: string };
       return {
-         name: match.name,
-         description: match.description,
-         content: match.body,
-         origin: match.origin,
+         ...skillFileView(skill, SKILL_MD, text),
+         description: skill.description,
       };
    }
 
-   /** Name, description, model, schedules and budget of every agent the package serves. */
-   public async listAgents(
+   /** Name, description and skill set names of every workflow the package serves. */
+   public async listWorkflows(
       environmentName: string,
       packageName: string,
       versionId: VersionRef = VersionRef.LATEST,
-   ): Promise<ApiAgentSummary[]> {
+   ): Promise<ApiWorkflowSummary[]> {
       return (
          await this.packageOf(environmentName, packageName, versionId)
-      ).listAgents();
+      ).listWorkflows();
    }
 
-   /** One agent resolved to its instructions, skill files and schedules. */
-   public async getAgent(
+   /** One workflow resolved to its instructions and every skill set it lists, whole. */
+   public async getWorkflow(
       environmentName: string,
       packageName: string,
-      agentName: string,
+      workflowName: string,
       skills: "full" | "summary" = "full",
       versionId: VersionRef = VersionRef.LATEST,
-   ): Promise<ApiAgent> {
-      const agent = (
-         await this.packageOf(environmentName, packageName, versionId)
-      ).getAgent(agentName, skills);
-      if (!agent) {
-         throw new AgentNotFoundError(
-            `Agent '${agentName}' not found in package '${packageName}'.`,
-         );
+   ): Promise<ApiWorkflow> {
+      const pkg = await this.packageOf(environmentName, packageName, versionId);
+      const workflow = pkg.getWorkflow(workflowName, skills);
+      if (!workflow) {
+         const unserved = pkg.workflowNotServed(workflowName)!;
+         throw new WorkflowNotFoundError(unserved.message, unserved.reason);
       }
-      return agent;
+      return workflow;
    }
 
-   /** One file of an agent's skills, by a `relative_filepath` from the summary. */
-   public async getAgentSkillFile(
+   /** Name, description and digest of every skill set the package serves, in name order. */
+   public async listSkillSets(
       environmentName: string,
       packageName: string,
-      agentName: string,
+      versionId: VersionRef = VersionRef.LATEST,
+   ): Promise<ApiSkillSetSummary[]> {
+      return (
+         await this.packageOf(environmentName, packageName, versionId)
+      ).listSkillSets();
+   }
+
+   /** One skill set, whole. */
+   public async getSkillSet(
+      environmentName: string,
+      packageName: string,
+      skillSetName: string,
+      skills: "full" | "summary" = "full",
+      versionId: VersionRef = VersionRef.LATEST,
+   ): Promise<ApiSkillSet> {
+      const pkg = await this.packageOf(environmentName, packageName, versionId);
+      const set = pkg.getSkillSet(skillSetName, skills);
+      if (!set) {
+         const unserved = pkg.skillSetNotServed(skillSetName)!;
+         throw new SkillSetNotFoundError(unserved.message, unserved.reason);
+      }
+      return set;
+   }
+
+   /** One file of a skill set, by a `<skill>/<file>` path from the set's summary or its assets. */
+   public async getSkillSetFile(
+      environmentName: string,
+      packageName: string,
+      skillSetName: string,
       relativeFilepath: string,
       versionId: VersionRef = VersionRef.LATEST,
-   ): Promise<ApiAgentSkillRead> {
-      const file = (
-         await this.packageOf(environmentName, packageName, versionId)
-      ).getAgentSkillFile(agentName, relativeFilepath);
+   ): Promise<ApiSkillSetFileRead> {
+      const pkg = await this.packageOf(environmentName, packageName, versionId);
+      const file = await pkg.getSkillSetFile(skillSetName, relativeFilepath);
+      if (file && "changed" in file) {
+         throw new SkillSetNotFoundError(fileChangedMessage(relativeFilepath));
+      }
       if (!file) {
-         throw new AgentNotFoundError(
-            `Skill file '${relativeFilepath}' not found for agent '${agentName}' in package '${packageName}'.`,
+         const unserved = pkg.skillSetNotServed(skillSetName);
+         if (unserved) {
+            throw new SkillSetNotFoundError(unserved.message, unserved.reason);
+         }
+         throw new SkillSetNotFoundError(
+            `Skill file '${relativeFilepath}' not found in skill set '${skillSetName}' in package '${packageName}'.`,
          );
       }
       return file;

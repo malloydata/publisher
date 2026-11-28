@@ -46,6 +46,9 @@
       "format": "bunx prettier --write --parser typescript '{src,scripts}/**/*.ts'",
       "test": "bun run copy-skills && bun test ./src"
    },
+   "dependencies": {
+      "yaml": "^2.9.1"
+   },
    "devDependencies": {
       "@eslint/js": "^8.57.0",
       "@types/bun": "^1.2.21",
@@ -53,6 +56,7 @@
       "@typescript-eslint/eslint-plugin": "^8.16.0",
       "@typescript-eslint/parser": "^8.16.0",
       "eslint": "^8.50.0",
+      "ignore": "^7.0.16",
       "typescript": "^5.3.3"
    }
 }

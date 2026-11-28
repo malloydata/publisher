@@ -15,7 +15,11 @@ import {
 } from "@mui/material";
 import { useQueryClient } from "@tanstack/react-query";
 import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { Database, type AgentSummary } from "../../client";
+import {
+   Database,
+   type SkillSetSummary,
+   type WorkflowSummary,
+} from "../../client";
 import { useNarrowScreen } from "../../hooks/useNarrowScreen";
 import { useQueryWithApiError } from "../../hooks/useQueryWithApiError";
 import { AddButton } from "../buttons";
@@ -42,7 +46,6 @@ import ContentTypeIcon, {
 } from "./ContentTypeIcon";
 import { ItemRow } from "../ItemRow";
 import { Materializations } from "../Materializations";
-import { describeCron } from "../Materializations/cron";
 import { PackageSection } from "../PackageSection";
 import { draftKey } from "../DocumentCreate/documentPath";
 import {
@@ -211,11 +214,24 @@ export default function Package({
          ),
    });
 
-   // The package's agents, from their own route.
-   const agentsQuery = useQueryWithApiError({
-      queryKey: ["package-agents", environmentName, packageName, versionId],
+   // The package's skill sets and its workflows, each from its own route.
+   const skillSetsQuery = useQueryWithApiError({
+      queryKey: ["package-skill-sets", environmentName, packageName, versionId],
       queryFn: () =>
-         apiClients.agents.listAgents(environmentName, packageName, versionId),
+         apiClients.skillSets.listSkillSets(
+            environmentName,
+            packageName,
+            versionId,
+         ),
+   });
+   const workflowsQuery = useQueryWithApiError({
+      queryKey: ["package-workflows", environmentName, packageName, versionId],
+      queryFn: () =>
+         apiClients.workflows.listWorkflows(
+            environmentName,
+            packageName,
+            versionId,
+         ),
    });
 
    // One listing for both layouts, by path, shared with every other reader.
@@ -358,7 +374,8 @@ export default function Package({
    ]);
 
    const description = pkgQuery.data?.data?.description ?? "";
-   const agents = agentsQuery.data?.data ?? [];
+   const workflows = workflowsQuery.data?.data ?? [];
+   const skillSets = defaultFirst(skillSetsQuery.data?.data ?? []);
    const readmePath = (
       reports.find((r) => r.path === README_NOTEBOOK) ??
       reports.find((r) => isRootReadme(r.path))
@@ -715,14 +732,39 @@ export default function Package({
                   {models.length === 0 && <EmptyRow label="No models" />}
                </PackageSection>
 
-               {agents.length > 0 && (
+               {skillSets.length > 0 && (
                   <PackageSection
-                     title="Agents"
-                     count={agents.length}
-                     description="Declared in publisher.json. Name one in an agent session to work as it. Schedules are listed only; nothing runs them yet."
+                     title="Skill sets"
+                     count={skillSets.length}
+                     description="Folders of skills, declared in publisher.json. The default set's skills are offered to every session; a chat or a workflow picks the others."
                   >
-                     {agents.map((agent) => (
-                        <PackageAgentRow key={agent.name} agent={agent} />
+                     {skillSets.map((set) => (
+                        <PackageItemRow
+                           key={set.name}
+                           type="skillSet"
+                           label={set.name}
+                           {...(set.description
+                              ? { description: set.description }
+                              : {})}
+                           {...(set.name === DEFAULT_SKILL_SET
+                              ? { rightLabel: "Always on" }
+                              : {})}
+                        />
+                     ))}
+                  </PackageSection>
+               )}
+
+               {workflows.length > 0 && (
+                  <PackageSection
+                     title="Workflows"
+                     count={workflows.length}
+                     description="Declared in publisher.json. Name one in an agent session to run it with the skill sets it lists."
+                  >
+                     {workflows.map((workflow) => (
+                        <PackageWorkflowRow
+                           key={workflow.name}
+                           workflow={workflow}
+                        />
                      ))}
                   </PackageSection>
                )}
@@ -808,31 +850,36 @@ function PackageItemRow({
    );
 }
 
-function PackageAgentRow({ agent }: { agent: AgentSummary }) {
+/** The skill set whose skills every agent session is offered. */
+const DEFAULT_SKILL_SET = "default";
+
+/** The listing is in name order; the always-on set leads it. */
+function defaultFirst(sets: SkillSetSummary[]): SkillSetSummary[] {
+   return [
+      ...sets.filter((set) => set.name === DEFAULT_SKILL_SET),
+      ...sets.filter((set) => set.name !== DEFAULT_SKILL_SET),
+   ];
+}
+
+function PackageWorkflowRow({ workflow }: { workflow: WorkflowSummary }) {
    return (
       <>
          <PackageItemRow
-            type="agent"
-            label={agent.name ?? ""}
-            {...(agent.description ? { description: agent.description } : {})}
-            {...(agent.model && agent.model !== "inherit"
-               ? { rightLabel: agent.model }
+            type="workflow"
+            label={workflow.name}
+            {...(workflow.description
+               ? { description: workflow.description }
                : {})}
          />
-         {(agent.schedules ?? []).map((schedule) => {
-            const cron = describeCron(schedule.cron ?? "");
-            return (
-               <Typography
-                  key={`${schedule.cron}|${schedule.task}`}
-                  variant="caption"
-                  color="text.secondary"
-                  sx={{ display: "block", ml: 6, mb: 0.5 }}
-               >
-                  {cron.valid ? cron.description : schedule.cron} (UTC), task{" "}
-                  {schedule.task}. Not run yet.
-               </Typography>
-            );
-         })}
+         {workflow.skill_set_names.length > 0 && (
+            <Typography
+               variant="caption"
+               color="text.secondary"
+               sx={{ display: "block", ml: 6, mb: 0.5 }}
+            >
+               Skill sets: {workflow.skill_set_names.join(", ")}
+            </Typography>
+         )}
       </>
    );
 }

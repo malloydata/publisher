@@ -128,7 +128,7 @@ for (const shape of SHAPES) {
 
       it("raises no served-copy problem", () => {
          const warnings = (
-            (fixture?.pkg.getPackageMetadata().warnings ?? []) as {
+            (fixture?.pkg.getPackageMetadata().warnings ?? []) as readonly {
                code?: string;
             }[]
          ).filter((w) => w.code === "served-copy-not-served");

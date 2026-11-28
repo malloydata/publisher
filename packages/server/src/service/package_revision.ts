@@ -2,53 +2,31 @@
 // SPDX-License-Identifier: MIT
 
 import { createHash, randomUUID } from "crypto";
-import fs from "fs";
-import path from "path";
-import { pathToFileURL } from "url";
 import { compareText } from "../compare_text";
-import { confinedPackagePathSync } from "../utils";
 
 /**
- * Hashed in place of an unreadable file, so it digests differently from an
- * empty one. The NULs keep it from colliding with real file content.
+ * Stands in for the sha of a file the load could not read, so it hashes
+ * differently from an empty one. The NULs keep it from colliding with a real
+ * sha256, which is hex.
  */
-const UNREADABLE = "\0<unreadable>\0";
+export const UNREADABLE_SHA = "\0<unreadable>\0";
 
 /**
- * SHA-256 of the exact bytes a package is serving, keyed by package-relative
- * path. Paths are sorted (order-independent) and hashed with their content (a
- * rename moves the digest). The caller chooses the served set, plus `extra`
- * for served text that lives in no file; anything outside it is invisible.
- * A path in `contentShas` is hashed by its already-computed sha256 instead of
- * being read again.
+ * SHA-256 over what a package is serving: each path with the sha256 of the
+ * exact bytes the load read of it, plus `extra` for served text that lives in
+ * no file. Paths are sorted (order-independent) and hashed with their sha (a
+ * rename moves the digest). The caller chooses the served set; anything
+ * outside it is invisible. Reads no file, so it is safe on the event loop.
  */
 export function computeSourceContentSha(
-   packagePath: string,
-   contentPaths: Iterable<string>,
+   contentShas: ReadonlyMap<string, string>,
    extra?: string,
-   contentShas?: ReadonlyMap<string, string>,
 ): string {
    const hash = createHash("sha256");
-   for (const relativePath of [...contentPaths].sort()) {
+   for (const relativePath of [...contentShas.keys()].sort()) {
       hash.update(relativePath);
       hash.update("\0");
-      const precomputed = contentShas?.get(relativePath);
-      if (precomputed !== undefined) {
-         hash.update(`\0sha256\0${precomputed}`);
-      } else {
-         const absolute = path.join(packagePath, relativePath);
-         try {
-            // Inside the package only: a file that links out hashes as
-            // unreadable, whatever it leads to.
-            hash.update(
-               fs.readFileSync(
-                  confinedPackagePathSync(packagePath, pathToFileURL(absolute)),
-               ),
-            );
-         } catch {
-            hash.update(UNREADABLE);
-         }
-      }
+      hash.update(`\0sha256\0${contentShas.get(relativePath)}`);
       hash.update("\0");
    }
    if (extra !== undefined) hash.update(`\0extra\0${extra}`);
@@ -66,25 +44,73 @@ export function canonicalJson(value: unknown): string {
    );
 }
 
-/** A real `agents` declaration is a few KB; past this it is not read. */
-export const MANIFEST_AGENTS_MAX_BYTES = 1024 * 1024;
+/** A real `skillSets` and `workflows` declaration is a few KB; past this together they are not read. */
+export const MANIFEST_DECLARATION_MAX_BYTES = 1024 * 1024;
+
+export const UNREADABLE_DECLARATION = "[unreadable: too deep or too large]";
+
+/** The manifest's `skillSets` and `workflows`, unvalidated, as one value; or the marker for a pair too deep or too large to read. */
+export type ManifestDeclaration =
+   | { skillSets?: unknown; workflows?: unknown }
+   | typeof UNREADABLE_DECLARATION;
 
 /**
- * The value, or a marker string when it is too deep or too large to hash and
- * to post across the worker boundary, where a stack overflow is not an
- * author-facing error. The marker is not an object, so the agents reader
- * answers it with its usual "must be an object" warning.
+ * The declaration, `{ skillSets, workflows }` as the manifest wrote them, or a
+ * marker string when it is too deep or too large to hash and to hold in the
+ * worker, where a stack overflow is not an author-facing error, with the
+ * sha256 of its canonical JSON. Both keys are bounded and hashed as one value,
+ * and only when either is present: a package with neither has no declaration
+ * (`value` undefined, no `sha`). The marker is not an object, so the walk
+ * answers it with a "too deeply nested or over 1 MiB" warning of its own.
  */
-export function boundedManifestValue(value: unknown): unknown {
+export function boundedDeclaration(declared: {
+   skillSets?: unknown;
+   workflows?: unknown;
+}): {
+   value: ManifestDeclaration | undefined;
+   sha?: string;
+} {
+   if (declared.skillSets === undefined && declared.workflows === undefined) {
+      return { value: undefined };
+   }
+   const value = {
+      skillSets: declared.skillSets,
+      workflows: declared.workflows,
+   };
    try {
       const text = canonicalJson(value);
-      if (text === undefined || text.length <= MANIFEST_AGENTS_MAX_BYTES) {
-         return value;
+      if (text.length <= MANIFEST_DECLARATION_MAX_BYTES) {
+         return { value, sha: createHash("sha256").update(text).digest("hex") };
       }
    } catch {
       // Too deep to serialize.
    }
-   return "[unreadable: too deep or too large]";
+   return {
+      value: UNREADABLE_DECLARATION,
+      sha: canonicalSha(UNREADABLE_DECLARATION),
+   };
+}
+
+/**
+ * The sha of each of `paths` out of `shas`, so the content hash never reads a
+ * file. A path without one throws: it must never be hashed as the text
+ * "undefined", which would stand in for a file nothing read.
+ */
+export function shasOf(
+   paths: Iterable<string>,
+   shas: ReadonlyMap<string, string>,
+): Map<string, string> {
+   const found = new Map<string, string>();
+   for (const p of paths) {
+      const sha = shas.get(p);
+      if (sha === undefined) {
+         throw new Error(
+            `no sha was read for '${p}', which the content hash covers`,
+         );
+      }
+      found.set(p, sha);
+   }
+   return found;
 }
 
 export function canonicalSha(value: unknown): string {
