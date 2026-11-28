@@ -146,4 +146,54 @@ describe("parseFrontmatter: how much YAML it reads", () => {
          "over 4 KiB",
       );
    });
+
+   it("line-reads only the first 4 KiB of an oversize frontmatter, so a key past it is not seen", () => {
+      const filler = Array.from({ length: 600 }, (_, i) => `k${i}: v`).join(
+         "\n",
+      );
+      const early = parseFrontmatter(
+         skill(`name: x\ndescription: early\n${filler}`),
+         "dir",
+      );
+      expect(early.warnings[0]).toContain("over 4 KiB");
+      expect(early.description).toBe("early");
+      const late = parseFrontmatter(
+         skill(`name: x\n${filler}\ndescription: late`),
+         "dir",
+      );
+      expect(late.warnings[0]).toContain("over 4 KiB");
+      expect(late.name).toBe("x");
+      expect(late.description).toBe("");
+   });
+});
+
+describe("parseFrontmatter: where the frontmatter starts", () => {
+   it("reads one that begins with a byte-order mark and ends its lines with CRLF", () => {
+      const out = parseFrontmatter(
+         "﻿---\r\nname: x\r\ndescription: d\r\nlicense: MIT\r\n---\r\nbody\r\n",
+         "dir",
+      );
+      expect(out.warnings).toEqual([]);
+      expect(out.name).toBe("x");
+      expect(out.description).toBe("d");
+      expect(out.frontmatter).toEqual({
+         name: "x",
+         description: "d",
+         license: "MIT",
+      });
+      expect(out.body).toBe("body\n");
+   });
+
+   it("takes a fence only on line 1, and strips a single byte-order mark", () => {
+      for (const text of [
+         "intro\n---\nname: x\ndescription: d\n---\nbody\n",
+         "\n---\nname: x\ndescription: d\n---\nbody\n",
+         "﻿﻿---\nname: x\ndescription: d\n---\nbody\n",
+      ]) {
+         const out = parseFrontmatter(text, "dir");
+         expect(out.name).toBe("dir");
+         expect(out.description).toBe("");
+         expect(out.frontmatter).toEqual({});
+      }
+   });
 });

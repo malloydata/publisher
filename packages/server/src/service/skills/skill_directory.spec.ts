@@ -13,12 +13,19 @@ import { createHash } from "crypto";
 import fs from "fs";
 import os from "os";
 import path from "path";
-import { computeSourceContentSha } from "../package_revision";
+import { expectWarning } from "../../test_helpers/expect_warning";
 import {
+   boundedDeclaration,
+   computeSourceContentSha,
+} from "../package_revision";
+import {
+   DESCRIPTION,
    FILES,
    LINK,
    PNG,
+   SET,
    SKILL,
+   SKILL_MD,
    SKILLIGNORE,
    SKILLS_ROOT,
    writeSkill,
@@ -34,6 +41,9 @@ import {
    PACKAGE_SKILL_FILE_MAX_BYTES,
    SKILL_SET_MARKDOWN_MAX_BYTES,
    readPackageWorkflows,
+   SKILL_SET_INLINE_MAX_FILES,
+   SKILL_SET_NOT_SERVED,
+   WORKFLOW_NOT_SERVED,
    type PackageWorkflow,
    type PackageWorkflows,
 } from "./package_workflows";
@@ -44,8 +54,15 @@ const EXPECTED = path.join(
    "__fixtures__/skill-directory/expected-definition.json",
 );
 const isWindows = process.platform === "win32";
-/** A second skill set, holding one skill of its own. */
+/** A second skill set, holding one skill of its own, and the name the manifest gives it. */
 const SKILLS_ROOT_B = "workflows/analyst/skill_sets/second";
+const SET_B = "extra";
+
+/** Reads a declaration (the manifest's `skillSets` and `workflows`) as the worker does. */
+const readDeclared = (
+   pkg: string,
+   declared: { skillSets?: unknown; workflows?: unknown },
+) => readPackageWorkflows(pkg, boundedDeclaration(declared).value, []);
 
 /** The text of each warning, which most tests read as prose. */
 const texts = (warnings: Array<{ message: string }>) =>
@@ -89,15 +106,19 @@ const wireOf = (workflow: PackageWorkflow) => ({
 
 describe("a skill is its whole directory", () => {
    let pkg: string;
-   let workflows: ReturnType<typeof writeWorkflow>;
+   let declared: ReturnType<typeof writeWorkflow>;
    const skillDir = () => path.join(pkg, SKILL);
    const write = (relative: string, contents: string | Buffer) => {
       const file = path.join(skillDir(), relative);
       fs.mkdirSync(path.dirname(file), { recursive: true });
       fs.writeFileSync(file, contents);
    };
-   const read = (manifest: unknown = workflows) =>
-      readPackageWorkflows(pkg, manifest);
+   const read = (
+      declaration: {
+         skillSets?: unknown;
+         workflows?: unknown;
+      } = declared,
+   ) => readDeclared(pkg, declaration);
    const workflowOf = (result: PackageWorkflows = read()) =>
       result.workflows.get("analyst")!;
    const definitionSha = () => workflowOf().definitionSha;
@@ -108,7 +129,7 @@ describe("a skill is its whole directory", () => {
 
    beforeEach(() => {
       pkg = fs.mkdtempSync(path.join(os.tmpdir(), "skill-directory-"));
-      workflows = writeWorkflow(pkg);
+      declared = writeWorkflow(pkg);
    });
 
    afterEach(() => {
@@ -136,7 +157,7 @@ describe("a skill is its whole directory", () => {
          true,
       );
       const finding = (text: string) =>
-         `Skill set '${SKILLS_ROOT}' skill finding: ${text}.`;
+         `Skill set '${SET}' skill finding: ${text}.`;
       expect(view.warnings).toEqual([
          finding(
             `Package skill '${SKILL}': .skillignore matches SKILL.md, which a skill always keeps`,
@@ -214,7 +235,7 @@ describe("a skill is its whole directory", () => {
          "fixtures/data.csv",
          "scripts/run_test.py",
       ]);
-      const hashed = read().paths;
+      const hashed = [...read().contentShas.keys()];
       for (const file of ignored.filter((p) => p !== ".skillignore")) {
          expect(served).not.toContain(file);
          expect(hashed.some((p) => p.endsWith(`/${file}`))).toBe(false);
@@ -332,26 +353,46 @@ describe("a skill is its whole directory", () => {
       );
    });
 
-   it("reads the block scalar description to its true length, and the frontmatter as JSON", () => {
+   it("reads the block scalar description to its true length, and the frontmatter as JSON, whatever the file carries", () => {
       const view = viewOf(workflowOf());
       const summary = workflowSkillSet(workflowOf().sets[0]!, "summary");
       expect(
          summary.skills.find((f) => f.relative_filepath === "pricing/SKILL.md"),
-      ).toMatchObject({
-         name: "pricing",
-         description:
-            "How we price deals: start from list, then apply the discount rules.",
-      });
+      ).toMatchObject({ name: "pricing", description: DESCRIPTION });
       expect(view.catalog[0]).toMatchObject({
          name: "pricing",
          frontmatter: {
             name: "pricing",
-            description:
-               "How we price deals: start from list, then apply the discount rules.",
+            description: DESCRIPTION,
             license: "MIT",
             metadata: { owner: "revenue", reviewed: "2026-11-01" },
          },
       });
+   });
+
+   it("serves a SKILL.md exactly as written: a byte-order mark, CRLF, and every key a host would trust, none of them ours to drop or add", () => {
+      const view = viewOf(workflowOf());
+      const served = view.skills.find(
+         (f) => f.relative_filepath === "pricing/SKILL.md",
+      )!;
+      expect(served.file_contents).toBe(SKILL_MD);
+      expect(served.file_contents.startsWith("\uFEFF---\r\n")).toBe(true);
+      expect(served.file_contents).toContain("allowed-tools: Bash(*)");
+      expect(served.file_contents).toContain("hooks:");
+      // Not re-emitted: the bytes the digest covers are the bytes of the file on disk.
+      expect(view.catalog[0]!.files["SKILL.md"]).toEqual({
+         digest: `sha256:${sha(Buffer.from(SKILL_MD))}`,
+         size: Buffer.byteLength(SKILL_MD),
+      });
+      expect(read().contentShas.get(`${SKILL}/SKILL.md`)).toBe(
+         sha(Buffer.from(SKILL_MD)),
+      );
+   });
+
+   it("moves the set's digest for an edit to a SKILL.md key only a host reads, since the file is served whole", () => {
+      const base = workflowOf().sets[0]!.set.digest;
+      write("SKILL.md", SKILL_MD.replace("model: opus", "model: sonnet"));
+      expect(workflowOf().sets[0]!.set.digest).not.toBe(base);
    });
 
    it("keeps a SKILL.md that is a directory out of service, and serves none of what is inside it", () => {
@@ -366,8 +407,9 @@ describe("a skill is its whole directory", () => {
          "not a regular file",
       );
       expect(texts(dropped.warnings).join("\n")).toContain("holds no skills");
-      expect(dropped.paths).toEqual(["workflows/analyst/instructions.md"]);
-      expect([...dropped.contentShas.keys()]).toEqual(dropped.paths);
+      expect([...dropped.contentShas.keys()]).toEqual([
+         "workflows/analyst/instructions.md",
+      ]);
    });
 
    describe("what sets a skill aside, or refuses the workflow, whatever .skillignore says", () => {
@@ -381,7 +423,7 @@ describe("a skill is its whole directory", () => {
             const result = read();
             expect(workflowOf(result).sets[0]!.skills).toEqual([]);
             expect(texts(result.warnings).join("\n")).toContain(
-               `Skill set '${SKILLS_ROOT}' skill finding: Package skill '${SKILL}' is not served: '${SKILL}/assets' is a link`,
+               `Skill set '${SET}' skill finding: Package skill '${SKILL}' is not served: '${SKILL}/assets' is a link`,
             );
             expect(texts(result.warnings).join("\n")).not.toContain("x.txt");
          } finally {
@@ -422,12 +464,17 @@ describe("a skill is its whole directory", () => {
    });
 
    describe("a publisher.json", () => {
-      it("refuses the workflow for a publisher.json in the skill set root", () => {
+      it("refuses the set, and the workflow that lists it, for a publisher.json in the skill set root", () => {
          const where = path.join(pkg, SKILLS_ROOT, "publisher.json");
          fs.writeFileSync(where, "{}");
          const result = read();
          expect(result.workflows.has("analyst")).toBe(false);
+         expect(result.sets.has(SET)).toBe(false);
          expect(texts(result.warnings)[0]).toContain("nested publisher.json");
+         expect(result.warnings.map((w) => [w.code, w.subject])).toEqual([
+            [SKILL_SET_NOT_SERVED, SET],
+            [WORKFLOW_NOT_SERVED, "analyst"],
+         ]);
          fs.rmSync(where);
          expect(viewOf(workflowOf())).toBeDefined();
       });
@@ -566,14 +613,12 @@ describe("a skill is its whole directory", () => {
          expect(view.warnings.join("\n")).toContain(
             `Package skill file '${SKILL}/references/big.md' would take the skill set's Markdown over the ${SKILL_SET_MARKDOWN_MAX_BYTES / 1024} KiB cap`,
          );
-         // SKILL.md is re-emitted, so its bytes are a little off the raw ones the cap counts.
+         // Served as written, so the bytes sent are the ones the cap counts.
          const inlineBytes = view.skills.reduce(
             (n, f) => n + Buffer.byteLength(f.file_contents),
             0,
          );
-         expect(inlineBytes).toBeLessThanOrEqual(
-            SKILL_SET_MARKDOWN_MAX_BYTES + 1024,
-         );
+         expect(inlineBytes).toBeLessThanOrEqual(SKILL_SET_MARKDOWN_MAX_BYTES);
       });
 
       it("sets aside, in path order, a skill whose SKILL.md would pass the cap, and still serves the workflow", () => {
@@ -622,9 +667,15 @@ describe("a skill is its whole directory", () => {
          );
          writeSecondSkill(SKILLS_ROOT_B, 100_000);
          const result = read({
-            analyst: {
-               ...workflows.analyst,
-               skillSets: [SKILLS_ROOT, SKILLS_ROOT_B],
+            skillSets: {
+               ...declared.skillSets,
+               [SET_B]: { path: SKILLS_ROOT_B },
+            },
+            workflows: {
+               analyst: {
+                  ...declared.workflows.analyst,
+                  skillSets: [SET, SET_B],
+               },
             },
          });
          expect(
@@ -644,12 +695,12 @@ describe("a skill set's own skills", () => {
       fs.mkdirSync(path.join(setDir(), dir), { recursive: true });
       fs.writeFileSync(path.join(setDir(), dir, "SKILL.md"), contents);
    };
-   /** The skill set at `skills/`, read as the default workflow lists it. */
+   /** The skill set at `skills/`, read as the package's default set. */
    const readSet = () => {
-      const result = readPackageWorkflows(pkg, {
-         default: { skillSets: ["skills"] },
+      const result = readDeclared(pkg, {
+         skillSets: { default: { path: "skills" } },
       });
-      const set = result.sets.get("skills")!;
+      const set = result.sets.get("default")!;
       return {
          result,
          set,
@@ -708,7 +759,9 @@ describe("a skill set's own skills", () => {
          "skills/pricing/reference/rule-of-50.md",
          "skills/pricing/references/a.md",
       ]);
-      for (const file of inline) expect(result.paths).toContain(file);
+      for (const file of inline) {
+         expect([...result.contentShas.keys()]).toContain(file);
+      }
    });
 
    it("hashes a set's skills from the shas the walk took, reading no file", () => {
@@ -925,7 +978,7 @@ describe("a skill set's own skills", () => {
       },
    );
 
-   it("reads a file of a workflow's skill without emitting its SKILL.md again, and emits that once", async () => {
+   it("reads a file of a workflow's skill, its SKILL.md included, from the file as written and never from the parsed frontmatter", async () => {
       writeSkill(pkg, "skills");
       const [skill] = readSet().skills;
       let metaReads = 0;
@@ -947,13 +1000,10 @@ describe("a skill set's own skills", () => {
             text: expect.any(String),
          });
       }
+      expect(await readWorkflowFile(counted, "pricing/SKILL.md")).toEqual({
+         text: SKILL_MD,
+      });
       expect(metaReads).toBe(0);
-      await readWorkflowFile(counted, "pricing/SKILL.md");
-      const emitted = metaReads;
-      expect(emitted).toBeGreaterThan(0);
-      await readWorkflowFile(counted, "pricing/SKILL.md");
-      await readWorkflowFile(counted, "pricing/NOTES.md");
-      expect(metaReads).toBe(emitted);
    });
 
    it("lists exactly the files it serves: a skipped, ignored or built-in-excluded file is not in the catalog", () => {
@@ -1031,7 +1081,6 @@ describe("a skill set's own skills", () => {
          fs.writeFileSync(path.join(setDir(), "bad/run.py"), "x");
          const { result, skills, warnings } = readSet();
          expect(skills).toEqual([]);
-         expect(result.paths).toEqual([]);
          expect(result.contentShas.size).toBe(0);
          expect(warnings.join("\n")).toContain("outside the package");
       } finally {
@@ -1095,15 +1144,23 @@ describe("a skill read whole still serves what it served before", () => {
          `---\nname: ${name}\ndescription: d\n---\n\nbody\n`,
       );
    const pad = (i: number) => String(i).padStart(3, "0");
+   /** The name the manifest gives the set at `root`, unlike its folder's. */
+   const nameOf = (root: string) => `set-${root.split("/").pop()}`;
    const manifest = (roots: string[] = [ROOT]) => ({
-      analyst: {
-         description: "d",
-         instructions: "workflows/analyst/instructions.md",
-         skillSets: roots,
+      skillSets: Object.fromEntries(
+         roots.map((root) => [nameOf(root), { path: root }]),
+      ),
+      workflows: {
+         analyst: {
+            description: "d",
+            instructions: "workflows/analyst/instructions.md",
+            skillSets: roots.map(nameOf),
+         },
       },
    });
-   const read = (workflows: unknown = manifest()) =>
-      readPackageWorkflows(pkg, workflows);
+   const read = (
+      declaration: { skillSets?: unknown; workflows?: unknown } = manifest(),
+   ) => readDeclared(pkg, declaration);
    /** The analyst workflow's first skill set, as the wire carries it. */
    const viewOf = (result = read()) =>
       workflowSkillSet(result.workflows.get("analyst")!.sets[0]!, "full");
@@ -1264,8 +1321,7 @@ describe("a skill read whole still serves what it served before", () => {
          expect(listed(view)).toEqual([]);
          expect(
             Object.keys(
-               readPackageWorkflows(pkg, manifest()).sets.get(ROOT)!.skills[0]!
-                  .catalog.files,
+               read().sets.get(nameOf(ROOT))!.skills[0]!.catalog.files,
             ),
          ).toEqual(["SKILL.md", "reference/a.md"]);
       });
@@ -1317,16 +1373,16 @@ describe("a skill read whole still serves what it served before", () => {
          skill(`k${k}`);
          for (let i = 0; i < 990; i++) write(`${ROOT}/k${k}/data/f${i}.txt`);
       }
-      const one = manifest().analyst;
+      const one = manifest().workflows.analyst;
       const eight = Object.fromEntries(
          Array.from({ length: 8 }, (_, i) => [`a${i}`, { ...one }]),
       );
       const listings = spyOn(fs, "readdirSync");
       try {
-         read({ a0: one });
+         read({ ...manifest(), workflows: { a0: one } });
          const calls1 = listings.mock.calls.length;
          listings.mockClear();
-         const result = read(eight);
+         const result = read({ ...manifest(), workflows: eight });
          const calls8 = listings.mock.calls.length;
          expect(result.workflows.size).toBe(8);
          expect(result.sets.size).toBe(1);
@@ -1339,7 +1395,7 @@ describe("a skill read whole still serves what it served before", () => {
       }
    });
 
-   it("charges the package's 8 MiB to the skill sets in sorted path order, whatever order a workflow lists them", () => {
+   it("charges the package's 8 MiB to the skill sets in name order, whatever order a workflow lists them", () => {
       const nearCap = Buffer.alloc(1024 * 1024 - 1, "a");
       const roots = ["skills-a", "skills-b", "skills-c"];
       for (const name of ["a", "b", "c"]) {
@@ -1357,16 +1413,23 @@ describe("a skill read whole still serves what it served before", () => {
       for (const result of [forward, backward]) {
          const files = (root: string) =>
             result.sets
-               .get(root)!
+               .get(nameOf(root))!
                .skills.flatMap((s) => s.listed)
                .map((f) => f.relative_filepath);
          expect(files("skills-a")).toHaveLength(4);
          expect(files("skills-b")).toHaveLength(4);
-         expect(files("skills-c")).toEqual([]);
-         expect(texts(result.warnings).join("\n")).toContain("per-package cap");
+         // The set that crosses the cap is refused whole, and so is the workflow that lists it.
+         expect(result.sets.has(nameOf("skills-c"))).toBe(false);
+         expectWarning(
+            result.warnings,
+            SKILL_SET_NOT_SERVED,
+            nameOf("skills-c"),
+            "per-package cap",
+         );
+         expect(result.workflows.size).toBe(0);
       }
-      expect(backward.sets.get("skills-c")!.digest).toBe(
-         forward.sets.get("skills-c")!.digest,
+      expect(backward.sets.get(nameOf("skills-a"))!.digest).toBe(
+         forward.sets.get(nameOf("skills-a"))!.digest,
       );
    });
 
@@ -1422,7 +1485,10 @@ describe("a skill read whole still serves what it served before", () => {
          for (let i = 0; i < count; i++) write(`${dir}/r${i}.md`, "# R\n");
       };
 
-      it("serves at most 1,000 Markdown files when it is a link to a large directory in the package", () => {
+      // SKILL.md is the first of the set's inline files, so the folder gives up one to the set's own cap.
+      const inlineOfFolder = Math.min(1000, SKILL_SET_INLINE_MAX_FILES - 1);
+
+      it("serves at most 1,000 Markdown files, the set's inline cap permitting, when it is a link to a large directory in the package", () => {
          skill("s");
          fill("shared-ref", 5000);
          fs.symlinkSync(
@@ -1433,7 +1499,7 @@ describe("a skill read whole still serves what it served before", () => {
          const references = inline(viewOf(result)).filter((f) =>
             f.startsWith("s/reference/"),
          );
-         expect(references).toHaveLength(1000);
+         expect(references).toHaveLength(inlineOfFolder);
          expect(
             texts(result.warnings).filter(
                (w) =>
@@ -1443,13 +1509,13 @@ describe("a skill read whole still serves what it served before", () => {
          ).toHaveLength(1);
       });
 
-      it("serves at most 1,000 Markdown files when it is a real directory", () => {
+      it("serves at most 1,000 Markdown files, the set's inline cap permitting, when it is a real directory", () => {
          skill("s");
          fill(`${ROOT}/s/reference`, 1200);
          const result = read();
          expect(
             inline(viewOf(result)).filter((f) => f.startsWith("s/reference/")),
-         ).toHaveLength(1000);
+         ).toHaveLength(inlineOfFolder);
          expect(texts(result.warnings).join("\n")).toContain(
             "reference/ holds more than 1000 Markdown files",
          );

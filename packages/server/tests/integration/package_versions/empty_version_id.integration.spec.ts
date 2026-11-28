@@ -83,15 +83,15 @@ function writePackage(
       path.join(dir, "publisher.json"),
       JSON.stringify({
          ...manifest,
+         skillSets: {
+            default: { path: "skill_sets/house" },
+            finance: { path: "workflows/analyst/skill_sets/analysis" },
+         },
          workflows: {
-            default: {
-               description: `Default v${answer}`,
-               skillSets: ["skill_sets/house"],
-            },
             analyst: {
                description: `Analyst v${answer}`,
                instructions: "workflows/analyst/instructions.md",
-               skillSets: ["workflows/analyst/skill_sets/analysis"],
+               skillSets: ["finance"],
             },
          },
       }),

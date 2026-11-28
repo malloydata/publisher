@@ -93,11 +93,13 @@ import type { PackageWorkflowsWire } from "../service/skills/package_workflows";
  * 10: a served-copy compile's `virtualMap`
  * ({@link CompileServedCopyRequest.virtualMap}).
  *
- * 11: the skills walk ({@link LoadPackageRequest.readWorkflows}): the walk as
- * wire data, or why it could not finish (`unavailable`), the whole `workflows`
- * value's refusal (`workflowsRefusal`) and each listed file's `binary` flag
- * ({@link WorkflowsRead}, `workflowsRead`), and the content shas of the serving
- * identity (`modelShas`), which replace `packageMetadata.workflows`.
+ * 11: the skills walk ({@link LoadPackageRequest.readWorkflows}, which carries
+ * the bundled skills' names): the walk of the manifest's `skillSets` and
+ * `workflows`, read as one declaration, as wire data, or why it could not
+ * finish (`unavailable`), the declaration's refusal (`declarationRefusal`) and
+ * each listed file's `binary` flag ({@link WorkflowsRead}, `workflowsRead`);
+ * and the serving identity's `sourceContentSha`, which the worker hashes and
+ * ships whole. They replace `packageMetadata.workflows`.
  */
 export const PACKAGE_LOAD_PROTOCOL_VERSION = 11;
 
@@ -195,12 +197,14 @@ export interface LoadPackageRequest {
     */
    refreshTimestamp?: number;
    /**
-    * Walk the package's workflows and skill sets, and hash the files its
-    * serving identity covers, in this job (`workflowsRead`, `modelShas`): the
-    * main thread then only adopts them. Set by the loads that install a
-    * package; every other job skips the walk.
+    * Walk the package's skill sets and workflows, and hash the files its
+    * serving identity covers, in this job (`workflowsRead`,
+    * `sourceContentSha`): the main thread then only adopts them. Set by the
+    * loads that install a package; every other job skips the walk. Carries the
+    * names of the skills this server bundles, which the walk flags a package
+    * skill of the same name against.
     */
-   readWorkflows?: true;
+   readWorkflows?: { bundledSkillNames: readonly string[] };
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -286,10 +290,8 @@ export interface SerializedModel {
 
 export type { SerializedNotebookCell } from "./notebook_cell_wire";
 
-/** The package's workflows as the worker walked them: what the serving identity installs and hashes, with no file left for the main thread to read. */
+/** The package's skill sets and workflows as the worker walked them: what the serving identity installs, with no file left for the main thread to read. */
 export interface WorkflowsRead {
-   /** The sha256 of the manifest's canonical `workflows` declaration; absent when it declares none. */
-   declarationSha?: string;
    walk: PackageWorkflowsWire;
 }
 
@@ -335,11 +337,12 @@ export interface LoadPackageResult {
     */
    fileDigests?: Record<string, string>;
    /**
-    * The sha256 of each model file's text this load's compile read, by model
-    * path, `UNREADABLE_SHA` for one it could not read; present only for a job
-    * with `readWorkflows`, and for every model it compiled.
+    * The sha256 over what the package serves: each model's text this load's
+    * compile read (`UNREADABLE_SHA` for one it could not read), each file the
+    * walk read, and the declaration. Present only for a job with
+    * `readWorkflows`.
     */
-   modelShas?: Map<string, string>;
+   sourceContentSha?: string;
    /** Wall-clock ms inside the worker for the full package load. */
    loadDurationMs: number;
    /**

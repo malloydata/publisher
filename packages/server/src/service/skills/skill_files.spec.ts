@@ -733,9 +733,9 @@ describe("skillFiles", () => {
          write("other.txt");
          const { files, warnings } = skillFiles(dir, {
             budget: {
+               ...newWalkBudget("package"),
                assets: { left: 0 },
                other: { left: 0 },
-               owner: "package",
             },
          });
          expect(files).toEqual(["SKILL.md", "reference/a.md"]);
@@ -752,9 +752,9 @@ describe("skillFiles", () => {
             }
             const { files, warnings } = skillFiles(dir, {
                budget: {
+                  ...newWalkBudget("package"),
                   assets: { left: 0 },
                   other: { left: 0 },
-                  owner: "package",
                },
             });
             expect(inReferences(files)).toHaveLength(ASSET_MAX_ENTRIES);
@@ -830,9 +830,9 @@ describe("skillFiles", () => {
             fillReference("reference", ASSET_MAX_ENTRIES + 200);
             const { files, warnings } = skillFiles(dir, {
                budget: {
+                  ...newWalkBudget("package"),
                   assets: { left: 0 },
                   other: { left: 0 },
-                  owner: "package",
                },
             });
             expect(inReference(files)).toHaveLength(ASSET_MAX_ENTRIES);

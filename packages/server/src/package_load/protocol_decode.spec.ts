@@ -286,37 +286,28 @@ describe("checkLoadPackageResult", () => {
    });
 
    describe("the serving identity a load ships", () => {
-      const walk = () => ({
-         workflows: new Map(),
-         sets: new Map(),
-         contentShas: new Map([["a.md", "sha"]]),
-         paths: ["a.md"],
-      });
+      const walk = () => ({ workflows: new Map(), sets: new Map() });
       const withRead = (workflowsRead: unknown) =>
          result({ packageMetadata: { workflowsRead } });
 
-      it("accepts a walk and the model shas the worker read", () => {
+      it("accepts a walk and the source content sha the worker computed", () => {
          const msg = {
-            ...withRead({ declarationSha: "d", walk: walk() }),
-            modelShas: new Map([["m.malloy", "sha"]]),
+            ...withRead({ walk: walk() }),
+            sourceContentSha: "a".repeat(64),
          };
          expect(checkLoadPackageResult(msg)).toBe(msg as never);
       });
 
-      it("rejects model shas that are not a map of strings", () => {
-         for (const modelShas of [
-            {},
-            [["m.malloy", "sha"]],
-            new Map([["m", 1]]),
-         ]) {
-            expect(() => checkLoadPackageResult(result({ modelShas }))).toThrow(
-               /modelShas that are not a map of strings/,
-            );
+      it("rejects a source content sha that is not a string", () => {
+         for (const sourceContentSha of [{}, 1, ["a"], new Map()]) {
+            expect(() =>
+               checkLoadPackageResult(result({ sourceContentSha })),
+            ).toThrow(/sourceContentSha that is not a string/);
          }
       });
 
-      it("rejects a workflowsRead whose walk lost a map or its paths in transit", () => {
-         for (const lost of ["workflows", "sets", "contentShas", "paths"]) {
+      it("rejects a workflowsRead whose walk lost a map in transit", () => {
+         for (const lost of ["workflows", "sets"]) {
             const broken: Record<string, unknown> = walk();
             broken[lost] = {};
             expect(() =>

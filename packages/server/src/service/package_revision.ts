@@ -44,26 +44,42 @@ export function canonicalJson(value: unknown): string {
    );
 }
 
-/** A real `workflows` declaration is a few KB; past this it is not read. */
-export const MANIFEST_WORKFLOWS_MAX_BYTES = 1024 * 1024;
+/** A real `skillSets` and `workflows` declaration is a few KB; past this together they are not read. */
+export const MANIFEST_DECLARATION_MAX_BYTES = 1024 * 1024;
 
 export const UNREADABLE_DECLARATION = "[unreadable: too deep or too large]";
 
+/** The manifest's `skillSets` and `workflows`, unvalidated, as one value; or the marker for a pair too deep or too large to read. */
+export type ManifestDeclaration =
+   | { skillSets?: unknown; workflows?: unknown }
+   | typeof UNREADABLE_DECLARATION;
+
 /**
- * The declaration, or a marker string when it is too deep or too large to
- * hash and to post across the worker boundary, where a stack overflow is not
- * an author-facing error, with the sha256 of its canonical JSON (absent for no
- * declaration). The marker is not an object, so the workflows reader answers
- * it with a "too deeply nested or over 1 MiB" warning of its own.
+ * The declaration, `{ skillSets, workflows }` as the manifest wrote them, or a
+ * marker string when it is too deep or too large to hash and to hold in the
+ * worker, where a stack overflow is not an author-facing error, with the
+ * sha256 of its canonical JSON. Both keys are bounded and hashed as one value,
+ * and only when either is present: a package with neither has no declaration
+ * (`value` undefined, no `sha`). The marker is not an object, so the walk
+ * answers it with a "too deeply nested or over 1 MiB" warning of its own.
  */
-export function boundedDeclaration(value: unknown): {
-   value: unknown;
+export function boundedDeclaration(declared: {
+   skillSets?: unknown;
+   workflows?: unknown;
+}): {
+   value: ManifestDeclaration | undefined;
    sha?: string;
 } {
+   if (declared.skillSets === undefined && declared.workflows === undefined) {
+      return { value: undefined };
+   }
+   const value = {
+      skillSets: declared.skillSets,
+      workflows: declared.workflows,
+   };
    try {
       const text = canonicalJson(value);
-      if (text === undefined) return { value };
-      if (text.length <= MANIFEST_WORKFLOWS_MAX_BYTES) {
+      if (text.length <= MANIFEST_DECLARATION_MAX_BYTES) {
          return { value, sha: createHash("sha256").update(text).digest("hex") };
       }
    } catch {
@@ -73,6 +89,28 @@ export function boundedDeclaration(value: unknown): {
       value: UNREADABLE_DECLARATION,
       sha: canonicalSha(UNREADABLE_DECLARATION),
    };
+}
+
+/**
+ * The sha of each of `paths` out of `shas`, so the content hash never reads a
+ * file. A path without one throws: it must never be hashed as the text
+ * "undefined", which would stand in for a file nothing read.
+ */
+export function shasOf(
+   paths: Iterable<string>,
+   shas: ReadonlyMap<string, string>,
+): Map<string, string> {
+   const found = new Map<string, string>();
+   for (const p of paths) {
+      const sha = shas.get(p);
+      if (sha === undefined) {
+         throw new Error(
+            `no sha was read for '${p}', which the content hash covers`,
+         );
+      }
+      found.set(p, sha);
+   }
+   return found;
 }
 
 export function canonicalSha(value: unknown): string {

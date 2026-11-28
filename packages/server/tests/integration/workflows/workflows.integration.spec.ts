@@ -5,7 +5,7 @@
 
 /**
  * E2E coverage for the skill and workflow routes against the real Express app:
- * name resolution (bundled skills, the default workflow's skills, shadowing),
+ * name resolution (bundled skills, the default skill set's skills, shadowing),
  * wildcard paths with slashes and percent-encoding, the `?skills=` and
  * `?skillSet=` validation, and the 404s.
  */
@@ -22,7 +22,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ENV_NAME = "workflows-test-env";
 const PACKAGE_NAME = "workflows-test";
 const fixtureDir = path.resolve(__dirname, "../../fixtures/workflows-test");
-/** A package whose manifest writes `workflows` as a string, so no workflow of it is served. */
+/** A package whose manifest writes `workflows` as a string, so no skill set or workflow of it is served. */
 const REFUSED_PACKAGE = "workflows-refused";
 
 describe("Package skills and workflows (E2E)", () => {
@@ -100,7 +100,7 @@ describe("Package skills and workflows (E2E)", () => {
       const text = (relative: string) =>
          fs.readFileSync(path.join(skillDir, relative), "utf8");
 
-      it("lists bundled skills and the default workflow's, the package's replacing a bundled name", async () => {
+      it("lists bundled skills and the default skill set's, the package's replacing a bundled name", async () => {
          const { status, body } = await get("/skills");
          expect(status).toBe(200);
          const byName = new Map(
@@ -112,7 +112,7 @@ describe("Package skills and workflows (E2E)", () => {
          expect(byName.get("malloy-getting-started")).toBe("bundled");
          expect(byName.get("malloy-analysis")).toBe("package");
          expect(byName.get("house-rules")).toBe("package");
-         // Only the default workflow's skills are advertised, not the analyst's.
+         // Only the default skill set's skills are advertised, not the finance set's.
          expect(byName.has("conventions")).toBe(false);
          // A skill's files are not skills.
          expect([...byName.keys()].some((n) => n.includes("/"))).toBe(false);
@@ -152,7 +152,7 @@ describe("Package skills and workflows (E2E)", () => {
          expect(body.path).toBe("SKILL.md");
       });
 
-      it("answers 404 for a name nothing defines, a skill only another workflow lists, and an unknown package", async () => {
+      it("answers 404 for a name nothing defines, a skill only another set holds, and an unknown package", async () => {
          expect((await get("/skills/nope")).status).toBe(404);
          expect((await get("/skills/conventions")).status).toBe(404);
          const res = await fetch(
@@ -176,27 +176,21 @@ describe("Package skills and workflows (E2E)", () => {
          ...set,
          digest: expect.stringMatching(/^[0-9a-f]{64}$/),
       });
-      const analysis = {
-         name: "analysis",
+      const finance = {
+         name: "finance",
          path: "workflows/analyst/skill_sets/analysis",
       };
-      const house = { name: "house", path: "skill_sets/house" };
+      const house = { name: "default", path: "skill_sets/house" };
 
       it("lists the workflows the manifest declares, in its order, without their text", async () => {
          const { status, body } = await get("/workflows");
          expect(status).toBe(200);
          expect(body).toEqual([
             {
-               name: "default",
-               description: "The package's advertised skills",
-               has_instructions: false,
-               skill_sets: [summary(house)],
-            },
-            {
                name: "analyst",
                description: "Answers questions using the house conventions",
                has_instructions: true,
-               skill_sets: [summary(analysis), summary(house)],
+               skill_sets: [summary(finance), summary(house)],
             },
             {
                name: "weekly-summary",
@@ -204,10 +198,16 @@ describe("Package skills and workflows (E2E)", () => {
                has_instructions: true,
                skill_sets: [],
             },
+            {
+               name: "reviewer",
+               description: "Reviews work against the package's own skills",
+               has_instructions: true,
+               skill_sets: [summary(house)],
+            },
          ]);
          // A set two workflows list is one set: the same digest in both.
-         expect(body[0].skill_sets[0].digest).toBe(
-            body[1].skill_sets[1].digest,
+         expect(body[0].skill_sets[1].digest).toBe(
+            body[2].skill_sets[0].digest,
          );
       });
 
@@ -219,8 +219,8 @@ describe("Package skills and workflows (E2E)", () => {
             "Be careful with revenue.\n",
          );
          expect(body.skill_sets.map((s: { name: string }) => s.name)).toEqual([
-            "analysis",
-            "house",
+            "finance",
+            "default",
          ]);
          const paths = (set: number) =>
             body.skill_sets[set].skills.map(
@@ -266,7 +266,7 @@ describe("Package skills and workflows (E2E)", () => {
          expect(refusals[0]!.subject).toBe("broken");
          expect(
             refusals[0]!.message.startsWith(
-               "Workflow 'broken' is not served: skill set directory 'skill_sets/missing' does not exist",
+               "Workflow 'broken' is not served: it lists the skill set 'missing', which the top-level 'skillSets' does not declare",
             ),
          ).toBe(true);
          expect((await get("/workflows/analyst")).status).toBe(200);
@@ -277,7 +277,7 @@ describe("Package skills and workflows (E2E)", () => {
          expect(refused.status).toBe(404);
          expect(refused.body.reason).toBe("WORKFLOW_NOT_SERVED");
          expect(refused.body.message).toStartWith(
-            "Workflow 'broken' is not served: skill set directory 'skill_sets/missing' does not exist",
+            "Workflow 'broken' is not served: it lists the skill set 'missing', which the top-level 'skillSets' does not declare",
          );
          const undeclared = await get("/workflows/nope");
          expect(undeclared.status).toBe(404);
@@ -328,7 +328,7 @@ describe("Package skills and workflows (E2E)", () => {
       it("returns one skill set and no instructions for ?skillSet=", async () => {
          const full = await get("/workflows/analyst");
          const { status, body } = await get(
-            "/workflows/analyst?skillSet=house",
+            "/workflows/analyst?skillSet=default",
          );
          expect(status).toBe(200);
          expect(body.instructions).toBeUndefined();
@@ -349,7 +349,7 @@ describe("Package skills and workflows (E2E)", () => {
 
       it("rejects a repeated skillSet", async () => {
          const { status, body } = await get(
-            "/workflows/analyst?skillSet=house&skillSet=analysis",
+            "/workflows/analyst?skillSet=default&skillSet=finance",
          );
          expect(status).toBe(400);
          expect(body.message).toContain("'skillSet' must be");
@@ -361,7 +361,7 @@ describe("Package skills and workflows (E2E)", () => {
             404,
          );
          expect(
-            (await get("/workflows/weekly-summary?skillSet=house")).status,
+            (await get("/workflows/weekly-summary?skillSet=default")).status,
          ).toBe(404);
          expect((await get("/workflows/Bad_Name")).status).toBe(404);
       });
@@ -384,18 +384,18 @@ describe("Package skills and workflows (E2E)", () => {
             expect(body.file_contents).toContain("net = after refunds");
             expect(body.source.sourceContentSha).toMatch(/^[0-9a-f]{64}$/);
          }
-         // From the set the analyst shares with the default workflow.
+         // From the default set, which the analyst lists beside its own.
          const shared = await read("house-rules/scripts/check.py");
          expect(shared.status).toBe(200);
          expect(shared.body.file_contents).toContain("check margin");
       });
 
-      it("reads a default-workflow skill's other files at /workflows/default, literal or encoded", async () => {
+      it("reads a default-set skill's other files through a workflow that lists only that set, literal or encoded", async () => {
          for (const p of [
             "house-rules/reference/margin.md",
             "house-rules%2Freference%2Fmargin.md",
          ]) {
-            const { status, body } = await read(p, "default");
+            const { status, body } = await read(p, "reviewer");
             expect(status).toBe(200);
             expect(body.relative_filepath).toBe(
                "house-rules/reference/margin.md",
@@ -413,11 +413,13 @@ describe("Package skills and workflows (E2E)", () => {
       });
 
       it("reads a file inside the skill set a skillSet names, and nothing another set holds", async () => {
-         const own = await read("house-rules/scripts/check.py?skillSet=house");
+         const own = await read(
+            "house-rules/scripts/check.py?skillSet=default",
+         );
          expect(own.status).toBe(200);
          expect(own.body.file_contents).toContain("check margin");
          expect(
-            (await read("house-rules/scripts/check.py?skillSet=analysis"))
+            (await read("house-rules/scripts/check.py?skillSet=finance"))
                .status,
          ).toBe(404);
          expect((await read("conventions/SKILL.md?skillSet=nope")).status).toBe(
@@ -427,7 +429,7 @@ describe("Package skills and workflows (E2E)", () => {
 
       it("rejects a repeated skillSet", async () => {
          const { status, body } = await read(
-            "conventions/SKILL.md?skillSet=house&skillSet=analysis",
+            "conventions/SKILL.md?skillSet=default&skillSet=finance",
          );
          expect(status).toBe(400);
          expect(body.message).toContain("'skillSet' must be");
@@ -471,18 +473,18 @@ describe("Package skills and workflows (E2E)", () => {
       it("answers 404 for a file outside the resolved set, a skill the workflow does not list, and an unknown workflow", async () => {
          expect((await read("conventions/nope.md")).status).toBe(404);
          expect((await read("..%2F..%2F..%2Fpublisher.json")).status).toBe(404);
-         expect((await read("conventions/SKILL.md", "default")).status).toBe(
+         expect((await read("conventions/SKILL.md", "reviewer")).status).toBe(
             404,
          );
          expect((await read("conventions/SKILL.md", "nope")).status).toBe(404);
       });
    });
 
-   describe("a manifest whose whole workflows value is refused", () => {
+   describe("a manifest whose whole declaration is refused", () => {
       it("answers any name, on both routes, 404 WORKFLOW_NOT_SERVED with the manifest warning's text", async () => {
          for (const sub of [
             "/workflows/analyst",
-            "/workflows/default/skills/house-rules/SKILL.md",
+            "/workflows/reviewer/skills/house-rules/SKILL.md",
          ]) {
             const { status, body } = await get(sub, REFUSED_PACKAGE);
             expect(status).toBe(404);

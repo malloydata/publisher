@@ -317,14 +317,11 @@ export function checkLoadPackageResult(raw: unknown): LoadPackageResult {
       );
    }
    if (
-      raw.modelShas !== undefined &&
-      !(
-         raw.modelShas instanceof Map &&
-         [...raw.modelShas.values()].every((sha) => typeof sha === "string")
-      )
+      raw.sourceContentSha !== undefined &&
+      typeof raw.sourceContentSha !== "string"
    ) {
       throw new PackageLoadProtocolError(
-         `a load-package-result has modelShas that are not a map of strings`,
+         `a load-package-result has a sourceContentSha that is not a string`,
       );
    }
    const workflowsRead = raw.packageMetadata.workflowsRead;
@@ -334,9 +331,7 @@ export function checkLoadPackageResult(raw: unknown): LoadPackageResult {
          isRecord(workflowsRead) &&
          isRecord(workflowsRead.walk) &&
          workflowsRead.walk.workflows instanceof Map &&
-         workflowsRead.walk.sets instanceof Map &&
-         workflowsRead.walk.contentShas instanceof Map &&
-         Array.isArray(workflowsRead.walk.paths)
+         workflowsRead.walk.sets instanceof Map
       )
    ) {
       throw new PackageLoadProtocolError(

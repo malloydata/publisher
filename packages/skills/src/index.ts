@@ -33,6 +33,7 @@ export function listSkills(): Skill[] {
       if (!fs.existsSync(skillFile)) continue;
       const markdown = fs
          .readFileSync(skillFile, "utf8")
+         .replace(/^\uFEFF/, "")
          .replace(/\r\n/g, "\n");
       const frontmatter = markdown.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
       skills.push({ ...readFrontmatter(frontmatter, entry.name), dir });

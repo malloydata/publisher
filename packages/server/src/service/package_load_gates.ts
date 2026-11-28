@@ -86,26 +86,16 @@ export function assertOutcomeStagesAvailable(
    );
 }
 
-/** Checked before anything is installed, so a worker that left out the walk or a sha fails the load instead of half of a reload. */
+/** Checked before anything is installed, so a worker that left out the walk or the source content sha fails the load instead of half of a reload. */
 export function assertServingIdentityShipped(
    outcome: LoadPackageOutcome,
 ): void {
-   const read = outcome.packageMetadata.workflowsRead;
-   const { modelShas } = outcome;
-   if (!read || !modelShas) {
+   if (
+      !outcome.packageMetadata.workflowsRead ||
+      outcome.sourceContentSha === undefined
+   ) {
       throw new PackageLoadProtocolError(
-         `a load-package-result for an installing load has no workflows walk or model shas`,
-      );
-   }
-   const unhashed = [
-      ...outcome.models
-         .map((m) => m.modelPath)
-         .filter((p) => !modelShas.has(p)),
-      ...read.walk.paths.filter((p) => !read.walk.contentShas.has(p)),
-   ];
-   if (unhashed.length > 0) {
-      throw new PackageLoadProtocolError(
-         `a load-package-result has no sha for ${unhashed.length} file(s) the serving identity hashes, starting with ${unhashed[0]}`,
+         `a load-package-result for an installing load has no workflows walk or source content sha`,
       );
    }
 }

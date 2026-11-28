@@ -51,15 +51,15 @@ function writePackage(
       path.join(dir, "publisher.json"),
       JSON.stringify({
          ...manifest,
+         skillSets: {
+            default: { path: "skill_sets/house" },
+            finance: { path: "workflows/analyst/skill_sets/analysis" },
+         },
          workflows: {
-            default: {
-               description: `Default v${answer}`,
-               skillSets: ["skill_sets/house"],
-            },
             analyst: {
                description: `Analyst v${answer}`,
                instructions: "workflows/analyst/instructions.md",
-               skillSets: ["workflows/analyst/skill_sets/analysis"],
+               skillSets: ["finance"],
             },
          },
       }),
@@ -363,7 +363,7 @@ describe("package-scoped routes of a versioned package", () => {
 
       expect(
          (await list("/workflows?versionId=1.0.0")).map((w) => w.description),
-      ).toEqual(["Default v1", "Analyst v1"]);
+      ).toEqual(["Analyst v1"]);
       const v1 = await read("/workflows/analyst?versionId=1.0.0");
       expect(String(v1.instructions)).toContain("instructions v1");
       expect(v1.source).toMatchObject({ versionId: "1.0.0" });

@@ -7,6 +7,8 @@ import path from "path";
 import type { LoadPackageOutcome } from "../package_load/package_load_pool";
 import {
    boundedDeclaration,
+   computeSourceContentSha,
+   shasOf,
    UNREADABLE_SHA,
 } from "../service/package_revision";
 import {
@@ -16,17 +18,24 @@ import {
 
 /**
  * What a load worker ships for a package's serving identity, for specs that
- * hand a Package an outcome without a pool: the walk of `declared` over
- * `packagePath`, the declaration's sha, and the sha of each of `modelPaths` as
- * read from disk. The walk goes through a structured clone, as it does across
- * the worker boundary.
+ * hand a Package an outcome without a pool: the walk of `declared` (the
+ * manifest's `skillSets` and `workflows`) over `packagePath`, and the source
+ * content sha over it and the sha of each of `modelPaths` as read from disk.
+ * The walk goes through a structured clone, as it does across the worker
+ * boundary.
  */
 export function servingIdentityOutcome(
    packagePath: string,
-   declared: unknown,
+   declared: { skillSets?: unknown; workflows?: unknown },
    modelPaths: readonly string[],
+   bundledSkillNames: readonly string[] = [],
 ): LoadPackageOutcome {
    const declaration = boundedDeclaration(declared);
+   const walk = readPackageWorkflows(
+      packagePath,
+      declaration.value,
+      bundledSkillNames,
+   );
    const modelShas = new Map(
       modelPaths.map((modelPath): [string, string] => {
          try {
@@ -43,19 +52,15 @@ export function servingIdentityOutcome(
    );
    return {
       packageMetadata: {
-         workflowsRead: structuredClone({
-            ...(declaration.sha !== undefined && {
-               declarationSha: declaration.sha,
-            }),
-            walk: workflowsToWire(
-               readPackageWorkflows(packagePath, declaration.value),
-            ),
-         }),
+         workflowsRead: structuredClone({ walk: workflowsToWire(walk) }),
       },
       models: modelPaths.map((modelPath) => ({
          modelPath,
          modelType: "model" as const,
       })),
-      modelShas,
+      sourceContentSha: computeSourceContentSha(
+         new Map([...shasOf(modelPaths, modelShas), ...walk.contentShas]),
+         declaration.sha,
+      ),
    } as unknown as LoadPackageOutcome;
 }

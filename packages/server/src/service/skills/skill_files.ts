@@ -60,13 +60,19 @@ export interface EntryBudget {
 export interface WalkBudget {
    assets: EntryBudget;
    other: EntryBudget;
+   /** Inline Markdown files the reader serves, `SKILL.md` and `reference/` included; the caller charges it as it inlines, `skillFiles` does not. */
+   inline: EntryBudget;
    /** Who the budget belongs to, for the warning that it ran out. */
    owner: string;
 }
 
-export const newWalkBudget = (owner: string): WalkBudget => ({
+export const newWalkBudget = (
+   owner: string,
+   inlineFiles = ASSET_MAX_ENTRIES,
+): WalkBudget => ({
    assets: { left: ASSET_MAX_ENTRIES },
    other: { left: ASSET_MAX_ENTRIES },
+   inline: { left: inlineFiles },
    owner,
 });
 
@@ -111,6 +117,9 @@ export function isNeverShipped(relative: string): boolean {
       segments.at(-1) === "npm-debug.log"
    );
 }
+
+/** `text` without the one byte order mark an editor may put first. */
+export const withoutBom = (text: string): string => text.replace(/^\uFEFF/, "");
 
 /** A byte cap as an author reads it (`16 KiB`, `4 MiB`); in bytes only when it is neither. */
 export function capText(bytes: number): string {
@@ -345,7 +354,7 @@ function applySkillignore(
    let chars = 0;
    let charsExcess = 0;
    let firstCharsExcess = "";
-   for (const line of text.replace(/^\uFEFF/, "").split(/\r?\n/)) {
+   for (const line of withoutBom(text).split(/\r?\n/)) {
       if (line.trim() === "" || line.startsWith("#")) continue;
       if (++patterns > SKILLIGNORE_MAX_PATTERNS) {
          if (excess++ === 0) firstExcess = line;
@@ -455,6 +464,7 @@ export function skillFiles(
    const budget = options.budget ?? {
       assets: alone,
       other: alone,
+      inline: { left: ASSET_MAX_ENTRIES },
       owner: "skill",
    };
    const exhausted = new Set<EntryBudget>();

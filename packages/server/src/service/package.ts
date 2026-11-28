@@ -119,6 +119,7 @@ import {
 import { assertSafeEnvironmentPath, safeJoinUnderRoot } from "../path_safety";
 import {
    advertisedSkills,
+   BUNDLED_SKILL_NAMES,
    pickedSets,
    readWorkflowFile,
    workflowFilePath,
@@ -127,15 +128,13 @@ import {
 } from "./skills/package_skills";
 import {
    adoptWorkflows,
-   DEFAULT_WORKFLOW,
+   DEFAULT_SKILL_SET,
    emptyWorkflows,
+   SKILL_SET_NOT_SERVED,
    WORKFLOW_NOT_SERVED,
-   type PackageWorkflows,
+   type ServedWorkflows,
 } from "./skills/package_workflows";
-import {
-   computeSourceContentSha,
-   mintServedRevision,
-} from "./package_revision";
+import { mintServedRevision } from "./package_revision";
 import {
    BuildManifest,
    BuildPlan,
@@ -678,7 +677,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * load worker walked them, installed with the content sha so an edit to
     * either is covered by the reload receipt by construction.
     */
-   private workflows: PackageWorkflows = emptyWorkflows();
+   private workflows: ServedWorkflows = emptyWorkflows();
    /** The skills the package advertises: its `default` workflow's, read from `workflows`. */
    private packageSkills: ServedSkill[] = [];
    /** What the load worker found in the manifest that an earlier release read and this one does not. */
@@ -732,22 +731,29 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    }
 
    /** Throws for an unread walk, since an unread set is not an absent workflow; a `name` the manifest never declared is still absent. */
-   private readableWorkflows(name?: string): PackageWorkflows {
+   private readableWorkflows(name?: string): ServedWorkflows {
       const { unavailable } = this.workflows;
       if (
          unavailable !== undefined &&
          (name === undefined || unavailable.declared.includes(name))
       ) {
-         throw new WorkflowsUnavailableError(
-            `Workflows are unavailable for package '${this.packageName}': ${unavailable.reason}. They are read when the package loads, so this lasts until it reloads.`,
-         );
+         throw this.workflowsUnavailable(unavailable.reason);
       }
       return this.workflows;
    }
 
-   /** The agent skills this package advertises: its `default` workflow's, none without one, and unavailable only when `default` is declared. */
+   private workflowsUnavailable(reason: string): WorkflowsUnavailableError {
+      return new WorkflowsUnavailableError(
+         `Workflows are unavailable for package '${this.packageName}': ${reason}. They are read when the package loads, so this lasts until it reloads.`,
+      );
+   }
+
+   /** The agent skills this package advertises: its `default` skill set's, none without one, and unavailable only when `default` is declared. */
    public listSkills(): ServedSkill[] {
-      this.readableWorkflows(DEFAULT_WORKFLOW);
+      const { unavailable } = this.workflows;
+      if (unavailable?.declaredSets.includes(DEFAULT_SKILL_SET)) {
+         throw this.workflowsUnavailable(unavailable.reason);
+      }
       return this.packageSkills;
    }
 
@@ -756,7 +762,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       return [...this.readableWorkflows().workflows.values()].map((w) => ({
          name: w.name,
          ...(w.description !== undefined && { description: w.description }),
-         has_instructions: w.instructions !== undefined,
+         has_instructions: true,
          skill_sets: w.sets.map(({ set }) => ({
             name: set.name,
             path: set.path,
@@ -772,7 +778,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
    ): { reason: WorkflowNotFoundReason; message: string } | undefined {
       if (this.workflows.workflows.has(name)) return undefined;
       const message =
-         this.workflows.workflowsRefusal ??
+         this.workflows.declarationRefusal ??
          this.workflows.warnings.find(
             (w) => w.code === WORKFLOW_NOT_SERVED && w.subject === name,
          )?.message;
@@ -784,7 +790,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
            };
    }
 
-   /** The package-relative paths an edit to which changes what a workflow serves: each skill set and each instructions file. */
+   /** The package-relative paths an edit to which changes what is served: each skill set's folder and each instructions file. */
    public workflowPaths(): readonly string[] {
       return this.workflows.watched;
    }
@@ -825,11 +831,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
          ...(workflow.description !== undefined && {
             description: workflow.description,
          }),
-         has_instructions: workflow.instructions !== undefined,
-         ...(skillSet === undefined &&
-            workflow.instructions && {
-               instructions: workflow.instructions.text,
-            }),
+         has_instructions: true,
+         ...(skillSet === undefined && {
+            instructions: workflow.instructions.text,
+         }),
          skill_sets: sets.map((entry) => workflowSkillSet(entry, skills)),
          warnings: [
             // A picked set is served whole, so which set serves a repeated name does not describe it.
@@ -1636,7 +1641,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             defaultConnectionName: "duckdb",
             computeBuildPlan: true,
             withEntities: true,
-            readWorkflows: true,
+            readWorkflows: { bundledSkillNames: BUNDLED_SKILL_NAMES },
             ...(versionId !== undefined ? { publishedVersion: true } : {}),
             ...(refreshSchemas ? { refreshSchemas: true } : {}),
          }),
@@ -3425,7 +3430,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
             malloyConfig: this.malloyConfig,
             defaultConnectionName: "duckdb",
             buildManifest,
-            readWorkflows: true,
+            readWorkflows: { bundledSkillNames: BUNDLED_SKILL_NAMES },
          }),
       );
 
@@ -3933,31 +3938,17 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       }
    }
 
-   /** Installs what a load read under a new revision; it reads no file, since `assertServingIdentityShipped` has already judged the outcome. */
+   /** Installs what a load read under a new revision; it reads and hashes no file, since `assertServingIdentityShipped` has already judged the outcome. */
    private adoptOutcomeMetadata(outcome: LoadPackageOutcome): void {
       const metadata = outcome.packageMetadata;
-      const { walk, declarationSha } = metadata.workflowsRead!;
-      const modelShas = outcome.modelShas!;
+      const { walk } = metadata.workflowsRead!;
       this.manifestFindings = metadata.manifestFindings ?? [];
       this.manifestWarnings = metadata.manifestWarnings ?? [];
       this.retrievalSettings = metadata.retrieval ?? DEFAULT_PACKAGE_RETRIEVAL;
       this.servedRevision = mintServedRevision();
       this.workflows = adoptWorkflows(this.packagePath, walk);
       this.packageSkills = advertisedSkills(this.workflows);
-      this.sourceContentSha = computeSourceContentSha(
-         new Map([
-            ...outcome.models.map(({ modelPath }): [string, string] => [
-               modelPath,
-               modelShas.get(modelPath)!,
-            ]),
-            ...walk.paths.map((p): [string, string] => [
-               p,
-               walk.contentShas.get(p)!,
-            ]),
-         ]),
-         // The declaration is hashed whole, so an edit to a refused workflow moves it too.
-         declarationSha,
-      );
+      this.sourceContentSha = outcome.sourceContentSha!;
       if (walk.unavailable !== undefined) {
          logger[this.dryRun ? "warn" : "error"](
             "Package workflows could not be read",
@@ -3966,6 +3957,14 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       }
       if (this.dryRun) return;
       for (const refusal of walk.warnings) {
+         if (refusal.code === SKILL_SET_NOT_SERVED) {
+            logger.warn("Skill set is not served", {
+               packageName: this.packageName,
+               skillSet: refusal.subject,
+               code: refusal.code,
+               reason: refusal.message,
+            });
+         }
          if (refusal.code !== WORKFLOW_NOT_SERVED) continue;
          logger.warn("Workflow is not served", {
             packageName: this.packageName,

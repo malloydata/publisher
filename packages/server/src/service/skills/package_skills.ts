@@ -3,12 +3,11 @@
 
 import type { BundledSkill } from "./build_skills_bundle";
 import {
-   DEFAULT_WORKFLOW,
+   DEFAULT_SKILL_SET,
    servedInline,
-   servedSkillMd,
    type PackageWorkflow,
    type ServedSkill,
-   type PackageWorkflows,
+   type ServedWorkflows,
    type SetSkill,
    type WorkflowSet,
 } from "./package_workflows";
@@ -20,6 +19,9 @@ import { compareText } from "../../compare_text";
 export const BUNDLED_CATALOG = (
    skillsBundle as unknown as { skills: BundledSkill[] }
 ).skills;
+
+/** The names of the bundled skills, which the package-load worker reads a package's skills against; computed once so the worker never imports the bundle. */
+export const BUNDLED_SKILL_NAMES = BUNDLED_CATALOG.map((skill) => skill.name);
 
 export type { ServedSkill, SkillFileRead } from "./package_workflows";
 
@@ -35,7 +37,7 @@ export interface ResolvedSkill extends ServedSkill {
    origin: SkillOrigin;
 }
 
-/** The sets a read covers: the workflow's own, each without a skill name an earlier set holds, or with `skillSet` that one set whole, since a reply of one set has nothing to collide with and its digest then pins exactly what it serves. Undefined when the workflow lists no set of that name. */
+/** The sets a read covers: the workflow's own, each without a skill name an earlier set holds, or with `skillSet`, a set's name, that one set whole, since a reply of one set has nothing to collide with and its digest then pins exactly what it serves. Undefined when the workflow lists no set of that name. */
 export function pickedSets(
    workflow: PackageWorkflow,
    skillSet?: string,
@@ -86,7 +88,7 @@ export function workflowSkillSet(
    };
 }
 
-/** One file of a workflow's skill by its `<skill>/<file>` path: an inline file as the workflow serves it, or a listed file as the skill reads it (a binary one answers with a message naming its size, one that changed since load with `changed`). Undefined when it is not served. */
+/** One file of a workflow's skill by its `<skill>/<file>` path: an inline file as written, or a listed file as the skill reads it (a binary one answers with a message naming its size, one that changed since load with `changed`). Undefined when it is not served. */
 export async function readWorkflowFile(
    skill: SetSkill,
    relativeFilepath: string,
@@ -97,11 +99,7 @@ export async function readWorkflowFile(
    if (!relativeFilepath.startsWith(prefix)) return undefined;
    const relative = relativeFilepath.slice(prefix.length);
    const inline = skill.inline.find((f) => f.relative === relative);
-   if (inline) {
-      return {
-         text: relative === SKILL_MD ? servedSkillMd(skill) : inline.text,
-      };
-   }
+   if (inline) return { text: inline.text };
    const listing = skill.listed.find(
       (a) => a.relative_filepath === relativeFilepath,
    );
@@ -113,13 +111,12 @@ export async function readWorkflowFile(
    };
 }
 
-/** The skills a package advertises: its `default` workflow's, each skill name served from the first set that holds it. */
-export function advertisedSkills(workflows: PackageWorkflows): ServedSkill[] {
+/** The skills a package advertises: those of its `default` skill set, none without one. */
+export function advertisedSkills(workflows: ServedWorkflows): ServedSkill[] {
    return (
-      workflows.workflows
-         .get(DEFAULT_WORKFLOW)
-         ?.sets.flatMap(({ skills }) => skills.map((skill) => skill.served)) ??
-      []
+      workflows.sets
+         .get(DEFAULT_SKILL_SET)
+         ?.skills.map((skill) => skill.served) ?? []
    );
 }
 

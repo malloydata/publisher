@@ -190,11 +190,11 @@ const PARITY: [string, string, string, string, string][] = [
       "d",
    ],
    [
-      "a leading BOM, which hides the fence from both",
+      "a leading BOM, which both read past",
       "\uFEFF---\nname: x\ndescription: d\n---\n",
       "dir",
-      "dir",
-      "",
+      "x",
+      "d",
    ],
    [
       "an anchored list referenced 99 times",
@@ -209,9 +209,10 @@ describe("the server's and the package's frontmatter readers", () => {
    it.each(PARITY)(
       "agree on %s",
       (_label, markdown, dir, name, description) => {
-         // As listSkills reads a file: line endings normalized, then the fence.
+         // As listSkills reads a file: one BOM dropped, line endings normalized, then the fence.
          const front =
             markdown
+               .replace(/^\uFEFF/, "")
                .replace(/\r\n/g, "\n")
                .match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
          expect(readFrontmatter(front, dir)).toEqual({ name, description });

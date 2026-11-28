@@ -275,7 +275,7 @@ export interface LoadPackageJob {
    /** See {@link LoadPackageRequest.withEntities}. */
    withEntities?: boolean;
    /** See {@link LoadPackageRequest.readWorkflows}. */
-   readWorkflows?: true;
+   readWorkflows?: { bundledSkillNames: readonly string[] };
    /**
     * Background work (a connection edit's build-plan re-derivation): stays on
     * this thread's queue behind every foreground job, so a publish or reload
@@ -350,8 +350,8 @@ export interface LoadPackageOutcome {
    buildPlan?: LoadPackageResult["buildPlan"];
    /** See {@link LoadPackageResult.fileDigests}. */
    fileDigests?: Readonly<Record<string, string>>;
-   /** See {@link LoadPackageResult.modelShas}. */
-   modelShas?: ReadonlyMap<string, string>;
+   /** See {@link LoadPackageResult.sourceContentSha}. */
+   sourceContentSha?: string;
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -665,7 +665,9 @@ export class PackageLoadPool {
          computeBuildPlan: qj.request.computeBuildPlan,
          ...(qj.request.publishedVersion ? { publishedVersion: true } : {}),
          withEntities: qj.request.withEntities,
-         ...(qj.request.readWorkflows ? { readWorkflows: true } : {}),
+         ...(qj.request.readWorkflows
+            ? { readWorkflows: qj.request.readWorkflows }
+            : {}),
          mainThreadWorkBudgetMs: this.mainThreadWorkBudgetMs,
          ...(qj.request.refreshSchemas
             ? { refreshTimestamp: nextRefreshTimestamp() }
@@ -1411,7 +1413,9 @@ function adaptResult(result: LoadPackageResult): LoadPackageOutcome {
       timings: result.timings,
       buildPlan: result.buildPlan,
       ...(result.fileDigests ? { fileDigests: result.fileDigests } : {}),
-      ...(result.modelShas ? { modelShas: result.modelShas } : {}),
+      ...(result.sourceContentSha !== undefined
+         ? { sourceContentSha: result.sourceContentSha }
+         : {}),
    };
 }
 

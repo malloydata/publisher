@@ -66,7 +66,7 @@ export const SKILLS_DIR_NOT_READ: ApiPackageWarning = {
    code: PACKAGE_SKILLS_DIR_NOT_READ,
    severity: "warn",
    message:
-      'skills/ is no longer read, so none of its skills is served. Fix: add "workflows": { "default": { "skillSets": ["skills"] } } to publisher.json (or add "skills" to the skillSets of a default workflow it already declares), or move each skill into a skill set and list that set under "workflows.default"',
+      'skills/ is no longer read, so none of its skills is served. Fix: add "skillSets": { "default": { "path": "skills" } } to publisher.json, or move each skill into a skill set folder and declare that folder as the "default" set',
 };
 
 /** Count one load or reload of a package whose root `skills/` nothing reads. */

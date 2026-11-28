@@ -2,10 +2,13 @@
 // SPDX-License-Identifier: MIT
 
 /**
- * A package that declares workflows and ships skill sets at their caps is
- * walked and hashed in the package-load worker, so loading or reloading it
- * never holds the event loop: the main thread receives the result and adopts
- * it. Read on the main thread the same walk holds the loop for about 0.9 s.
+ * A package that declares skill sets at their ceilings (32 sets, each with
+ * SKILL_SET_INLINE_MAX_FILES inline files and 200 listed files) is walked and
+ * hashed in the package-load worker, so loading or reloading it never holds the
+ * event loop: the main thread receives the result and adopts it. The
+ * inline-file cap is the one the walk's cost grows with, and is set to the most
+ * this bound lets a set carry. Read on the main thread the same walk would hold
+ * the loop for seconds (`perf:skills-reload` prints it).
  *
  * The cap package is the one `perf:skills-reload` measures
  * (tests/perf/skills_cap_package.ts), loaded through the real pool.
@@ -30,6 +33,7 @@ import {
    __setPackageLoadPoolForTests,
 } from "../package_load/package_load_pool";
 import {
+   CAP_SETS,
    CAP_SHAPE,
    writeCapPackage,
 } from "../../tests/perf/skills_cap_package";
@@ -57,10 +61,10 @@ describe("loading and reloading a cap-size package", () => {
          path.join(dir, "model.malloy"),
          `source: t is duckdb.sql("select 1 as id")\n`,
       );
-      const workflows = writeCapPackage(dir, 8, CAP_SHAPE);
+      const declared = writeCapPackage(dir, CAP_SETS, CAP_SHAPE);
       fs.writeFileSync(
          path.join(dir, "publisher.json"),
-         JSON.stringify({ name: "pkg", version: "1", workflows }),
+         JSON.stringify({ name: "pkg", version: "1", ...declared }),
       );
       duckdb = new DuckDBConnection("duckdb", ":memory:");
       malloyConfig = new MalloyConfig({ connections: {} });
@@ -99,11 +103,18 @@ describe("loading and reloading a cap-size package", () => {
          clearInterval(timer);
       }
 
-      // The walk ran: the package serves what the cap package declares.
+      // The walk ran, and served every set whole: a set past a cap would be refused, which is less work.
       expect(pkg.listWorkflows().map((w) => w.name)).toEqual([
-         "default",
-         "analyst",
+         "w0",
+         "w1",
+         "w2",
+         "w3",
       ]);
+      expect(
+         pkg.listWorkflows().flatMap((w) => w.skill_sets.map((s) => s.name)),
+      ).toHaveLength(CAP_SETS);
+      expect(pkg.listSkills().length).toBeGreaterThan(0);
+      expect(pkg.getPackageMetadata().warnings ?? []).toEqual([]);
       expect(maxBlockMs).toBeLessThan(MAX_BLOCK_MS);
    }, 60_000);
 });

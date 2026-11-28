@@ -71,14 +71,16 @@ describe("a skill set read through a workflow", () => {
       fs.rmSync(pkg, { recursive: true, force: true });
    });
 
-   /** The set at `skills/` as the default workflow lists it; `warnings` is everything the package publishes. */
+   /** The set at `skills/` as the package declares it default; `warnings` is everything the package publishes. */
    const readSet = () => {
-      const result = readPackageWorkflows(pkg, {
-         default: { skillSets: ["skills"] },
-      });
+      const result = readPackageWorkflows(
+         pkg,
+         { skillSets: { default: { path: "skills" } } },
+         [],
+      );
       return {
          result,
-         skills: result.sets.get("skills")?.skills ?? [],
+         skills: result.sets.get("default")?.skills ?? [],
          warnings: result.warnings.map((w) => w.message),
       };
    };
@@ -94,10 +96,11 @@ describe("a skill set read through a workflow", () => {
       fs.writeFileSync(path.join(refDir, file), contents);
    };
 
-   it("serves nothing, and flags the skills/ directory nothing reads, when the manifest declares no workflows", () => {
+   it("serves nothing, and flags the skills/ directory nothing reads, when the manifest declares no skill sets", () => {
       writeSkill("real", "---\nname: real\ndescription: d\n---\n\nbody\n");
-      expect(readPackageWorkflows(pkg, undefined)).toEqual({
+      expect(readPackageWorkflows(pkg, undefined, [])).toEqual({
          ...emptyWorkflows(),
+         contentShas: new Map(),
          skillsDirNotRead: true,
       });
    });
@@ -158,17 +161,17 @@ describe("a skill set read through a workflow", () => {
       }
    });
 
-   it("refuses the workflow for a skill set that is a dangling link out of the package, saying it leads outside it", () => {
+   it("refuses a skill set that is a dangling link out of the package, saying it leads outside it", () => {
       fs.symlinkSync("/definitely-absent-skills-dir", path.join(pkg, "skills"));
       const { result, warnings } = readSet();
-      expect(result.workflows.size).toBe(0);
+      expect(result.sets.size).toBe(0);
       expect(warnings.join(" ")).toContain("resolves outside the package");
    });
 
-   it("refuses the workflow for a skill set that is a dangling link inside the package, saying it does not exist", () => {
+   it("refuses a skill set that is a dangling link inside the package, saying it does not exist", () => {
       fs.symlinkSync(path.join(pkg, "gone"), path.join(pkg, "skills"));
       const { result, warnings } = readSet();
-      expect(result.workflows.size).toBe(0);
+      expect(result.sets.size).toBe(0);
       expect(warnings.join(" ")).toContain("does not exist");
    });
 
@@ -223,12 +226,12 @@ describe("a skill set read through a workflow", () => {
          expect(warnings.join("\n")).toContain("outside the package");
       });
 
-      it("refuses the workflow for a skill set that is a link out", () => {
+      it("refuses a skill set that is a link out", () => {
          fs.mkdirSync(path.join(outside, "bad"));
          fs.writeFileSync(path.join(outside, "bad", "SKILL.md"), "SECRET");
          fs.symlinkSync(outside, path.join(pkg, "skills"));
          const { result, skills, warnings } = readSet();
-         expect(result.workflows.size).toBe(0);
+         expect(result.sets.size).toBe(0);
          expect(skills).toEqual([]);
          expect(warnings.join("\n")).toContain("outside the package");
       });

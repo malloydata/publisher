@@ -3,129 +3,130 @@
 
 /**
  * The package the skills benches and the main-thread block spec load, which
- * declares workflows and ships skill sets at their caps.
+ * declares skill sets at their ceilings.
  *
- * The cap package has `sets` skill sets, listed by one `default` workflow and,
- * for the first, by a second workflow too, which reads it once. Each set holds
- * one skill with 1,000 walked entries under `assets/` (25 files of 40 KiB,
- * listed first, then 64-byte files up to the 200-file cap), 999 Markdown files
- * in `references/` (the rest of the 1,000 "other" entries; inlined, so read and
- * hashed), 907 Markdown files in `reference/` and about 1 MiB listed, so the
- * sets list 7.8 MiB of the package's 8 MiB. A ninth set has the same entries
- * and 100 files of 40 KiB (3.9 MiB of its own 4 MiB), which takes the rest of
- * the package's budget in sorted path order. The inline Markdown of a set stays
- * under 256 KiB. This is one skill per set, far under the per-set skill cap.
+ * The cap package declares `sets` skill sets (32 is the most a manifest may),
+ * one of them `default`, and one workflow per eight of them, the most a workflow
+ * lists. Each set holds the inline Markdown files its cap allows, SKILL.md
+ * files included, spread over as many skills as the per-folder cap of 1,000
+ * needs, and the 200 listed files its asset cap allows, in the first skill's
+ * `assets/`. The inline Markdown of a set stays under its 256 KiB, and the
+ * listed bytes of all the sets under the package's 8 MiB, so every set is
+ * served: a set past a cap is refused whole, which is less work than serving it.
  */
 
 import fs from "fs";
 import path from "path";
+import {
+   DECLARED_SKILL_SETS_MAX,
+   SKILL_SET_ASSETS_MAX_FILES,
+   SKILL_SET_INLINE_MAX_FILES,
+   WORKFLOW_SKILL_SETS_MAX,
+} from "../../src/service/skills/package_workflows";
 
 const KIB = 1024;
-/** Entries one walk budget allows, per location. */
-const WALK_ENTRIES = 1000;
+/** Markdown files one `references/` folder holds before its walk stops. */
+const REFERENCES_PER_FOLDER = 1000;
+/** A set's inline Markdown, which the files of a shape fill to about 90%. */
+const SET_MARKDOWN_BYTES = 256 * KIB;
 
 export interface Shape {
-   /** Fill assets/ to the 1,000 entries its walk budget allows, after the large files. */
-   walked: boolean;
-   /** Markdown files of 32 bytes in references/, which the "other" budget counts. */
-   references: number;
-   /** Markdown files of 64 bytes in reference/, beside 7 of 20 KiB. */
-   tinyMarkdown: number;
+   /** Inline Markdown files per set, each skill's SKILL.md included. */
+   inline: number;
+   /** Listed files per set, of 1 KiB, in the first skill's `assets/`. */
+   listed: number;
 }
 
-/** Every budget spent. */
+/** Every per-set cap spent. */
 export const CAP_SHAPE: Shape = {
-   walked: true,
-   references: 999,
-   tinyMarkdown: 900,
+   inline: SKILL_SET_INLINE_MAX_FILES,
+   listed: SKILL_SET_ASSETS_MAX_FILES,
 };
 
+/** The sets a cap package of the most sets declares. */
+export const CAP_SETS = DECLARED_SKILL_SETS_MAX;
+
 const SKILL_MD = (name: string) =>
-   `---\nname: ${name}\ndescription: A skill of ${name} that the cap bench builds.\n---\n\n# ${name}\n\nSee reference/.\n`;
+   `---\nname: ${name}\ndescription: A skill of ${name} that the cap bench builds.\n---\n\n# ${name}\n\nSee references/.\n`;
 
 function write(file: string, bytes: Buffer | string): void {
    fs.mkdirSync(path.dirname(file), { recursive: true });
    fs.writeFileSync(file, bytes);
 }
 
-/** `total` files in `dir`: the first `big` of `bigSize` bytes, the rest of `smallSize`. Names are zero-padded so they sort in that order. */
-function fill(
-   dir: string,
-   big: number,
-   bigSize: number,
-   total: number,
-   ext: string,
-   smallSize = 64,
-): void {
-   for (let i = 0; i < total; i++) {
-      const size = i < big ? bigSize : smallSize;
-      write(
-         path.join(dir, `f${String(i).padStart(4, "0")}${ext}`),
-         Buffer.alloc(size, 97 + (i % 20)),
-      );
+/** One set's skills, named for the set so no two of a workflow's sets share a name: `shape.inline` Markdown files in all, and `shape.listed` assets in the first skill. */
+function capSet(dir: string, setIndex: number, shape: Shape): void {
+   // Small enough that however many files a set inlines they fit the set's budget.
+   const bytes = Math.max(
+      16,
+      Math.min(200, Math.floor((0.9 * SET_MARKDOWN_BYTES) / shape.inline)),
+   );
+   let left = shape.inline;
+   for (let skill = 0; left > 0; skill++) {
+      const name = `s${setIndex}-${skill}`;
+      const here = Math.min(left, REFERENCES_PER_FOLDER);
+      write(path.join(dir, name, "SKILL.md"), SKILL_MD(name));
+      for (let i = 1; i < here; i++) {
+         const file = `r${String(i).padStart(4, "0")}.md`;
+         write(
+            path.join(dir, name, "references", file),
+            `#${"x".repeat(bytes - 2)}\n`,
+         );
+      }
+      if (skill === 0) {
+         for (let i = 0; i < shape.listed; i++) {
+            const file = `f${String(i).padStart(4, "0")}.bin`;
+            write(
+               path.join(dir, name, "assets", file),
+               Buffer.alloc(KIB, 97 + (i % 20)),
+            );
+         }
+      }
+      left -= here;
    }
 }
 
-/** One skill: `bigAssets` listed files of 40 KiB, and the rest of `shape`. */
-function capSkill(
-   dir: string,
-   name: string,
-   bigAssets: number,
-   shape: Shape,
-): void {
-   write(path.join(dir, "SKILL.md"), SKILL_MD(name));
-   fill(
-      path.join(dir, "assets"),
-      bigAssets,
-      40 * KIB,
-      shape.walked ? WALK_ENTRIES : bigAssets,
-      ".bin",
-   );
-   if (shape.references > 0) {
-      fill(path.join(dir, "references"), 0, 0, shape.references, ".md", 32);
-   }
-   fill(
-      path.join(dir, "reference"),
-      7,
-      20 * KIB,
-      7 + shape.tinyMarkdown,
-      ".md",
-   );
+/** The declaration of a package: what its manifest's `skillSets` and `workflows` hold. */
+export interface Declaration {
+   skillSets: Record<string, unknown>;
+   workflows: Record<string, unknown>;
 }
 
-/** Writes the cap package's files under `root` and returns its `workflows` declaration. */
+/** Writes the cap package's files under `root` and returns its declaration. */
 export function writeCapPackage(
    root: string,
    sets: number,
    shape: Shape,
-): Record<string, unknown> {
-   const paths: string[] = [];
+): Declaration {
+   const names: string[] = [];
+   const skillSets: Record<string, unknown> = {};
    for (let s = 0; s < sets; s++) {
-      const setPath = `sets/s${s}`;
-      // 25 files of 40 KiB each is 1,000 KiB, so 8 sets stay under 8 MiB.
-      capSkill(path.join(root, setPath, "s"), "s", 25, shape);
-      paths.push(setPath);
+      // The first is the default set; the others are named unlike their folders.
+      const name = s === 0 ? "default" : `set-${String(s).padStart(2, "0")}`;
+      capSet(path.join(root, "sets", `s${s}`), s, shape);
+      skillSets[name] = { path: `sets/s${s}` };
+      names.push(name);
    }
-   // 100 files of 40 KiB is 4,000 KiB of the one set's 4 MiB.
-   capSkill(path.join(root, "sets", "p", "p"), "p", 100, shape);
    write(
       path.join(root, "workflows", "analyst", "instructions.md"),
       "Be useful.\n",
    );
-   return {
-      default: { description: "The advertised skills", skillSets: paths },
-      analyst: {
-         description: "Shares a set with default",
+   const workflows: Record<string, unknown> = {};
+   for (let w = 0; w * WORKFLOW_SKILL_SETS_MAX < names.length; w++) {
+      workflows[`w${w}`] = {
+         description: `Lists sets ${w * WORKFLOW_SKILL_SETS_MAX} on`,
          instructions: "workflows/analyst/instructions.md",
-         skillSets: [paths[0], "sets/p"],
-      },
-   };
+         skillSets: names.slice(
+            w * WORKFLOW_SKILL_SETS_MAX,
+            (w + 1) * WORKFLOW_SKILL_SETS_MAX,
+         ),
+      };
+   }
+   return { skillSets, workflows };
 }
 
 /** A package with one set and no listed file: the floor. */
-export function writeFloorPackage(root: string): Record<string, unknown> {
+export function writeFloorPackage(root: string): Declaration {
    write(path.join(root, "sets", "a", "s", "SKILL.md"), SKILL_MD("s"));
-   return {
-      default: { description: "The floor", skillSets: ["sets/a"] },
-   };
+   return { skillSets: { default: { path: "sets/a" } }, workflows: {} };
 }

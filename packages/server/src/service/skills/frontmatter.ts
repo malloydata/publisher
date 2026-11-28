@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { parseDocument } from "yaml";
+import { withoutBom } from "./skill_files";
 
 /** agentskills.io: 1-64 characters of lowercase letters, digits and single hyphens, none leading or trailing. */
 const SKILL_NAME = /^[a-z0-9]+(-[a-z0-9]+)*$/;
@@ -23,9 +24,11 @@ export function unquote(s: string): string {
    return s.trim().replace(/^["']|["']$/g, "");
 }
 
-/** A `key: value` line read without YAML: the fallback for frontmatter YAML cannot be trusted to read. */
+/** A `key: value` line read without YAML: the fallback for frontmatter YAML cannot be trusted to read. Looks no further than the YAML cap, so a huge frontmatter costs no more to line-read than a capped one. */
 function lineRead(front: string, key: string): string | undefined {
-   const value = front.match(new RegExp(`^${key}:[ \\t]*(\\S.*)$`, "m"))?.[1];
+   const value = front
+      .slice(0, FRONTMATTER_MAX_BYTES)
+      .match(new RegExp(`^${key}:[ \\t]*(\\S.*)$`, "m"))?.[1];
    return value === undefined ? undefined : unquote(value);
 }
 
@@ -82,7 +85,8 @@ function parseYaml(
  * `description`.
  */
 export function parseFrontmatter(md: string, dirName: string): Frontmatter {
-   const text = md.replace(/\r\n/g, "\n"); // tolerate CRLF-committed files
+   // One boundary rule: a BOM and CRLF line ends are tolerated, and line 1 must be the fence.
+   const text = withoutBom(md).replace(/\r\n/g, "\n");
    const fence = text.match(/^---\n([\s\S]*?)\n---\n?([\s\S]*)$/);
    if (!fence) {
       return {
