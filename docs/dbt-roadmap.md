@@ -219,6 +219,19 @@ the `dbt init` jaffle template.
 
 No dbt code or data is committed; it is all generated at setup.
 
+**One target name switches between local and cloud.** The same example runs on a local DuckDB file
+or on MotherDuck (including a DuckLake database there) by changing one target name, on both halves:
+
+- **dbt:** `profiles.yml` has a `local` target (a DuckDB file) and a `motherduck` target (an `md:`
+  path, with the token read from `MOTHERDUCK_TOKEN`); `--target` or `DBT_TARGET` picks one.
+- **Publisher:** the package's connection config names the same target: a `duckdb` connection for
+  `local`, a `motherduck` connection for the cloud. `dbt.target` records which target the bindings
+  were generated against.
+- **Local is the default, with zero credentials.** A clean clone, `setup.sh` and `npm start` need no
+  account. The cloud target is opt-in, and its CI job runs only when a token is configured.
+- The Malloy model does not change between targets: the importer writes logical `#(dbt) unique_id`
+  references, so only the connection and the schema resolve differently.
+
 **Two configurations of the same project, side by side:**
 
 - **A, "Malloy on top of every mart":** dbt builds every jaffle model, and Malloy sits on all the
@@ -247,29 +260,64 @@ No dbt code or data is committed; it is all generated at setup.
 ## The developer loop
 
 ```
-dbt build ──► DuckDB marts ──► malloy-pub dbt import ──► jaffle.malloy (generated + hand-edited)
+dbt build ──► DuckDB marts ──► malloy-pub dbt import ──► bindings/ + generated/ (+ hand-edited)
     │                                 (once, or on demand)                 │
     │                                                                      ▼
-    └──── on every dbt build ──► Publisher refresh: schema refetch ──► served via REST / MCP / Console
-                                  + scoped materialize                        │
-                                                                              ▼
-CI: dbt build → publisher --check → reconcile (mf query vs Malloy) → dbt exposures updated
+    └──── on every dbt build ──► malloy-pub dbt refresh ──► served via REST / MCP / Console
+                                  (table-changes: schema refetch              │
+                                   + scoped materialize)                      ▼
+CI: dbt build → malloy-pub dbt check → publisher --check → reconcile (mf query vs Malloy)
+    → malloy-pub dbt exposures
 ```
 
-| Step       | What the developer does                                                                  | What exists                                                                                                | What to build                                                                                                            |
-| ---------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| 1. Start   | `npm create @malloy-publisher/malloy-package@latest jaffle -- --dbt ../jaffle-shop`      | the [scaffolder](scaffolding.md), with `--data` only                                                       | a `--dbt <project>` flag that reads the project, finds the DuckDB target and seeds the package                           |
-| 2. Model   | Get a Malloy source per dbt mart, joins from dbt entities, and measures from dbt metrics | `search_database_schema` gives `source:` lines; nothing reads dbt                                          | **the importer (P2)**                                                                                                    |
-| 3. Docs    | dbt `description:`s appear as `#(doc)` and in `get_context`                              | BigQuery `persist_docs` only                                                                               | the importer writes `#(doc)` from `manifest.json`                                                                        |
-| 4. Iterate | Edit and save; watch mode recompiles; ask questions over MCP                             | works today (watch mode, `compile_model`, `reload_package`)                                                | —                                                                                                                        |
-| 5. Rebuild | `dbt build` changes a mart, and Publisher picks it up                                    | an explicit reload or publish refetches table schemas; the scoped materialize endpoint takes `sourceNames` | the run-finished hook (S6): `run_results.json` → refetch + scoped materialize for the sources reading the changed models |
-| 6. CI      | One PR check covers dbt and Malloy                                                       | `compile_model` at package scope; `publisher --check` is open as a draft (#1934)                           | land `--check` with the shared result format, plus the reconcile step                                                    |
-| 7. Lineage | Malloy sources and reports show in dbt's DAG                                             | —                                                                                                          | the exposures writer (S8)                                                                                                |
-| 8. Drift   | A renamed or dropped dbt column is caught before it breaks a query                       | the column contract on materialized tables                                                                 | `malloy-pub dbt check` (P4)                                                                                              |
+| Step       | What the developer does                                                                  | What exists                                                                                                | What to build                                                                                                               |
+| ---------- | ---------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| 1. Start   | `npm create @malloy-publisher/malloy-package@latest jaffle -- --dbt ../jaffle-shop`      | the [scaffolder](scaffolding.md), with `--data` only                                                       | a `--dbt <project>` flag that takes a project directory, finds the DuckDB target and seeds the package                      |
+| 2. Model   | Get a Malloy source per dbt mart, joins from dbt entities, and measures from dbt metrics | `search_database_schema` gives `source:` lines; nothing reads dbt                                          | **the importer (P2):** `malloy-pub dbt import` writes `bindings/` and `generated/`                                          |
+| 3. Docs    | dbt `description:`s appear as `#(doc)` and in `get_context`                              | BigQuery `persist_docs` only                                                                               | the importer writes `#(doc)` from `manifest.json`                                                                           |
+| 4. Iterate | Edit and save; watch mode recompiles; ask questions over MCP                             | works today (watch mode, `compile_model`, `reload_package`)                                                | —                                                                                                                           |
+| 5. Rebuild | `dbt build` changes a mart, and Publisher picks it up                                    | an explicit reload or publish refetches table schemas; the scoped materialize endpoint takes `sourceNames` | `malloy-pub dbt refresh` over `table-changes` (S6): refetch + scoped materialize for the sources reading the changed models |
+| 6. CI      | One PR check covers dbt and Malloy                                                       | `compile_model` at package scope; `publisher --check` is open as a draft (#1934)                           | `malloy-pub dbt check`, and `publisher --check` landed with the shared result format, plus the reconcile step               |
+| 7. Lineage | Malloy sources and reports show in dbt's DAG                                             | —                                                                                                          | `malloy-pub dbt exposures` (S8)                                                                                             |
+| 8. Drift   | A renamed or dropped dbt column is caught before it breaks a query                       | the column contract on materialized tables                                                                 | `malloy-pub dbt check` (`dbt-column-removed` and the other drift codes); column pins in P4                                  |
 
-**The shared check result format,** used by `publisher --check`, `malloy-pub dbt import --check`
-and `malloy-pub dbt check` alike: exit codes 0 (clean), 1 (findings) and 2 (could not run);
-human-readable lines by default; GitHub annotations under Actions; `--format json`.
+### The shared check result format
+
+Every front end that answers "is this right?" reports the same way: `publisher --check`,
+`malloy-pub dbt check`, the findings of `malloy-pub dbt import`, the verdicts of
+`malloy-pub dbt refresh`, and later `malloy-pub lint`.
+
+| Exit    | Meaning                                                                                                                                                          |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0`     | checked, and nothing fails                                                                                                                                       |
+| `1`     | checked, and at least one finding fails: an `error`, or a `warn` under `--fail-on-warnings`                                                                      |
+| `2`     | could not check (a bad manifest, an unsupported selector, an empty selection, a bad config): the answer is unknown, never "clean", and a finding never exits `2` |
+| `128+n` | interrupted by signal `n`                                                                                                                                        |
+
+The table covers check commands only; `malloy-pub materialize --wait` keeps its own `2` ("built, not
+served").
+
+- **`--format text|github|json`.** The default is `github` when `GITHUB_ACTIONS=true`, otherwise
+  `text`. `text` prints one finding per line on stdout,
+  `<file>:<line>:<col>: error|warning: <message> (<code>) [<scope>]`, where `<scope>` is `env/pkg`
+  for the server and the dbt `unique_id` for the offline commands; logs, summaries and diffs go to
+  stderr, so stdout stays parseable. `github` adds an `::error`/`::warning` annotation after each
+  line. The server spells the flags `--check-format` / `PUBLISHER_CHECK_FORMAT` and
+  `--check-fail-on-warnings`, because its settings are prefixed.
+- **JSON** is one document on stdout on every exit path, `2` included: `formatVersion` (1), `tool`,
+  `status` (`ok` | `failed` | `error`, matching exit 0 | 1 | 2), `summary` (`errors`, `warnings`),
+  `problems[]` and `error` (`{ code, message }` when it could not check). Each problem carries
+  `severity` (`error` | `warn`, the API's spelling), a required `code`, `message`, an optional
+  position (`file`, `line`, `column`, `endLine`, `endColumn`, 1-based), `environment` and `package`
+  (server only), `model` and `subject` (as on a package warning), `upstream` (`{ tool, id }`, for
+  example `{ "tool": "dbt", "id": "model.jaffle.fct_orders" }`) and a per-code `detail` object.
+- **Codes** share one kebab-case namespace with the package warning codes: compiler and package
+  warning codes pass through unchanged; `package-load-failed`, `check-config-missing`,
+  `check-config-invalid`, `check-storage-failed` and `check-interrupted` are the check's own; and the
+  dbt family is `dbt-*` (listed under [the names](#the-names)). `--allow <code>` demotes a code to
+  `warn`; v1 accepts only `dbt-doc-changed`.
+- **Drift is an `error` in a check and a `warn` as a package warning at serve time,** so it never
+  blocks serving on its own.
 
 ## The open-source primitives
 
@@ -278,20 +326,20 @@ edit, run and publish. Publisher provides each piece as an open primitive. A man
 host dbt runs on top of these primitives; Publisher itself never runs dbt, and a dbt run, wherever
 it happens, signals Publisher.
 
-| #   | Capability                                                                                                                                                                                                                                                                                                                                                                                                                          | What it enables                                                                                                                                                         | Status                                                                                                                                                                                        |
-| --- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| S1  | **A dbt project inside a package.** A `dbt/` directory beside the Malloy files, and a `dbt` block in `publisher.json` naming the project path, target and selection. Publisher validates the block, preserves keys it does not know rather than refusing them, and ignores the dbt sources when loading models.                                                                                                                     | One repo, one package                                                                                                                                                   | design                                                                                                                                                                                        |
-| S2  | **Committed code generation, checked for currency.** The importer writes `generated/*.malloy`, which hand-written files import and extend. `malloy-pub dbt import --check` fails when the generated files are stale against the current `semantic_manifest.json`.                                                                                                                                                                   | A dbt metric change can't merge without its Malloy counterpart                                                                                                          | with P2                                                                                                                                                                                       |
-| S3  | **Manifest-pinned versions.** At publish, Publisher records the dbt manifest hash, project git ref and dbt version in the package version's metadata, and exposes them on the package resource and `/status`.                                                                                                                                                                                                                       | A version pins both halves, rollback restores both, and a mismatch between what dbt built and what Malloy expects is visible. One branch, one pin, with no hand pairing | design; new optional API fields, for sign-off                                                                                                                                                 |
-| S4  | **Manifest-at-publish validation.** A publish, or a `dryRun` publish, given a dbt manifest checks that every dbt relation the model reads exists with compatible columns, and refuses or warns with stable warning codes.                                                                                                                                                                                                           | No publish that serves against tables dbt hasn't built, or has changed                                                                                                  | design; uses the shared check format                                                                                                                                                          |
-| S5  | **dbt-relation lineage.** The build plan and an API answer which Malloy sources and stored tables read each dbt relation.                                                                                                                                                                                                                                                                                                           | The run-finished hook knows exactly what to rebuild, and lineage spans the dbt DAG and Malloy sources                                                                   | **Mostly shipped.** `PersistSourcePlan.reads` and `upstreamSchemas` are on the build plan ([`api-doc.yaml`](../api-doc.yaml)). What remains is mapping dbt `unique_id`s to those table paths. |
-| S6  | **A run-finished hook.** An open endpoint, with `malloy-pub dbt refresh --run-results target/run_results.json` as its CLI form. Given a dbt run's results, it refetches the schemas of the changed relations (S11), re-checks contracts, and starts a scoped materialization of exactly the dependent sources (via S5). Failed or skipped dbt models leave their dependents serving their last good tables, with an honest verdict. | "dbt ran, so Malloy is fresh", from any orchestrator. One run-driven pickup covers metadata and warehouse schema together                                               | The scoped materialize endpoint exists; the hook and the mapping are new. A hosted control plane can drive the same mechanics from its own events.                                            |
-| S7  | **Consistency during a run, for stored tables.** While a dbt run is in progress, a materialized source whose dbt relations are mid-rebuild keeps serving its last good stored table, or answers live with a verdict saying why.                                                                                                                                                                                                     | No window where a stored table is rebuilt from half-built dbt tables                                                                                                    | Partly shipped (column contracts, freshness, serve verdicts); a "run in progress" signal is new. It can't protect live sources, which read dbt's tables directly mid-run; only S10 can.       |
-| S8  | **Exposures write-back.** Writes dbt `exposures:` YAML for Malloy sources (semantic entry points, not only dashboards), reports and data apps, so they appear in dbt's DAG and `dbt build -s +exposure:…` works.                                                                                                                                                                                                                    | Two-way lineage                                                                                                                                                         | P3                                                                                                                                                                                            |
-| S9  | **dbt tests as signals.** Read `run_results.json` test outcomes. A failing test on a relation a source reads surfaces as a package warning, and optionally a verdict, with dbt's severities.                                                                                                                                                                                                                                        | Quality gates span both halves                                                                                                                                          | later, with P4                                                                                                                                                                                |
-| S10 | **Schema-parameterized bindings, with deferral.** A source's table paths resolve against a schema chosen per package version or environment (e.g. `dbt_v8`), not a hard-coded one, and fall back to the serving schema for relations a version didn't rebuild.                                                                                                                                                                      | Per-version isolation: one version's dbt run never rewrites tables another version serves; promote switches schemas atomically                                          | **New.** Overlaps environment-resolved bindings for package variants. Until it lands, versions share one schema.                                                                              |
-| S11 | **Schema refetch scoped to changed tables.** Refetch only the relations a dbt run changed, not every table a package reads.                                                                                                                                                                                                                                                                                                         | Fast, cheap pickup after each dbt run                                                                                                                                   | **New.** Today a reload refetches all of a package's schemas.                                                                                                                                 |
-| S12 | **Eject to dbt.** Generate a dbt model from a Malloy source, rewrite the source to read it in the same change, and prove equal results with the reconciliation harness. Never overwrite an existing dbt model by name.                                                                                                                                                                                                              | Logic moves both ways: down into the model when it needs to change fast, up into dbt when it hardens                                                                    | **New.** After P2 and S10. Needs a Malloy → SQL model generator (`PersistSource.getSQL()` already produces the bare SELECT).                                                                  |
+| #   | Capability                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   | What it enables                                                                                                                                                         | Status                                                                                                                                                                                                                                              |
+| --- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| S1  | **A dbt project inside a package.** A `dbt/` directory beside the Malloy files, and a `dbt` block in `publisher.json` (keys under [the names](#the-names)). The key set is closed, like `persist`'s: an unknown key warns `dbt-unknown-key`, and keys a managed offering uses are reserved by name. Publisher ignores the dbt sources when loading models.                                                                                                                                                                                                                                                   | One repo, one package                                                                                                                                                   | design                                                                                                                                                                                                                                              |
+| S2  | **Committed code generation, checked for currency.** One generator, `malloy-pub dbt import`, writes `bindings/` (one relation per dbt node) and `generated/` (the semantics), which hand-written files import and extend. The one check, `malloy-pub dbt check`, writes nothing and fails with `dbt-generated-stale` when they are stale against the current manifests.                                                                                                                                                                                                                                      | A dbt metric change can't merge without its Malloy counterpart                                                                                                          | with P2                                                                                                                                                                                                                                             |
+| S3  | **Manifest-pinned versions.** At publish, Publisher records `Package.dbt { manifestHash, dbtVersion }` on the package version, and the package's `/status` entry shows `dbt.manifestHash`. The project's git ref is already covered by `contentHash`, `gitRef` and `gitCommitSha`; `dbt.gitCommitSha` is added only when `dbt.project` lies outside the package.                                                                                                                                                                                                                                             | A version pins both halves, rollback restores both, and a mismatch between what dbt built and what Malloy expects is visible. One branch, one pin, with no hand pairing | design                                                                                                                                                                                                                                              |
+| S4  | **Manifest-at-publish validation.** A publish, or a `dryRun` publish, given a dbt manifest checks that every dbt relation the model reads exists with compatible columns, and refuses or warns with stable codes (`dbt-relation-missing`, `dbt-column-removed`, `dbt-column-retyped`, …).                                                                                                                                                                                                                                                                                                                    | No publish that serves against tables dbt hasn't built, or has changed                                                                                                  | design; uses the shared check format                                                                                                                                                                                                                |
+| S5  | **dbt-relation lineage.** The build plan answers which Malloy sources and stored tables read each dbt relation.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              | `table-changes` knows exactly what to rebuild, and lineage spans the dbt DAG and Malloy sources                                                                         | **Mostly shipped.** `PersistSourcePlan.reads` and `upstreamSchemas` are on the build plan ([`api-doc.yaml`](../api-doc.yaml)). What remains is mapping dbt `unique_id`s to those table paths, which the CLI does from `bindings/`. No new API name. |
+| S6  | **A run-finished hook.** `POST …/packages/{pkg}/table-changes` with `{changedTables[], failedTables[]}` (items shaped like `TableRead`) answers 202 with the started materialization. It refetches the schemas of the changed tables (S11), re-checks contracts, and rebuilds exactly the dependent sources (via S5) with `forceRefresh`. It is dbt-agnostic, so dlt or Airflow can call it; `malloy-pub dbt refresh --run-results target/run_results.json` is its dbt client. Failed or skipped dbt models leave their dependents serving their last good tables, with a `dbt-upstream-run-failed` warning. | "dbt ran, so Malloy is fresh", from any orchestrator. One run-driven pickup covers metadata and warehouse schema together                                               | The scoped materialize endpoint exists; the endpoint and the mapping are new. A hosted control plane can drive the same mechanics from its own events.                                                                                              |
+| S7  | **Consistency during a run, for stored tables.** While a dbt run is in progress, a materialized source whose dbt relations are mid-rebuild keeps serving its last good stored table, or answers live with the serve-verdict reason `upstream_rebuilding`.                                                                                                                                                                                                                                                                                                                                                    | No window where a stored table is rebuilt from half-built dbt tables                                                                                                    | Partly shipped (column contracts, freshness, serve verdicts); the "run in progress" signal and `upstream_rebuilding` are new. It can't protect live sources, which read dbt's tables directly mid-run; only S10 can.                                |
+| S8  | **Exposures write-back.** `malloy-pub dbt exposures` writes dbt `exposures:` YAML for Malloy sources (semantic entry points, not only dashboards), reports and data apps, so they appear in dbt's DAG and `dbt build -s +exposure:…` works.                                                                                                                                                                                                                                                                                                                                                                  | Two-way lineage                                                                                                                                                         | P3                                                                                                                                                                                                                                                  |
+| S9  | **dbt tests as signals.** Read `run_results.json` test outcomes. A failing test on a relation a source reads surfaces as a package warning, and optionally a verdict, with dbt's severities.                                                                                                                                                                                                                                                                                                                                                                                                                 | Quality gates span both halves                                                                                                                                          | later, with P4                                                                                                                                                                                                                                      |
+| S10 | **Schema-parameterized bindings, with deferral.** A source's logical `#(dbt) unique_id` references resolve against a schema chosen per package version or environment (e.g. `dbt_v8`), not a hard-coded one, and fall back to the serving schema for relations a version didn't rebuild. `dbt.schemaMode` chooses one shared schema or a schema per version. See [code moves forward, data stays put](#code-moves-forward-data-stays-put).                                                                                                                                                                   | Per-version isolation: one version's dbt run never rewrites tables another version serves; promote switches schemas atomically                                          | **New.** Overlaps environment-resolved bindings for package variants. The mechanism's name waits for its design. Until it lands, versions share one schema.                                                                                         |
+| S11 | **Schema refetch scoped to changed tables.** Refetch only the relations a dbt run changed, not every table a package reads.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  | Fast, cheap pickup after each dbt run                                                                                                                                   | **New.** Today a reload refetches all of a package's schemas.                                                                                                                                                                                       |
+| S12 | **Eject to dbt.** `malloy-pub dbt eject <source>` generates a dbt model from a Malloy source, rewrites the source to read it in the same change, and proves equal results with the reconciliation harness. It never overwrites an existing dbt model by name.                                                                                                                                                                                                                                                                                                                                                | Logic moves both ways: down into the model when it needs to change fast, up into dbt when it hardens                                                                    | **New.** After P2 and S10. Needs a Malloy → SQL model generator (`PersistSource.getSQL()` already produces the bare SELECT).                                                                                                                        |
 
 **Design rules that cut across the table:**
 
@@ -304,8 +352,57 @@ it happens, signals Publisher.
   changes to the model.
 - **The upstream ladder.** A query → a Malloy source → `#(materialize)` → a dbt model, once logic
   has stabilised. S12 is the last rung.
-- **New public API fields** (S3's version metadata, S5's lineage, S6's endpoint) each need sign-off,
-  listed in the P0 names proposal alongside `--check`'s.
+- **New public API fields** (S3's `Package.dbt`, S6's `table-changes`, S7's `upstream_rebuilding`)
+  also go into the [`/api/v1` spec](publisher-v1.md).
+
+### Code moves forward, data stays put
+
+The pattern S10 implements, as teams on MotherDuck and other warehouses already run dbt:
+
+- **Environments are separated by write target and credential, not by copying data.** Dev, CI and
+  production each write to their own target (a database or schema) with their own credential, and
+  the production credential never sits in a developer's environment file.
+- **Production inputs are read read-only,** through shares or grants. Every environment reads the
+  same upstream data in place; only its own target is writable.
+- **A schema per version or pull request is the baseline.** A pull request builds into `ci_pr123`,
+  a package version into `dbt_v8`, and promotion runs the same code against the next target.
+- **Zero-copy clones and snapshots are optional optimisations,** where the warehouse has them
+  (MotherDuck's `CREATE DATABASE … FROM`, Snowflake's clones, `dbt clone`): a clone seeds a version's
+  schema cheaply, and a named snapshot gives rollback. S10 works without either.
+- **It composes with deferral:** a version's schema holds only what it rebuilt, and reads the
+  serving schema for the rest.
+
+### The names
+
+Public names for the dbt integration, fixed ahead of the code so nothing ships under a placeholder.
+
+- **CLI** (package `@malloy-publisher/cli`, binary `malloy-pub`): `dbt import` (one generator,
+  writing `bindings/` and `generated/`), `dbt check` (the one check; it writes nothing),
+  `dbt refresh --run-results <path> --environment <e> [--package <p>]`, `dbt eject <source>`,
+  `dbt exposures`, and `materialize --source <name...>` (repeatable, validated against the build
+  plan). `--manifest`, `--semantic-manifest`, `--catalog`, `--select`, `--exclude`, `--connection`
+  and `--package-dir` override the `dbt` block. The scaffolder takes `--dbt <project>`.
+- **The `publisher.json` `dbt` block,** a closed key set: `dbt.project` (path to the dbt project,
+  default `dbt`; the artifact paths default from it), `dbt.target`, `dbt.select`, `dbt.exclude`,
+  `dbt.manifest`, `dbt.semanticManifest`, `dbt.catalog`, `dbt.connection`, `dbt.bindings`,
+  `dbt.generated` (default `generated`), `dbt.columns`, `dbt.docs`, `dbt.classification.metaKey`,
+  `dbt.naming.prefix`, `dbt.naming.overrides`, `dbt.engine` (e.g. `"dbt-core@1.12"`, not `version`,
+  which already means the package's semver), and `dbt.schemaMode` (S10). An unknown key warns
+  `dbt-unknown-key`.
+- **In the model:** `#(dbt) unique_id="…"` ties a source to its dbt node as a logical reference;
+  `#(dbt) type="…"` records a column's type; dbt `meta.malloy.access` carries access from dbt.
+- **API:** `Package.dbt { manifestHash, dbtVersion }`, `/status`'s `dbt.manifestHash`,
+  `POST …/packages/{pkg}/table-changes`, and the serve-verdict reason `upstream_rebuilding`.
+- **Codes:**
+  - drift: `dbt-binding-added`, `dbt-binding-removed`, `dbt-relation-changed`, `dbt-column-added`,
+    `dbt-column-removed`, `dbt-column-retyped`, `dbt-doc-changed`, `dbt-classification-changed`,
+    `dbt-access-changed`, `dbt-pin-mode-changed`;
+  - importer: `dbt-generated-stale`, `dbt-metric-approximated`, `dbt-metric-skipped`;
+  - could not check (exit 2): `dbt-manifest-unreadable`, `dbt-manifest-version-unsupported`,
+    `dbt-selector-unsupported`, `dbt-selection-empty`, `dbt-relation-name-refused`,
+    `dbt-name-collision`;
+  - publish and refresh: `dbt-relation-missing`, `dbt-upstream-run-failed`,
+    `dbt-refresh-source-unknown`, `dbt-unknown-key`.
 
 ## The importer
 
@@ -337,7 +434,9 @@ The dbt `semantic_manifest.json` front end ships first, because it is lossless.
 | saved queries                 | views                                                     |
 | conversion metrics            | a generated view, or flagged as unsupported with a reason |
 
-**Output:** a generated `.malloy` file the developer owns and extends (S2), plus the coverage report.
+**Output:** `bindings/` (one relation per selected dbt node, with a logical `#(dbt) unique_id`) and
+`generated/` (the semantics), committed, which the developer's own files import and extend (S2),
+plus the coverage report (`dbt-metric-approximated`, `dbt-metric-skipped`).
 **Acceptance:** P1's reconciliation harness, run on the generated model.
 
 ### How the 23 jaffle-shop metrics map (to verify in P1)
@@ -398,8 +497,9 @@ P4 follows. The Snowflake track follows P2b.
 
 **P0, decisions and housekeeping.** No code.
 
-1. A one-page proposal for the shared check result format and the new public names (`--check`, S3,
-   S5, S6), for sign-off.
+1. The shared check result format and the new public names: settled (above). What remains is
+   moving the format into a shared `docs/check-format.md` that `publisher --check` and the CLI both
+   cite.
 2. Publish the CLI as `@malloy-publisher/cli`, binary `malloy-pub`, released in lockstep with the
    server by the release workflow.
 3. Ask dbt Labs to merge jaffle-shop's license; until then, clone at setup.
@@ -426,18 +526,27 @@ P4 follows. The Snowflake track follows P2b.
 
 **P3, the developer-loop plumbing, plus the sync primitives:**
 
-- `materialize --source` in the CLI;
-- the run-finished hook (S6) and scoped refetch (S11);
-- land `publisher --check` (#1934) with the shared format;
+- `malloy-pub materialize --source` in the CLI;
+- `table-changes` and `malloy-pub dbt refresh` (S6), and scoped refetch (S11);
+- land `publisher --check` (#1934) with the shared format (`--check-format`, the JSON document);
 - the scaffolder's `--dbt` flag;
 - manifest-at-publish validation (S4), lineage mapping (S5) and run consistency (S7);
-- the exposures writer (S8);
+- `malloy-pub dbt exposures` (S8);
 - `#(doc)` from the manifest.
+- **Follow-up: MotherDuck read scaling.** Accept a MotherDuck read-scaling token on the `motherduck`
+  connection, which routes queries to a pool of read-only replicas, with a per-user `session_name`
+  (from the caller's identity) so each user stays on one replica for cache affinity. The replicas
+  are eventually consistent and can trail the writer by minutes, so a replica read can see a table
+  older than the one a build or `dbt refresh` just wrote. Reads that must see a just-finished build
+  (the post-build contract check, `table-changes`, served-equals-live checks) keep the read-write
+  token, and a freshness verdict never treats a replica read as proof that a table is current; the
+  docs state the lag.
 
-**P4, bind/check drift.** `malloy-pub dbt bind` generates the physical-binding layer from
-`manifest.json`, one binding source per selected model; `malloy-pub dbt check` is a
-regenerate-and-diff drift gate, so schema drift stays a reviewable file diff. dbt tests as signals
-(S9) land with it. Production teams need it; the example does not.
+**P4, drift with column pins.** `malloy-pub dbt import` already writes `bindings/`, one binding
+source per selected model; P4 adds column pins to them, and `malloy-pub dbt check` becomes a full
+regenerate-and-diff drift gate, so schema drift stays a reviewable file diff, reported with the
+`dbt-*` drift codes. dbt tests as signals (S9) land with it. Production teams need it; the example
+does not.
 
 **P5, the launch.** Drafted after P1, published once P2 ships, so "one command" is true.
 
