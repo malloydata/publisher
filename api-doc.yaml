@@ -2787,8 +2787,9 @@ paths:
         other files are read through the `get_skill` MCP tool.
 
         409 `SKILL_SETS_UNAVAILABLE` when the package declares a `default` set
-        and the load could not read it, which is where its own skills come from:
-        the message carries the reason and it lasts until the package reloads. A
+        and the load could not read it. Its own skills come from there and one
+        can replace a bundled skill, so the listing is refused whole: the
+        message carries the reason and it lasts until the package reloads. A
         package with no `default` has no skills of its own, so it lists the
         bundled ones as usual.
 
@@ -4395,8 +4396,9 @@ components:
             not help.
           * SKILL_SETS_UNAVAILABLE: the package's skill sets could not be read
             when it loaded, so its skill sets and workflows are not served,
-            nor are its own skills when it declares a `default` set (the
-            bundled skills still are). Reload the package; retrying the read
+            nor are the skills routes and `get_skill` when it declares a
+            `default` set, bundled names included, because a `default` skill
+            can replace a bundled one. Reload the package; retrying the read
             does not help.
       content:
         application/json:
@@ -6046,20 +6048,23 @@ components:
             reference or asset, a file over the reply budget of `get_skill`),
             and `skill-finding` for any other: a skill that is not served
             (unreadable or linked-out `SKILL.md`, a frontmatter `name` that is
-            not its directory name, an `assets/` that breaks a rule, a
+            not its directory name, a directory name that breaks the name rule
+            or differs from another's only by case, an `assets/` that breaks a
+            rule, a `publisher.json` search past the set's entry budget, a
             `SKILL.md` past the set's inline budget), a skill served with a
             gap (no `description`, frontmatter that is not valid YAML), a set
             that holds no skills, a set past its skill cap, a skill named like a
-            bundled skill that the set's `overrides` does not list, and a bad
-            `overrides` value; and `skill-sets-unavailable` (no `subject`) when
+            bundled skill that the set's `overrides` does not list (in a set
+            that is not `default`, any such skill), a bad `overrides` value,
+            and an `overrides` on a set that is not `default`; and `skill-sets-unavailable` (no `subject`) when
             the walk failed, so no skill set or workflow is served until the
             package reloads. A `SkillSet.warnings` carries the set's own
             findings, and `Workflow.warnings` the workflow's `skill-shadowed`.
             Hard-break findings, all `warn`, each with a `code`: a manifest
             that declares `agents`, which is no longer read
-            (`PACKAGE_AGENTS_NOT_READ`), and a root `skills/` directory that no
+            (`package-agents-not-read`), and a root `skills/` directory that no
             declared skill set reads, which is no longer read
-            (`PACKAGE_SKILLS_DIR_NOT_READ`).
+            (`package-skills-dir-not-read`).
             Deprecated-format findings, all `warn`: each `.malloynb` notebook
             (`model` is its path), and each source a file declares deprecated
             `#(filter)` annotations on (`model` is that file, `subject` the
@@ -6474,16 +6479,17 @@ components:
             `skill-finding`: any other finding of a skill set: a skill not
             served, a skill served with a gap, a set with no skills, a set
             past its skill cap, a skill named like a bundled skill that the
-            set's `overrides` does not list, or a bad `overrides` value
-            (`subject` the set's name). Each finding of a set is published
+            set's `overrides` does not list (any such skill in a set that is
+            not `default`), a bad `overrides` value, or an `overrides` on a
+            set that is not `default` (`subject` the set's name). Each finding of a set is published
             once, however many workflows list it.
             `skill-sets-unavailable`: the walk that reads the declared skill
             sets failed, so no skill set or workflow is served until the
             package reloads (no `subject`; one per load). All six of these
             are `warn`.
-            `PACKAGE_AGENTS_NOT_READ`: the manifest declares `agents`,
+            `package-agents-not-read`: the manifest declares `agents`,
             which is no longer read (one per load; the message says to
-            declare `workflows`). `PACKAGE_SKILLS_DIR_NOT_READ`: the
+            declare `workflows`). `package-skills-dir-not-read`: the
             package has a root `skills/` directory that no declared skill
             set reads, so it is no longer read (one per load; the message
             names the one-line fix, a `default` set whose `path` is `skills`).
@@ -10752,8 +10758,10 @@ components:
               * VERSION_ARCHIVED (410): the version is archived.
               * SKILL_SETS_UNAVAILABLE (409): the package's skill sets could
                 not be read when it loaded, so its skill sets and workflows
-                are not served until it reloads, nor are its own skills when
-                it declares a `default` set (the bundled skills still are).
+                are not served until it reloads. Nor are the skills routes
+                and `get_skill` when it declares a `default` set, bundled
+                names included, because a `default` skill can replace a
+                bundled one.
               * WORKFLOW_NOT_SERVED (404): the workflow routes name a workflow
                 the manifest declares and Publisher refuses, or any workflow
                 while the manifest's whole declaration is refused. The

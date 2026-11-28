@@ -138,7 +138,10 @@ Concretely:
   write only `name` and `description` into the installed file's frontmatter, taken from the entry's
   fields, then the text after the file's own frontmatter, and name any other key the file carried to the
   user. An installer that keeps the file's frontmatter gives up the bounded reader's protection (the server's own size-capped, expansion-limited read of the frontmatter, whose `name` and `description` the installer writes instead of parsing the file's own), and the
-  server cannot enforce the rule for it. Publisher itself runs nothing from a definition.
+  server cannot enforce the rule for it. Publisher itself runs nothing from a definition, but an
+  installer writes a skill's package-authored `scripts/` (and any other listed file) to the user's
+  disk, where the skill tells the agent to run it: the install copies the bytes unread, so the user
+  is trusting the package author, and the sha256 only proves the file arrived as listed.
 - **A package's Malloy reads only its own package's files.** The same realpath rule bounds every
   file the compiler reads for a package's models (an `import`, a `.malloynb`, a data-styles
   file) on every compile: the load and its worker, a reload, `/compile` and MCP `compile_model`

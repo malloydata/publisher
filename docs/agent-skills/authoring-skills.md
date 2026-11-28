@@ -233,7 +233,7 @@ file, which Publisher lists by path, size and sha256 and reads on request.
 | A workflow's `instructions` | 16 KiB | Refuses the workflow |
 | Skill sets a workflow lists | 8 | Refuses the workflow |
 | Skill sets and workflows a package declares | 32 and 64 | Refuses the whole `skillSets` or `workflows` declaration, so none of its entries is served |
-| Names in a set's `overrides` | 64 | Reads as empty, with a finding |
+| Names in a set's `overrides` | 64, and read only on `default` | Reads as empty, with a finding; on any other set a non-empty `overrides` is ignored, with a finding |
 | A `SKILL.md` | 256 KiB | The skill is not served |
 | A skill set's inline Markdown | 256 KiB per set; every `SKILL.md` is counted first | A `SKILL.md` that does not fit is skipped with its skill; other Markdown that does not fit is listed instead, with a warning |
 | Inline Markdown files per skill set | 1,000, `SKILL.md` included. A zero-byte file passes the byte budget, so without this a set could inline about 64 skills of 1,000 files each | The file is skipped, with a warning |
@@ -243,9 +243,11 @@ file, which Publisher lists by path, size and sha256 and reads on request.
 | One listed file | Under 1 MiB (1,048,576 bytes is out) | The file is skipped |
 | Listed files per skill set | 4 MiB and 200 files | Later files are skipped |
 | Listed files per package, across sets | 8 MiB, each path counted once, sets charged whole in name order | The set that would cross it is refused, and so is every workflow that lists it |
-| A listed path | Segments of `[A-Za-z0-9_][A-Za-z0-9._-]*`, at most 200 characters with the skill's directory name, at most 8 levels deep, no control character, no `.malloy` or `.malloynb`, a regular file | The file is skipped. Inline Markdown keeps lenient names, but not a path over 200 characters from the skill's root (next row) |
+| A listed path | Segments of `[A-Za-z0-9_][A-Za-z0-9._-]*`, at most 200 characters with the skill's directory name, at most 7 directories deep below the skill's root (a path under `assets/` counts its depth from `assets/`, so it may go 7 below `assets/`, 8 counting `assets/` itself), no control character, no `.malloy` or `.malloynb`, a regular file | The file is skipped. Inline Markdown keeps lenient names, but not a path over 200 characters from the skill's root (next row) |
 | A path in the walk | At most 200 characters from the skill's root, inline Markdown included. A directory over it is not descended | The entry is skipped, with one warning naming the first |
 | Entries walked | Per skill set, 1,000 under `assets/` and 1,000 elsewhere, shared by its skills. Entries `.skillignore` matches count | The walk stops there, and the rest are not included |
+| The search for a nested `publisher.json` | Spends the same 1,000 entries, since a skill's own `publisher.json` has to be ruled out | A skill whose search runs out of budget is set aside, with a finding, as is each later skill of the set once the budget is spent |
+| A skill directory's name | Segments of `[A-Za-z0-9_][A-Za-z0-9._-]*`, no `..` and no control character, and no two skills of a set that differ only by case | The skill is skipped, with a finding (the second of a case collision) |
 | `reference/` and `references/` | At most 1,000 Markdown files per skill, whether or not `.skillignore` matches them, read no further than 10,000 entries of any kind. Both are outside the entries walked, are followed when they are a link, and are read before other Markdown | The rest are not read |
 | `.skillignore` | 16 KiB; at most 50 patterns, of at most 200 characters each and 1,024 together (comments and blank lines are free); two `*` or `**` segments a pattern, a run of `**` counting once | The pattern, or the file, is skipped |
 | Frontmatter | YAML 1.2; at most 4 KiB; at most 100 references to one anchor; output at most 5 times the source plus 10,000 characters | An empty `frontmatter` and a line read of `name` and `description`, with a warning |
@@ -269,7 +271,7 @@ however many workflows list it. The main thread pays only to receive the result 
 rebuild each set's readers from the rows and shas the worker shipped, reading no file and hashing nothing. `bun run perf:skills-reload` in `packages/server` builds a package with the most
 sets it may declare (32), each spending every per-set cap, and times both sides. A package with up to 64 skills in each set
 costs more than the bench's, which keeps each set's 1,000 inline files in one skill. On a development
-machine with a warm page cache, the median of 3 reloads, in milliseconds:
+machine with a warm page cache, the median of 5 reloads, the bench's default, in milliseconds:
 
 | Package | Worker: walk | Worker: hash | Worker: serialize | Main: receive | Main: adopt |
 | --- | --- | --- | --- | --- | --- |
@@ -286,8 +288,8 @@ bytes, not with their content: about 20 ms at the most a package may declare.
 If the walk cannot finish (it throws, or a listed set or an instructions file exists but cannot be
 read), the package's models still load, one `skill-sets-unavailable` warning names the cause, and
 every set and workflow route and `get_skill_set` and `get_workflow` answer 409
-`SKILL_SETS_UNAVAILABLE` with the reason, until the package reloads. So do the skills routes when
-the package declares a `default` set; without one the bundled skills serve as usual. A name the
+`SKILL_SETS_UNAVAILABLE` with the reason, until the package reloads. So do the skills routes and `get_skill` when
+the package declares a `default` set, even for a bundled skill's name, because a `default` skill can replace a bundled one; without one the bundled skills serve as usual. A name the
 manifest never declares is still a 404.
 
 ## Authoring a new skill
