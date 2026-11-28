@@ -40,6 +40,40 @@ const ASSET_EXTS = new Set([
 ]);
 const MODEL_EXTS = new Set([".malloy", ".malloynb", ".md"]);
 
+/**
+ * A reload per key that never queues behind itself: one runs at a time, and an
+ * event that arrives while it does sets a flag that makes it run once more, so
+ * a burst of N events costs two loads, the second started after the last event.
+ * Every caller gets the result of the last run its key had.
+ */
+export function coalescedReloads<K>(
+   reload: (key: K) => Promise<boolean>,
+): (key: K) => Promise<boolean> {
+   const running = new Map<K, { dirty: boolean; done: Promise<boolean> }>();
+   return (key) => {
+      const slot = running.get(key);
+      if (slot) {
+         slot.dirty = true;
+         return slot.done;
+      }
+      const fresh = { dirty: false, done: Promise.resolve(false) };
+      fresh.done = (async () => {
+         try {
+            let ok: boolean;
+            do {
+               fresh.dirty = false;
+               ok = await reload(key);
+            } while (fresh.dirty);
+            return ok;
+         } finally {
+            running.delete(key);
+         }
+      })();
+      running.set(key, fresh);
+      return fresh.done;
+   };
+}
+
 export class WatchModeController {
    watchingPath: string | null;
    watchingEnvironmentName: string | null;
@@ -169,7 +203,7 @@ export class WatchModeController {
       // not do: Environment.update() refreshes metadata and connections but
       // never recompiles packages. Returns false on a compile error (e.g. a
       // half-typed model saved mid-edit).
-      const reloadPackage = async (pkgName: string): Promise<boolean> => {
+      const reloadPackage = coalescedReloads(async (pkgName: string) => {
          try {
             const environment = await this.environmentStore.getEnvironment(
                parseEnvironmentName(watchName),
@@ -189,7 +223,7 @@ export class WatchModeController {
             );
             return false;
          }
-      };
+      });
       const onEvent =
          (kind: "add" | "change" | "unlink") => async (filePath: string) => {
             logger.info(`Watch ${kind}: ${filePath}; environment=${watchName}`);

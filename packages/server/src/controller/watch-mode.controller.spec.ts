@@ -14,7 +14,7 @@ import request from "supertest";
 import { logger } from "../logger";
 import { linesMentioning } from "../test_helpers/log_lines";
 import { API_PREFIX, buildRouteApp } from "../test_helpers/route_app";
-import { WatchModeController } from "./watch-mode.controller";
+import { coalescedReloads, WatchModeController } from "./watch-mode.controller";
 import { fakeOf } from "../test_helpers/store_fakes";
 import type { PackageLookup } from "../service/environment_ports";
 
@@ -316,4 +316,67 @@ describe("live reload of what a package's workflows serve", () => {
       expect(announced).toEqual([skillignore, sentinel, served, instructions]);
       expect(reloaded).toEqual(["pkg", "pkg", "pkg", "pkg"]);
    }, 10_000);
+});
+
+describe("coalescedReloads", () => {
+   /** A reload that holds until the test lets it finish, recording the order things happened in. */
+   function gatedReload() {
+      const log: string[] = [];
+      const gates: Array<() => void> = [];
+      const reload = async (key: string) => {
+         log.push(`start ${key}`);
+         await new Promise<void>((resolve) => gates.push(resolve));
+         log.push(`end ${key}`);
+         return true;
+      };
+      /** Lets the running reload end, and yields until the next one has started or none follows. */
+      const finishOne = async () => {
+         gates.shift()!();
+         await new Promise<void>((resolve) => setImmediate(resolve));
+      };
+      return { log, reload, finishOne, running: () => gates.length };
+   }
+
+   it("runs one reload and at most one more for a burst of 200 events on one package", async () => {
+      const { log, reload, finishOne } = gatedReload();
+      const schedule = coalescedReloads(reload);
+      const done = Array.from({ length: 200 }, () => schedule("pkg"));
+      await finishOne();
+      await finishOne();
+      expect(await Promise.all(done)).toEqual(Array(200).fill(true));
+      expect(log).toEqual(["start pkg", "end pkg", "start pkg", "end pkg"]);
+   });
+
+   it("starts the trailing reload after the last event, so it reads the burst's last write", async () => {
+      const { log, reload, finishOne } = gatedReload();
+      const schedule = coalescedReloads(reload);
+      const first = schedule("pkg");
+      const last = schedule("pkg");
+      log.push("last event");
+      await finishOne();
+      await finishOne();
+      await Promise.all([first, last]);
+      expect(log).toEqual([
+         "start pkg",
+         "last event",
+         "end pkg",
+         "start pkg",
+         "end pkg",
+      ]);
+   });
+
+   it("keeps packages apart and starts a fresh reload for an event after the run ended", async () => {
+      const { log, reload, finishOne } = gatedReload();
+      const schedule = coalescedReloads(reload);
+      const a = schedule("a");
+      const b = schedule("b");
+      await finishOne();
+      await finishOne();
+      await Promise.all([a, b]);
+      expect(log).toEqual(["start a", "start b", "end a", "end b"]);
+      const again = schedule("a");
+      await finishOne();
+      await again;
+      expect(log.slice(4)).toEqual(["start a", "end a"]);
+   });
 });
