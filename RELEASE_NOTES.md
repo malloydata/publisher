@@ -20,7 +20,11 @@ Three things went wrong as a result:
 - the package also warned `materialization-unreachable` about `activity_events`, although a published source reads it;
 - where the entry file reached one stored source and not another, its copy could fail to compile with `cross_connection_unbuilt`.
 
-The served copy now finds such a base the way it finds a kept block's base: from the declaring file's text. It re-roots the base in its own file, and proves the result through the sources the entry file names over it. **Who is affected:** packages whose `index.malloy` imports the files that extend a stored source, but not the file that stores it. **What to do:** nothing; the workaround of importing every file into `index.malloy` is no longer needed.
+The served copy now finds such a base the way it finds a kept block's base: from the declaring file's text. It re-roots the base in its own file, and proves the result through the sources the entry file names over it. Two limits:
+- **A stored base that filters its own rows** (a `where:` it declares or inherits) is still answered live through such an entry file, as before.
+- **A source the entry file declares itself that joins such an extension** can now be warned `served-copy-not-served` (`cross_connection_join`) when the stored table is in a storage destination its own connection cannot reach. That source answers live, as it always did.
+
+**Who is affected:** packages whose `index.malloy` imports the files that extend a stored source, but not the file that stores it. **What to do:** nothing; the workaround of importing every file into `index.malloy` is no longer needed.
 
 ## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
 

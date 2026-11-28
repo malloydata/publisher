@@ -1839,7 +1839,13 @@ export class ServedCopyServe {
       const reach = this.declaredAncestorReach(map);
       const id = authorIDs.find((a) => reach.has(a));
       const node = id ? detachedNode(this.declarationOf(id)) : undefined;
-      return node && id
+      // Not one that filters its rows (its own `where:` or one it inherits):
+      // the inherited-filter guard proves a filter against its declaring
+      // source in this compile, which holds no node for it, and would deny
+      // every query; left as written, it answers live as before.
+      const filters = (node?.def as { filterList?: unknown[] } | undefined)
+         ?.filterList;
+      return node && id && !filters?.length
          ? { node, declared: reach.get(id) ?? [] }
          : { node: undefined };
    }

@@ -102,6 +102,63 @@ source: org_activity is activity_events extend {
    },
 });
 
+// A stored base that filters its rows (its own where:, or a stored
+// intermediate's) stays answered live through such an entry, never denied.
+const FILTERED: { label: string; files: Record<string, string> }[] = [
+   {
+      label: "a stored base with its own where:",
+      files: {
+         "activity.malloy": `#(materialize) name="activity_t" storage=lake\nsource: activity_events is duckdb.table('activity.csv') extend { where: kind != 'c' }\n`,
+         "eng.malloy": `import "activity.malloy"\nsource: org_activity is activity_events extend { measure: n is count() }\n`,
+         "index.malloy": `import "eng.malloy"\nexport { org_activity }\n`,
+      },
+   },
+   {
+      label: "a stored intermediate with its own where:",
+      files: {
+         "activity.malloy": `#(materialize) name="activity_t" storage=lake\nsource: activity_events is duckdb.table('activity.csv')\n`,
+         "mid.malloy": `import "activity.malloy"\n#(materialize) name="mid_t" storage=lake\nsource: mid is activity_events extend { where: kind = 'a' }\n`,
+         "eng.malloy": `import "mid.malloy"\nsource: org_activity is mid extend { measure: n is count() }\n`,
+         "index.malloy": `import "eng.malloy"\nexport { org_activity }\n`,
+      },
+   },
+];
+for (const shape of FILTERED) {
+   describe(`an entry file reaching a filtered stored base through an import: ${shape.label}`, () => {
+      let restore: () => void;
+      let loader: Awaited<ReturnType<typeof loadFixture>> | undefined;
+      let fixture: LoadedFixture | undefined;
+      const q =
+         "run: org_activity -> { group_by: kind; aggregate: n; order_by: kind }";
+      let live: Outcome | undefined;
+      let served: Outcome | undefined;
+      beforeAll(async () => {
+         restore = installSettings({
+            env: { PERSIST_STORAGE_MODE: "on", PUBLISHER_MATERIALIZE: "true" },
+         }).restore;
+         await freshLoadPool();
+         loader = await loadFixture({
+            ...shape.files,
+            "activity.csv": ACTIVITY,
+         });
+         live = await loader.run("index.malloy", q);
+         fixture = await loader.bind();
+         served = await fixture.run("index.malloy", q);
+      }, 600_000);
+      afterAll(async () => {
+         await fixture?.dispose();
+         await loader?.dispose().catch(() => {});
+         restore?.();
+         await freshLoadPool();
+      });
+      it("answers with the filtered rows, as live, never denied", () => {
+         const before = answer(live);
+         expect(before.servedBy).toBe("live");
+         expect(answer(served).rows).toBe(before.rows);
+      });
+   });
+}
+
 for (const shape of SHAPES) {
    describe(`an entry file reaching a stored base through an import: ${shape.label}`, () => {
       let restore: () => void;
