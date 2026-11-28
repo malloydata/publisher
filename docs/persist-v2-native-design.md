@@ -444,7 +444,8 @@ fleet and re-seeds every incremental source on it.
   The notes say so.
 - **Hosted cells: the service owns the flip.** In a hosted cell, `persist.planner` is set per cell
   through the publisher config ConfigMap. Moving a cell to `shadow` and then to `v2` is a per-cell
-  rollout step that the service team owns. On a cell, a release's default takes effect only where
+  rollout step that the service team owns. Flipping a cell to `persist.planner=v2` requires a green
+  bump-PR plan-diff for the Publisher release that cell runs. On a cell, a release's default takes effect only where
   the ConfigMap leaves the key unset.
 - **Modes.**
   - `v1`: today.
@@ -510,13 +511,14 @@ its own that v2 drops. It is a bug until shown otherwise.
     out tag `v<version>`.
   - `v1-cutover-conformance-main.yml` runs daily, and on demand, against Publisher `main`.
 
-  Neither of them runs on the release under test before that release is pinned. Before the
-  both-planners release is pinned, `--plan-diff` can run only through the daily `main` job, or
-  through a pull request that bumps `publisher_version`.
-
-  **Question for the service:** should the job take a Publisher ref as an input, so the shadow diff
-  runs on a release candidate before the pin? Or is the `publisher_version` bump PR the intended
-  vehicle?
+  Credible settled how the diff is run (answer to this doc's open question):
+  - **The gate is the bump PR.** The shadow `--plan-diff` runs in the service PR that bumps
+    `publisher_version`. That job already reads the pinned version, so it runs exactly the release
+    under test. The check is required on every PR that touches `infrastructure/malloy-versions.json`.
+  - **Before a release.** The job's `workflow_dispatch` gets an optional `publisher_ref` input,
+    which takes an npm version, an image tag or a git ref and defaults to `publisher_version`. A
+    candidate can then be shadowed before it is released.
+  - **Early warning.** The daily job stays on Publisher `main`.
 
 ### Phases
 
@@ -550,7 +552,8 @@ The critical path is marked ★.
 3. **★ The flip: default `v2`.** This goes in the next breaking minor, batched with the other
    breaking changes rather than cut on its own. The release notes name every **Sign-off** item.
    Standalone servers take the new default. Hosted cells move one at a time when the service sets
-   `persist.planner` in each cell's publisher config ConfigMap; the service owns that rollout. The
+   `persist.planner` in each cell's publisher config ConfigMap; the service owns that rollout. A
+   cell is flipped only once the plan-diff on the bump PR for the release it runs is green. The
    D4 bind rule stays in place until every cell is on `v2` and has replanned.
 4. **★ Delete v1.**
    - The walk, `v1_build_companion.ts`, the backstop, `droppedPersistSources`, the five rule copies
