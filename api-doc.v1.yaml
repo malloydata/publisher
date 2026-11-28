@@ -2580,8 +2580,9 @@ paths:
       tags:
         - skills
       summary: Read a skill
-      description: Serves the skill's `SKILL.md` as written, with every file the skill ships in `files`. A skill's other
-        files are read at `GET …/skill-sets/{skillSetName}/skills/{path}`, or, for a bundled skill, through MCP `get_skill`.
+      description: Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry). Serves
+        the skill's `SKILL.md` as written, with every file the skill ships in `files`. A skill's other files are read at
+        `GET …/skill-sets/{skillSetName}/skills/{path}`, or, for a bundled skill, through MCP `get_skill`.
       parameters:
         - name: include
           in: query
@@ -2646,7 +2647,6 @@ paths:
           $ref: "#/components/responses/Unavailable"
         "504":
           $ref: "#/components/responses/GatewayTimeout"
-      description: Loads the version when it is not loaded (a hydrate when the compiled-model store has an entry).
 
 
   /environments/{environmentName}/packages/{packageName}/versions/{versionId}/entities:
