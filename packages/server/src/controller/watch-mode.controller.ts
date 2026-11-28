@@ -187,6 +187,24 @@ export class WatchModeController {
             ))
          );
       };
+      const workflowPathsOf = (pkgName: string): readonly string[] =>
+         environment
+            .getLoadedPackages()
+            .find((p) => p.getPackageName() === pkgName)
+            ?.workflowPaths() ?? [];
+      // The per-file filter dropped what a newly declared set holds, and on macOS a save to a file nothing watches raises no directory event.
+      const watchDeclared = (pkgName: string, declared: string[]) => {
+         const roots = declared.map((rel) =>
+            path.join(watchPath, pkgName, ...rel.split("/")),
+         );
+         const dirs = Object.keys(this.watcher?.getWatched() ?? {}).filter(
+            (dir) =>
+               roots.some(
+                  (root) => dir === root || dir.startsWith(root + path.sep),
+               ),
+         );
+         if (dirs.length > 0) this.watcher?.add(dirs);
+      };
       this.watcher = chokidar.watch(this.watchingPath, {
          ignored: (filePath, stats) => {
             if (!stats?.isFile()) return false;
@@ -209,7 +227,12 @@ export class WatchModeController {
                parseEnvironmentName(watchName),
                false,
             );
+            const declaredBefore = new Set(workflowPathsOf(pkgName));
             await environment.getPackage(parsePackageName(pkgName), true);
+            watchDeclared(
+               pkgName,
+               workflowPathsOf(pkgName).filter((p) => !declaredBefore.has(p)),
+            );
             recordPackageReload("watch", "success");
             logger.info(
                `Watch: recompiled package "${pkgName}" in environment "${watchName}"`,

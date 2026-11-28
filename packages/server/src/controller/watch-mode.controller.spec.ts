@@ -183,6 +183,33 @@ describe("live reload of what a package's workflows serve", () => {
       return sentinel;
    };
 
+   // Windows reports a created file as an add and then a change, so it announces a new file twice.
+   const EVENTS_PER_SAVE = process.platform === "win32" ? 2 : 1;
+
+   /** What was announced, once per file in first-announced order, and the recompiles it took: events that arrive during one share the next. */
+   function expectSaves(
+      { reloaded, announced }: { reloaded: string[]; announced: string[] },
+      files: string[],
+   ) {
+      expect([...new Set(announced)]).toEqual(files);
+      expect(announced.length).toBeLessThanOrEqual(
+         files.length * EVENTS_PER_SAVE,
+      );
+      expect(reloaded.length).toBeGreaterThanOrEqual(files.length);
+      expect(reloaded.length).toBeLessThanOrEqual(announced.length);
+      expect(reloaded.filter((name) => name !== "pkg")).toEqual([]);
+   }
+
+   /** Resolves once the watcher holds `file`: adding a path to it is asynchronous and announces nothing, so this is the one wait on a condition. */
+   const isWatching = async (file: string) => {
+      for (let i = 0; i < 400; i++) {
+         const names = controller!.watcher!.getWatched()[path.dirname(file)];
+         if (names?.includes(path.basename(file))) return;
+         await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error(`${file} is not watched`);
+   };
+
    it("recompiles the package for a script saved under a skill set, whatever its extension, and not for one outside any set", async () => {
       const { reloaded, announced, announcedFile } = await watchPackage();
       const outside = path.join(envDir, "pkg", "scripts", "other.py");
@@ -194,8 +221,7 @@ describe("live reload of what a package's workflows serve", () => {
       await announcedFile(sentinel);
       fs.writeFileSync(inSet, "print(1)");
       await announcedFile(inSet);
-      expect(announced).toEqual([sentinel, inSet]);
-      expect(reloaded).toEqual(["pkg", "pkg"]);
+      expectSaves({ reloaded, announced }, [sentinel, inSet]);
    }, 10_000);
 
    it("recompiles the package for its own publisher.json, which declares the workflows, and for one that appears at a set's root, which refuses them", async () => {
@@ -206,8 +232,7 @@ describe("live reload of what a package's workflows serve", () => {
       await announcedFile(manifest);
       fs.writeFileSync(atSet, "{}");
       await announcedFile(atSet);
-      expect(announced).toEqual([manifest, atSet]);
-      expect(reloaded).toEqual(["pkg", "pkg"]);
+      expectSaves({ reloaded, announced }, [manifest, atSet]);
    }, 10_000);
 
    it("recompiles for a file in a skill set the manifest declares after the watcher started, from the reload that adopted the manifest", async () => {
@@ -222,8 +247,11 @@ describe("live reload of what a package's workflows serve", () => {
       fs.mkdirSync(skill, { recursive: true });
       // No manifest lists the set yet, so a save under it is no skill's.
       fs.writeFileSync(path.join(skill, "early.py"), "print(0)");
-      const sentinel = await sentinelSaved(announcedFile);
-      expect(announced).toEqual([sentinel]);
+      // A model save always recompiles, so its announcement closes the window in which `early.py` would have shown up, and shows the directory was read while the set was undeclared.
+      const marker = path.join(skill, "marker.md");
+      fs.writeFileSync(marker, "# marker");
+      await announcedFile(marker);
+      expectSaves({ reloaded, announced }, [marker]);
 
       declared = true;
       const manifest = path.join(envDir, "pkg", "publisher.json");
@@ -232,13 +260,13 @@ describe("live reload of what a package's workflows serve", () => {
 
       // A file the set already held when it was declared was filtered out at discovery; its first save after the declaration must still recompile.
       const early = path.join(skill, "early.py");
+      await isWatching(early);
       fs.writeFileSync(early, "print(2)");
       await announcedFile(early);
       const late = path.join(skill, "late.py");
       fs.writeFileSync(late, "print(1)");
       await announcedFile(late);
-      expect(announced).toEqual([sentinel, manifest, early, late]);
-      expect(reloaded).toEqual(["pkg", "pkg", "pkg", "pkg"]);
+      expectSaves({ reloaded, announced }, [marker, manifest, early, late]);
    }, 10_000);
 
    it("reads a skill's .skillignore when a file is saved, so one added after the watcher started stops the recompile for what it matches", async () => {
@@ -255,8 +283,13 @@ describe("live reload of what a package's workflows serve", () => {
       // The same file, saved again, is now the skill's to ignore.
       fs.writeFileSync(log, "two");
       const sentinel = await sentinelSaved(announcedFile);
-      expect(announced).toEqual([log, skillignore, sentinel]);
-      expect(reloaded).toEqual(["pkg", "pkg", "pkg"]);
+      expectSaves({ reloaded, announced }, [log, skillignore, sentinel]);
+      // The first save's second announcement, where there is one, may come before the `.skillignore`'s, never after it.
+      expect(
+         announced
+            .slice(announced.indexOf(skillignore))
+            .filter((f) => f === log),
+      ).toEqual([]);
    }, 10_000);
 
    it("reads a skill's .skillignore without a synchronous fs call when a file is saved, and still applies it", async () => {
@@ -273,7 +306,7 @@ describe("live reload of what a package's workflows serve", () => {
          const kept = path.join(skill, "kept.txt");
          fs.writeFileSync(kept, "x");
          await announcedFile(kept);
-         expect(announced).toEqual([skillignore, sentinel, kept]);
+         expect([...new Set(announced)]).toEqual([skillignore, sentinel, kept]);
          for (const spy of spies) {
             expect(
                spy.mock.calls.filter(([file]) =>
@@ -324,7 +357,8 @@ describe("live reload of what a package's workflows serve", () => {
       await announcedFile(file(BURST - 1));
       expect(reloaded).toEqual(["pkg", "pkg"]);
       expect(lastSeen).toEqual(["", `write ${BURST - 1}`]);
-      expect(announced).toHaveLength(BURST);
+      expect(new Set(announced).size).toBe(BURST);
+      expect(announced.length).toBeLessThanOrEqual(BURST * EVENTS_PER_SAVE);
    }, 15_000);
 
    it("leaves a file the skill never serves alone, and recompiles for the .skillignore that decides it and for the instructions", async () => {
@@ -354,8 +388,12 @@ describe("live reload of what a package's workflows serve", () => {
       const instructions = path.join(envDir, "pkg", "wf", "instructions.md");
       fs.writeFileSync(instructions, "Be brief.");
       await announcedFile(instructions);
-      expect(announced).toEqual([skillignore, sentinel, served, instructions]);
-      expect(reloaded).toEqual(["pkg", "pkg", "pkg", "pkg"]);
+      expectSaves({ reloaded, announced }, [
+         skillignore,
+         sentinel,
+         served,
+         instructions,
+      ]);
    }, 10_000);
 });
 
