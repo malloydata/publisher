@@ -643,7 +643,7 @@ Today's message is:
 
 > Measure M on source S uses #@ preaggregate, which is deprecated: its v2 spelling is #(rollup) grain=[…] (see …). Until you switch, #@ preaggregate still builds and serves its rollups.
 
-**Proposed message, for Kyle's sign-off.** It names the exact rewrite and drops "until you switch",
+**The message (signed off by Kyle, 2026-11-28).** It names the exact rewrite and drops "until you switch",
 since the synonym is not retired:
 
 > Measure `total` on source `orders` uses `#@ preaggregate`, a deprecated synonym of `#(rollup)`: it is read and built exactly as `#(rollup) grain=["category", "order_day"]`. Write `#(rollup)` instead (see docs/materialization-migration.md#preaggregate).
@@ -653,8 +653,8 @@ when the line has one. There is one warning per measure and line, with `subject`
 
 `#(preaggregate)`, the existing route alias of `#(rollup)` (`plan/rollup_plan.ts:877-884`), keeps
 working the same way under the same code. Its text says "one release", which is no longer true, so it
-is reworded to match. **Sign-off:** keep `#(preaggregate)` as a synonym too, rather than retiring it
-on its own.
+is reworded to match. **Signed off** (Kyle, 2026-11-28): `#(preaggregate)` stays a synonym under the
+same code, with its "one release" wording replaced, rather than being retired on its own.
 
 **Addresses stay the same, and how that is proven.** A rollup's name, and so its readable table
 name and address, derives from its plan: the base, the canonical grain, placement and measures
@@ -735,7 +735,8 @@ All of these ship in the one breaking minor, except where an item says otherwise
    #1713's same-name check, deleted once every cell has replanned.
 10. `#@ preaggregate` is a deprecated synonym of `#(rollup)`: it is read by the rollup leg, plans
     the same rollups, and does not fail the load. It warns with `deprecated-preaggregate-annotation`
-    and the new message text (D8, revised). `#(preaggregate)` stays a synonym as well.
+    and the signed-off message text (D8, revised). `#(preaggregate)` stays a synonym under the same
+    code, with its "one release" wording replaced (signed off).
 11. `materialize.enabled` loses its off position (D9).
 
 ## Decisions (Kyle, 2026-11-28)
@@ -783,8 +784,9 @@ extension over an ungated base's stored table, is a flip gate.
 not fail the load. It is a pure synonym of `#(rollup)`: it behaves identically and shares the v2
 rollup leg's implementation. The line is read as `#(rollup)`, and the v1 synthesis and classifier
 are deleted with the v1 walk. Using it warns that it is deprecated and to write `#(rollup)`, under
-the existing `deprecated-preaggregate-annotation` code; the proposed message text is in the
-preaggregate section, for sign-off. The authoring rule is unchanged: docs, skills and examples use
+the existing `deprecated-preaggregate-annotation` code, with the message text in the preaggregate
+section (signed off). `#(preaggregate)` stays a synonym under the same code, its "one release"
+wording replaced (signed off). The authoring rule is unchanged: docs, skills and examples use
 `#(rollup)` only. This replaces the earlier choice of `rollup-retired-annotation` and its
 counter-triggered fallback.
 
