@@ -169,7 +169,13 @@ CHANGE an attempt's `final_query` -- a fix to the query capture is exactly such
 a change -- so the re-executed prediction is keyed on the query and is re-run
 whenever the derived query differs from the cached one. That needs the server
 up; without it the judge is told the prediction was not re-executed rather than
-being handed rows from the previous query. `--from <run>
+being handed rows from the previous query.
+
+The judge is shown the final query's rows first, then the rows of up to five of
+the answerer's other distinct queries, most recent first. A user sees every
+result table an answer produced, and an answer to a multi-part question often
+spends one query per part: re-executing only the last graded a fully correct
+four-grain answer `near_match`. `--from <run>
 --out <new>` does the same into a NEW run directory -- the answers copied, the
 judge fresh, the old verdicts untouched -- which is what a golden repair or a
 rubric change calls for. Use them after a scoring or schema change; re-running
