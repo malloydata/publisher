@@ -241,6 +241,77 @@ source: activity is duckdb.table('activity.csv') extend {
       });
    });
 
+   describe("a base whose join reads a source through a SQL block's %{ } embed", () => {
+      // Its file binds `lookup` to users.csv; the stored source's file, which
+      // imports the base selectively, declares a `lookup` of its own.
+      let run: Run | undefined;
+      beforeAll(async () => {
+         run = await runShape(
+            {
+               "base.malloy": `source: lookup is duckdb.table('users.csv')
+
+source: activity_base is duckdb.table('activity.csv') extend {
+  join_one: users is duckdb.sql("""select * from %{ lookup -> { select: * } }""") on user_id = users.id
+  measure: n is count()
+}
+`,
+               "activity.malloy": `import { activity_base } from "base.malloy"
+source: lookup is duckdb.table('evil.csv')
+
+#(materialize) name="activity_t"
+source: activity is activity_base extend { dimension: k2 is kind }
+`,
+            },
+            ["activity.malloy"],
+         );
+      }, 600_000);
+      afterAll(async () => run?.dispose());
+
+      it("does not carry the block, so no query reads the other source", () => {
+         expect(reasons(run, "activity.malloy")).toContain(
+            "activity: fields_not_carried",
+         );
+         for (const name of Object.keys(QUERIES)) {
+            const before = answer(run?.live[`activity.malloy ${name}`]);
+            expect(before.rows).not.toContain("evil");
+            expect(answer(run?.served[`activity.malloy ${name}`])).toEqual(
+               before,
+            );
+         }
+      });
+   });
+
+   describe("an unstored source reached only through a named query the served compile leaves out whole", () => {
+      let run: Run | undefined;
+      beforeAll(async () => {
+         run = await runShape(
+            {
+               "users.malloy": STORED_USERS,
+               "mid.malloy": `import "users.malloy"
+
+source: d is duckdb.table('activity.csv') extend {
+  join_one: users on user_id = users.id
+  measure: n is count()
+}
+`,
+               "q.malloy": `import "mid.malloy"
+
+query: by_name is d -> { group_by: users.name; aggregate: n; order_by: name }
+`,
+               "own.malloy": `import "q.malloy"\nimport "users.malloy"\n`,
+            },
+            [],
+         );
+      }, 600_000);
+      afterAll(async () => run?.dispose());
+
+      it("keeps the warning where a caller can run that query", () => {
+         expect(reasons(run, "own.malloy")).toEqual([
+            "d: cross_connection_join",
+         ]);
+      });
+   });
+
    describe("the unstored base declared beside the stored source", () => {
       const ACT = `${BASE}
 #(materialize) name="activity_t" storage=lake

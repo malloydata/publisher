@@ -5719,6 +5719,24 @@ function crossConnectionProblems(
    // still one), and what those reach as served (a re-rooted source reads
    // its table, not its base).
    const reached = reachableSourceIDs(contents(servedDef), servedDef);
+   const served = new Set(
+      Object.keys(
+         (servedDef as { contents?: Record<string, unknown> } | undefined)
+            ?.contents ?? {},
+      ),
+   );
+   // A name the served compile left out whole (a source or named query that
+   // reads a left-out join) answers live: it reaches what the author's
+   // definition reaches.
+   const leftOutWhole = Object.entries(
+      (authorDef as { contents?: Record<string, unknown> } | undefined)
+         ?.contents ?? {},
+   )
+      .filter(([name]) => !served.has(name))
+      .map(([, def]) => def);
+   for (const id of reachableSourceIDs(leftOutWhole, authorDef)) {
+      reached.add(id);
+   }
    for (const def of contents(authorDef)) {
       const id = (def as { sourceID?: unknown } | undefined)?.sourceID;
       if (typeof id === "string") reached.add(id);

@@ -173,6 +173,31 @@ describe("carrying an ancestor's blocks from another file", () => {
       expect(confirmed(baseText("lookup"), renamed)).toEqual([]);
    });
 
+   it("reads the names in a SQL block's %{ } embed: not when the file binds one to another declaration", () => {
+      const EMBED_DECL =
+         'source: lk is trips extend { join_one: L is duckdb.sql("""select * from %{ lookup -> { select: * } }""") on cat = L.cat }';
+      const base = `source: trips is duckdb.table('t')\nsource: lookup is duckdb.table('c')\n${EMBED_DECL}\n`;
+      const decl = (b: string) =>
+         confirmedAncestors(
+            (url) => (url === BASE ? b : url === CHILD ? childText : undefined),
+            CHILD,
+            rangeOf(childText, childDecl),
+            [
+               {
+                  sourceID: `lk@${BASE}`,
+                  url: BASE,
+                  range: rangeOf(b, EMBED_DECL),
+               },
+            ] as never,
+         );
+      let childText = `import { lk } from "base.malloy"\nsource: lookup is duckdb.table('evil')\n${childDecl}\n`;
+      expect(decl(base)).toEqual([]);
+      childText = `import { lk } from "base.malloy"\n${childDecl}\n`;
+      expect(decl(base)[0].imports).toEqual([
+         'import { lookup } from "base.malloy"',
+      ]);
+   });
+
    it("imports nothing through a whole import, which binds every name the file declares", () => {
       const child = `import "base.malloy"\n${childDecl}\n`;
       expect(confirmed(baseText("lookup"), child)[0].imports).toBeUndefined();
