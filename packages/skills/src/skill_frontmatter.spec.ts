@@ -1,8 +1,12 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { describe, expect, it } from "bun:test";
+import { afterEach, beforeEach, describe, expect, it } from "bun:test";
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import { parseFrontmatter } from "../../server/src/service/skills/frontmatter";
+import { listSkills } from "./index";
 import { readFrontmatter } from "./skill_frontmatter";
 
 describe("readFrontmatter", () => {
@@ -206,16 +210,26 @@ const PARITY: [string, string, string, string, string][] = [
 ];
 
 describe("the server's and the package's frontmatter readers", () => {
+   let root: string;
+   beforeEach(() => {
+      root = fs.mkdtempSync(path.join(os.tmpdir(), "skills-parity-"));
+   });
+   afterEach(() => {
+      fs.rmSync(root, { recursive: true, force: true });
+   });
+
    it.each(PARITY)(
       "agree on %s",
       (_label, markdown, dir, name, description) => {
-         // As listSkills reads a file: one BOM dropped, line endings normalized, then the fence.
-         const front =
-            markdown
-               .replace(/^\uFEFF/, "")
-               .replace(/\r\n/g, "\n")
-               .match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "";
-         expect(readFrontmatter(front, dir)).toEqual({ name, description });
+         // The package reads a file through listSkills, BOM and CRLF included.
+         fs.mkdirSync(path.join(root, dir));
+         fs.writeFileSync(path.join(root, dir, "SKILL.md"), markdown);
+         expect(
+            listSkills(root).map((s) => ({
+               name: s.name,
+               description: s.description,
+            })),
+         ).toEqual([{ name, description }]);
          const server = parseFrontmatter(markdown, dir);
          expect({ name: server.name, description: server.description }).toEqual(
             {

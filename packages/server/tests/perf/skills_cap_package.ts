@@ -10,9 +10,10 @@
  * lists. Each set holds the inline Markdown files its cap allows, SKILL.md
  * files included, spread over as many skills as the per-folder cap of 1,000
  * needs, and the 200 listed files its asset cap allows, in the first skill's
- * `assets/`. The inline Markdown of a set stays under its 256 KiB, and the
- * listed bytes of all the sets under the package's 8 MiB, so every set is
- * served: a set past a cap is refused whole, which is less work than serving it.
+ * `assets/`. The inline files are sized to fill the set's 256 KiB to the byte
+ * it allows, and the listed bytes of all the sets stay under the package's
+ * 8 MiB, so every set is served: a set past a cap is refused whole, which is
+ * less work than serving it.
  */
 
 import fs from "fs";
@@ -21,14 +22,15 @@ import {
    DECLARED_SKILL_SETS_MAX,
    SKILL_SET_ASSETS_MAX_FILES,
    SKILL_SET_INLINE_MAX_FILES,
+   SKILL_SET_MARKDOWN_MAX_BYTES,
    WORKFLOW_SKILL_SETS_MAX,
 } from "../../src/service/skills/package_workflows";
 
 const KIB = 1024;
 /** Markdown files one `references/` folder holds before its walk stops. */
 const REFERENCES_PER_FOLDER = 1000;
-/** A set's inline Markdown, which the files of a shape fill to about 90%. */
-const SET_MARKDOWN_BYTES = 256 * KIB;
+/** A set's inline Markdown ceiling, which the files of a shape fill. */
+const SET_MARKDOWN_BYTES = SKILL_SET_MARKDOWN_MAX_BYTES;
 
 export interface Shape {
    /** Inline Markdown files per set, each skill's SKILL.md included. */
@@ -56,11 +58,19 @@ function write(file: string, bytes: Buffer | string): void {
 
 /** One set's skills, named for the set so no two of a workflow's sets share a name: `shape.inline` Markdown files in all, and `shape.listed` assets in the first skill. */
 function capSet(dir: string, setIndex: number, shape: Shape): void {
-   // Small enough that however many files a set inlines they fit the set's budget.
-   const bytes = Math.max(
-      16,
-      Math.min(200, Math.floor((0.9 * SET_MARKDOWN_BYTES) / shape.inline)),
-   );
+   const skills = Math.ceil(shape.inline / REFERENCES_PER_FOLDER);
+   const skillMdBytes = Array.from({ length: skills }, (_, skill) =>
+      Buffer.byteLength(SKILL_MD(`s${setIndex}-${skill}`)),
+   ).reduce((a, b) => a + b, 0);
+   // Each reference takes an equal share of what the SKILL.md files leave of the set's cap.
+   const references = shape.inline - skills;
+   const bytes =
+      references > 0
+         ? Math.max(
+              16,
+              Math.floor((SET_MARKDOWN_BYTES - skillMdBytes) / references),
+           )
+         : 0;
    let left = shape.inline;
    for (let skill = 0; left > 0; skill++) {
       const name = `s${setIndex}-${skill}`;

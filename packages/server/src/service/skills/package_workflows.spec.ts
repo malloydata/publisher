@@ -23,6 +23,7 @@ import {
    adoptWorkflows,
    emptyWorkflows,
    readPackageWorkflows,
+   servedContentShas,
    SKILL_FINDINGS_MAX,
    SKILL_SET_INLINE_MAX_FILES,
    SKILLS_PER_SET_MAX,
@@ -2133,6 +2134,78 @@ describe("readPackageWorkflows", () => {
       });
    });
 
+   describe("a bad overrides value", () => {
+      const withOverrides = (overrides: unknown, workflows?: unknown) =>
+         read(workflows ?? { analyst: analyst() }, {
+            house: { path: MAIN, overrides },
+         });
+
+      it.each([
+         ["a value that is not a list", { x: 1 }],
+         ["65 names", Array.from({ length: 65 }, (_, i) => `skill-${i}`)],
+         ["an entry that is not a skill name", ["Bad_Name"]],
+         ["a name listed twice", ["a", "a"]],
+      ])(
+         "is read as empty, with one finding, and the set is served: %s",
+         (_label, overrides) => {
+            const none = read(
+               { analyst: analyst() },
+               { house: { path: MAIN } },
+            );
+            const result = withOverrides(overrides);
+            expect(result.sets.has(HOUSE)).toBe(true);
+            expect(result.workflows.has("analyst")).toBe(true);
+            expect(result.sets.get(HOUSE)!.overrides).toEqual([]);
+            expect(result.sets.get(HOUSE)!.digest).toBe(
+               none.sets.get(HOUSE)!.digest,
+            );
+            expectWarning(result.warnings, SKILL_FINDING, HOUSE, "'overrides'");
+            expect(result.warnings).toHaveLength(1);
+         },
+      );
+
+      it("says it once however many workflows list the set", () => {
+         const result = withOverrides(["a", "a"], {
+            analyst: analyst(),
+            reviewer: listing(HOUSE),
+         });
+         expect([...result.workflows.keys()]).toEqual(["analyst", "reviewer"]);
+         expectWarning(result.warnings, SKILL_FINDING, HOUSE, "'overrides'");
+         expect(result.warnings).toHaveLength(1);
+      });
+   });
+
+   describe("the shas the source content sha covers", () => {
+      const walked = () => {
+         write(`${CONVENTIONS}/scripts/check.py`, "print('check')\n");
+         write(`${CONVENTIONS}/.skillignore`, "scratch/\n");
+         return read({ analyst: analyst() });
+      };
+      const SERVED = [
+         `${CONVENTIONS}/SKILL.md`,
+         `${CONVENTIONS}/reference/glossary.md`,
+         `${CONVENTIONS}/scripts/check.py`,
+         `${CONVENTIONS}/.skillignore`,
+         INSTRUCTIONS,
+      ];
+
+      it("holds a sha for each inline file, listed file, applied .skillignore and instructions file the walk serves", () => {
+         const result = walked();
+         expect(texts(result.warnings)).toEqual([]);
+         const shas = servedContentShas(result);
+         for (const served of SERVED) expect(shas.has(served)).toBe(true);
+      });
+
+      it.each(SERVED)(
+         "refuses a walk that serves %s without a sha, rather than hash it as absent",
+         (served) => {
+            const result = walked();
+            result.contentShas.delete(served);
+            expect(() => servedContentShas(result)).toThrow(`'${served}'`);
+         },
+      );
+   });
+
    describe("a skill named like a bundled skill", () => {
       const BUNDLED = ["malloy-analysis"];
 
@@ -2185,8 +2258,12 @@ describe("readPackageWorkflows", () => {
          writeSkill("skills", "old");
          expect(skillsDirNotRead({ default: { path: "skills" } })).toBe(false);
          writeSkill("skills/sub", "new");
-         expect(skillsDirNotRead({ sub: { path: "skills/sub" } })).toBe(false);
-         expect(skillsDirNotRead({ sub: { path: "./skills//" } })).toBe(false);
+         expect(skillsDirNotRead({ nested: { path: "skills/sub" } })).toBe(
+            false,
+         );
+         expect(skillsDirNotRead({ legacy: { path: "./skills//" } })).toBe(
+            false,
+         );
       });
 
       it("is not flagged when the set declared at it is refused, since the refusal says so", () => {
@@ -2973,6 +3050,19 @@ describe("readPackageWorkflows", () => {
                "sets/a",
                "sets/b",
             ]);
+            // The folder that was served under another name is the one cut now.
+            expectWarning(
+               forward.warnings,
+               SKILL_SET_NOT_SERVED,
+               "gamma",
+               "8 MiB per-package cap",
+            );
+            expectWarning(
+               swapped.warnings,
+               SKILL_SET_NOT_SERVED,
+               "gamma",
+               "8 MiB per-package cap",
+            );
          });
 
          it("does not read or charge a set that its own declaration refuses", () => {

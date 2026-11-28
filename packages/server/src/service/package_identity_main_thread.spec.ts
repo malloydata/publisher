@@ -38,6 +38,11 @@ import {
    writeCapPackage,
 } from "../../tests/perf/skills_cap_package";
 import { Package } from "./package";
+import {
+   SKILL_SET_ASSETS_MAX_FILES,
+   SKILL_SET_INLINE_MAX_FILES,
+   SKILL_SET_MARKDOWN_MAX_BYTES,
+} from "./skills/package_workflows";
 
 /** The longest any one task may hold the event loop while a cap-size package loads or reloads, ms. */
 const MAX_BLOCK_MS = 150;
@@ -115,6 +120,25 @@ describe("loading and reloading a cap-size package", () => {
       ).toHaveLength(CAP_SETS);
       expect(pkg.listSkills().length).toBeGreaterThan(0);
       expect(pkg.getPackageMetadata().warnings ?? []).toEqual([]);
+      // Every set spends its caps, so the block above is the most a set can cost.
+      const sets = pkg
+         .listWorkflows()
+         .flatMap((w) => pkg.getWorkflow(w.name)!.skill_sets);
+      expect(sets).toHaveLength(CAP_SETS);
+      expect(sets.reduce((n, set) => n + set.skills.length, 0)).toBe(
+         CAP_SETS * SKILL_SET_INLINE_MAX_FILES,
+      );
+      expect(sets.reduce((n, set) => n + (set.assets?.length ?? 0), 0)).toBe(
+         CAP_SETS * SKILL_SET_ASSETS_MAX_FILES,
+      );
+      for (const set of sets) {
+         const bytes = (set.skills as Array<{ file_contents: string }>).reduce(
+            (n, file) => n + Buffer.byteLength(file.file_contents),
+            0,
+         );
+         expect(bytes).toBeLessThanOrEqual(SKILL_SET_MARKDOWN_MAX_BYTES);
+         expect(bytes).toBeGreaterThan(0.99 * SKILL_SET_MARKDOWN_MAX_BYTES);
+      }
       expect(maxBlockMs).toBeLessThan(MAX_BLOCK_MS);
    }, 60_000);
 });

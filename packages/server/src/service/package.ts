@@ -678,7 +678,7 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
     * either is covered by the reload receipt by construction.
     */
    private workflows: ServedWorkflows = emptyWorkflows();
-   /** The skills the package advertises: its `default` workflow's, read from `workflows`. */
+   /** The skills the package advertises: its `default` skill set's, read from `workflows.sets`. */
    private packageSkills: ServedSkill[] = [];
    /** What the load worker found in the manifest that an earlier release read and this one does not. */
    private manifestFindings: ApiPackageWarning[] = [];

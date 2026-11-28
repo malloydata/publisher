@@ -35,6 +35,7 @@ import type { components } from "../../api";
 import {
    canonicalSha,
    MANIFEST_DECLARATION_MAX_BYTES,
+   shasOf,
    UNREADABLE_DECLARATION,
    type ManifestDeclaration,
 } from "../package_revision";
@@ -1430,6 +1431,31 @@ export interface ServedWorkflows {
 /** A walk as the worker reads it: what is served, and the sha256 of the bytes read of each file the serving identity covers, by package-relative path, so the content hash reads nothing again. */
 export interface PackageWorkflows extends ServedWorkflows {
    contentShas: Map<string, string>;
+}
+
+/** The package-relative path of every file a walk serves that the source content sha covers: each served set's catalog files and applied `.skillignore`, and each served workflow's instructions. */
+function* servedPaths(
+   walk: Pick<PackageWorkflows, "sets" | "workflows">,
+): Generator<string> {
+   for (const set of walk.sets.values()) {
+      for (const skill of set.skills) {
+         for (const relative of Object.keys(skill.catalog.files)) {
+            yield `${skill.rel}/${relative}`;
+         }
+         if (skill.skillignoreSha !== null) yield `${skill.rel}/.skillignore`;
+      }
+   }
+   for (const workflow of walk.workflows.values()) {
+      yield workflow.instructions.path;
+   }
+}
+
+/** The shas the source content sha covers, once every path the walk serves is known to have one: a walk change that serves a file without recording its sha throws here, instead of leaving that file out of the hash unseen. */
+export function servedContentShas(
+   walk: Pick<PackageWorkflows, "sets" | "workflows" | "contentShas">,
+): ReadonlyMap<string, string> {
+   shasOf(servedPaths(walk), walk.contentShas);
+   return walk.contentShas;
 }
 
 /** What a package serves before its manifest has been read: no workflows. */

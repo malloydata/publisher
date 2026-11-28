@@ -7,9 +7,10 @@ import type { components } from "../api";
 type PackageWarning = components["schemas"]["PackageWarning"];
 
 /**
- * The one warning with `code` and `subject` whose message holds `token`, found
+ * The one warning with `code` and `subject`, which must hold `token`, found
  * among `warnings`: a warning is asserted by what a consumer reads, never by
- * its whole sentence, which is prose that may be reworded.
+ * its whole sentence, which is prose that may be reworded. A second warning of
+ * the same code and subject, whatever it says, fails it: a finding is said once.
  */
 export function expectWarning(
    warnings: readonly PackageWarning[],
@@ -17,13 +18,13 @@ export function expectWarning(
    subject: string | undefined,
    token: string,
 ): PackageWarning {
-   const found = warnings.filter(
-      (w) =>
-         w.code === code && w.subject === subject && w.message.includes(token),
+   const same = warnings.filter(
+      (w) => w.code === code && w.subject === subject,
    );
-   if (found.length !== 1) {
+   const found = same.filter((w) => w.message.includes(token));
+   if (same.length !== 1 || found.length !== 1) {
       throw new Error(
-         `expected one '${code}' warning on '${subject}' whose message holds '${token}', found ${found.length} among ${JSON.stringify(warnings.map((w) => [w.code, w.subject, w.message]))}`,
+         `expected one '${code}' warning on '${subject}', holding '${token}', found ${same.length} (${found.length} holding it) among ${JSON.stringify(warnings.map((w) => [w.code, w.subject, w.message]))}`,
       );
    }
    expect(found[0]!.severity).toBe("warn");

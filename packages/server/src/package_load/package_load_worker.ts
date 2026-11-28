@@ -74,12 +74,13 @@ import { compileNotebookCells } from "../service/model_notebook_cell";
 import {
    boundedDeclaration,
    computeSourceContentSha,
-   shasOf,
    UNREADABLE_SHA,
 } from "../service/package_revision";
 import {
    readPackageWorkflows,
+   servedContentShas,
    workflowsToWire,
+   type PackageWorkflows,
 } from "../service/skills/package_workflows";
 import {
    PackageMaterializationConfig,
@@ -812,10 +813,7 @@ async function readPackageMetadata(
    manifestFindings?: ApiPackageWarning[];
    workflowsRead?: WorkflowsRead;
    /** What the walk read that the source content sha covers; the sha itself waits for the compile. */
-   walked?: {
-      contentShas: ReadonlyMap<string, string>;
-      declarationSha?: string;
-   };
+   walked?: Walked;
 }> {
    const manifestPath = path.join(packagePath, PACKAGE_MANIFEST_NAME);
    // Inside the package only, and one answer for any manifest that cannot be
@@ -870,9 +868,7 @@ async function readPackageMetadata(
    // Read before the compile, which answers the main thread's schema fetches
    // between awaits that a synchronous walk would stall.
    let workflowsRead: WorkflowsRead | undefined;
-   let walked:
-      | { contentShas: ReadonlyMap<string, string>; declarationSha?: string }
-      | undefined;
+   let walked: Walked | undefined;
    if (readWorkflows) {
       const declaration = boundedDeclaration(parsed);
       const walk = readPackageWorkflows(
@@ -882,7 +878,7 @@ async function readPackageMetadata(
       );
       workflowsRead = { walk: workflowsToWire(walk) };
       walked = {
-         contentShas: walk.contentShas,
+         walk,
          ...(declaration.sha !== undefined && {
             declarationSha: declaration.sha,
          }),
@@ -1685,30 +1681,24 @@ async function loadPackage(
    };
 }
 
+/** A walk, and the sha of the declaration it read, which the source content sha covers. */
+interface Walked {
+   walk: PackageWorkflows;
+   declarationSha?: string;
+}
+
 /** The source content sha of what the package serves: each model's text and each file the walk read, by the shas read at load, so nothing is read again. */
 function servedContentSha(
    packagePath: string,
    models: readonly SerializedModel[],
    fileDigests: Readonly<Record<string, string>>,
    notebookShas: ReadonlyMap<string, string>,
-   walked: {
-      contentShas: ReadonlyMap<string, string>;
-      declarationSha?: string;
-   },
+   walked: Walked,
 ): string {
-   const modelShas = modelContentShas(
-      packagePath,
-      models,
-      fileDigests,
-      notebookShas,
-   );
    return computeSourceContentSha(
       new Map([
-         ...shasOf(
-            models.map(({ modelPath }) => modelPath),
-            modelShas,
-         ),
-         ...walked.contentShas,
+         ...modelContentShas(packagePath, models, fileDigests, notebookShas),
+         ...servedContentShas(walked.walk),
       ]),
       // The declaration is hashed whole, so an edit to a refused set or workflow moves it too.
       walked.declarationSha,

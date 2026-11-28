@@ -22,13 +22,14 @@ export interface Skill {
  * Read every skill's frontmatter from the shipped files.
  *
  * Parsed on demand rather than baked into a generated manifest, so there is no
- * second copy of this metadata to regenerate or to drift.
+ * second copy of this metadata to regenerate or to drift. `root` is the shipped
+ * files unless a test points it at skills it wrote.
  */
-export function listSkills(): Skill[] {
+export function listSkills(root: string = skillsDir): Skill[] {
    const skills: Skill[] = [];
-   for (const entry of fs.readdirSync(skillsDir, { withFileTypes: true })) {
+   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
       if (!entry.isDirectory()) continue;
-      const dir = path.join(skillsDir, entry.name);
+      const dir = path.join(root, entry.name);
       const skillFile = path.join(dir, "SKILL.md");
       if (!fs.existsSync(skillFile)) continue;
       const markdown = fs

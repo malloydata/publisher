@@ -18,7 +18,7 @@
  *   count alike.
  * - A package load or reload: per package that sets `explores`,
  *   `queryableSources` or the no-longer-read `agents` in publisher.json, per
- *   package with a root `skills/` no workflow lists, per `.malloynb` file, per source
+ *   package with a root `skills/` that no declared skill set reads, per `.malloynb` file, per source
  *   that declares `#(filter)` annotations, and per measure that declares
  *   `#@ preaggregate` (`service/deprecated/*`).
  * - A startup: each deprecated setting name in use, a variable, flag or file

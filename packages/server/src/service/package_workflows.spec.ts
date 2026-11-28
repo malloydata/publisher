@@ -58,6 +58,7 @@ import {
    readPackageWorkflows,
    SKILL_FINDING,
    SKILLS_PER_SET_MAX,
+   workflowFileServed,
 } from "./skills/package_workflows";
 
 const MAIN = "workflows/analyst/skill_sets/main";
@@ -481,6 +482,16 @@ describe("package workflows", () => {
          });
          const pkg = await load();
          expect(pkg.workflowPaths()).toContain(SECOND);
+         // What watch mode asks, by name, before it reloads on an edit.
+         for (const edited of ["lone/SKILL.md", "lone/notes.md"]) {
+            expect(
+               workflowFileServed(
+                  dir,
+                  pkg.workflowPaths(),
+                  `${SECOND}/${edited}`,
+               ),
+            ).toBe(true);
+         }
          const base = pkg.getSourceContentSha();
          write(`${SECOND}/lone/notes.md`, "# Notes\n");
          expect((await load()).getSourceContentSha()).not.toBe(base);
@@ -1750,6 +1761,21 @@ describe("package workflows", () => {
          }
       }
 
+      /** Sends the worker the bundled skill names a test gives it, in place of the real ones. */
+      class NamingPool extends PackageLoadPool {
+         names: readonly string[] = [];
+         override loadPackage(request: LoadPackageJob) {
+            return super.loadPackage(
+               request.readWorkflows
+                  ? {
+                       ...request,
+                       readWorkflows: { bundledSkillNames: this.names },
+                    }
+                  : request,
+            );
+         }
+      }
+
       /** Lets a test change what the worker answered, as a worker that left something out would. */
       class TamperingPool extends PackageLoadPool {
          tamper?: (outcome: LoadPackageOutcome) => void;
@@ -2043,6 +2069,26 @@ describe("package workflows", () => {
                workflows: { analyst: analyst() },
             });
             expect(clash(await load())).toEqual([]);
+         });
+
+         it("reads a clash against the names the worker is sent, never a catalog of its own", async () => {
+            const bundled = BUNDLED_SKILL_NAMES[0]!;
+            write(
+               `${MAIN}/${bundled}/SKILL.md`,
+               `---\nname: ${bundled}\ndescription: d\n---\n\nbody\n`,
+            );
+            manifest({ workflows: { analyst: analyst() } });
+            const pool = new NamingPool(1);
+            await usePool(pool);
+            const clashes = async () =>
+               (await load())
+                  .getPackageMetadata()
+                  .warnings?.filter((w) =>
+                     w.message?.includes("is named like a bundled skill"),
+                  ) ?? [];
+            expect(await clashes()).toEqual([]);
+            pool.names = [bundled];
+            expect(await clashes()).toHaveLength(1);
          });
 
          it("hands nothing to the main thread's disk: adopting reads no file", async () => {
