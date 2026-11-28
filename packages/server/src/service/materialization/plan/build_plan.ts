@@ -1577,7 +1577,9 @@ async function chainedStringReads(
    // Name what it reads instead, as a run would: the warehouse table and the
    // source that reaches it (`regions` through `daily_regional`).
    const persisted = new Set(
-      reachedUpstreams(def, modelDef, map).map((u) => u.sourceID),
+      reachedUpstreams(def, modelDef, map, { persistedSql: true }).map(
+         (u) => u.sourceID,
+      ),
    );
    const reached = reachPersisted(
       authorModelReachContext(modelDef),

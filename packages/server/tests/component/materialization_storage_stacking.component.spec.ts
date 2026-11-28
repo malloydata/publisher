@@ -1335,7 +1335,7 @@ source: monthly_live is raw -> {
             daily.schema,
          );
          expect(unjudged.status).toBe("FAILED");
-         expect(unjudged.error).toContain("records none");
+         expect(unjudged.error).toContain("carries none this build can read");
          const failure = Object.values(
             ((unjudged as { manifest?: { failures?: Record<string, unknown> } })
                .manifest?.failures ?? {}) as Record<

@@ -706,9 +706,11 @@ function assertUpstreamContracts(
    const names = stale.map((u) => `'${u.entry!.sourceName ?? "?"}'`).join(", ");
    throw new UpstreamContractInsufficientError(
       `'${sourceName}' compares strings over its stored upstreams, judged by ` +
-         `each upstream's recorded column contract, and the table of ${names} ` +
-         `records none (built before contracts were recorded): rebuild it, ` +
-         `and this source builds over it`,
+         `each upstream's recorded column contract, and the entry for ${names} ` +
+         `carries none this build can read (its table was built before ` +
+         `contracts were recorded, or the entry supplied for it holds no ` +
+         `valid contract): rebuild it, or supply its entry with its ` +
+         `contract, and this source builds over it`,
       stale.map((u) => u.entry!.sourceEntityId),
    );
 }

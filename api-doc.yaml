@@ -12657,12 +12657,15 @@ components:
             the source over the upstream's table as it is or the plan refuses
             it (`upstream_table_unusable`); the source is `retryable`.
             `upstream_contract_insufficient` (a chained `storage=` build
-            compares strings over a stored upstream whose table records no
-            column contract, built before contracts were recorded, so the
-            contract that judges those strings is missing; `staleUpstreams`
-            names the upstreams to rebuild). It is non-terminal, never a
-            refusal: once those upstreams are rebuilt the source builds over
-            them, and it is `retryable`.
+            compares strings over a stored upstream whose entry carries no
+            column contract the build can read: the table was built before
+            contracts were recorded, or the entry a host supplied for it in
+            `referenceManifest` holds none or an invalid one, so the contract
+            that judges those strings is missing; `staleUpstreams` names those
+            upstreams). It is non-terminal, never a refusal: once each is
+            rebuilt, or supplied with its contract, the source builds over
+            them, and it is `retryable`. A host that retries it without
+            rebuilding or re-supplying them gets the same failure.
             `instruction_unresolved` (an instruction no source in the run's
             build plan resolves to, so nothing was built for it; not
             `retryable` until the caller reads the plan again). Every
