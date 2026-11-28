@@ -1248,12 +1248,15 @@ function findFilterOrigin(
             (v) => v !== struct && !v.filterList?.includes(condition),
          ) ??
          // A selective import leaves X out of this compile; its own file's compile has it, and identity does not cross compiles. A resolved composite member's filter was grafted from the composite, not written on the member.
+         // Never `struct`'s own declaration from that compile: an inline `X extend` has no sourceID, and a declared source sharing `struct`'s is its twin, not its base. A served copy shifts its files' positions, so the twin would pass as lacking the condition and be compared against the re-rooted `struct` as its base.
          sameLocationBase(
             (!isComposite(unresolved) &&
                struct.location &&
                resolveSibling?.(canonicalUrl(struct.location.url))?.contents) ||
                {},
-            (v) => !siblingCandidateOwnsCondition(v, condition),
+            (v) =>
+               !sharesSourceID(v, struct) &&
+               !siblingCandidateOwnsCondition(v, condition),
          );
       // Ahead of the sibling-owner leg, which would settle for the struct's own twin in the sibling compile.
       if (inlineBase) return { origin: inlineBase, inlineBase: true };
@@ -1291,6 +1294,12 @@ function findFilterOrigin(
       }
    }
    return { origin, inlineBase: false };
+}
+
+/** Whether two structs carry one declared sourceID (an inline `extend` has none). */
+function sharesSourceID(a: SourceDef, b: SourceDef): boolean {
+   const id = (s: SourceDef) => (s as { sourceID?: unknown }).sourceID;
+   return typeof id(a) === "string" && id(a) === id(b);
 }
 
 /**
