@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: MIT
 
 import { describe, expect, it } from "bun:test";
-import { PALETTE } from "../styles";
+import { PALETTE, SURFACE_TINT } from "../styles";
 import { CONTENT_TINT } from "./ContentTypeIcon";
 
 /** Relative luminance, WCAG 2.x definition. */
@@ -31,6 +31,14 @@ describe("CONTENT_TINT", () => {
    it("gives every content type its own color", () => {
       const values = Object.values(CONTENT_TINT);
       expect(new Set(values).size).toBe(values.length);
+   });
+
+   // A colour means one kind of thing across the Console, so no content type
+   // takes the colour an environment, a package or a connection wears.
+   it("keeps clear of the tints a server's own lists use", () => {
+      for (const tint of Object.values(SURFACE_TINT)) {
+         expect(Object.values(CONTENT_TINT)).not.toContain(tint);
+      }
    });
 });
 

@@ -736,7 +736,7 @@ export default function Package({
                   <PackageSection
                      title="Skill sets"
                      count={skillSets.length}
-                     description="Folders of skills, declared in publisher.json. The default set's skills are offered to every session; the others are used through a workflow."
+                     description="Folders of skills, declared in publisher.json. The default set's skills are offered to every session; a chat or a workflow picks the others."
                   >
                      {skillSets.map((set) => (
                         <PackageItemRow

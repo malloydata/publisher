@@ -35,7 +35,8 @@ export const CONTENT_TINT: Record<ContentType, string> = {
    data: PALETTE.lime,
    materialization: PALETTE.amber,
    workflow: PALETTE.red,
-   skillSet: PALETTE.indigo,
+   // Slate, the one hue neither a package nor another kind wears: indigo sits too close to dashboard blue, which is why packages left it.
+   skillSet: PALETTE.slate,
 };
 
 interface ContentTypeIconProps extends Omit<SvgIconProps, "fontSize"> {
