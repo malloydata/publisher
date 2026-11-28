@@ -237,11 +237,17 @@ follow the same rule ([the served copy](#the-served-copy-materialization-v2-publ
     its own collation. So a gate, or a `where:` the copy re-applies, that compares a string column
     is read from a `storage=` table only when the source's comparison is known to match: on
     BigQuery when no column or `STRUCT` field the query's tables hold carries a collation (read
-    from `INFORMATION_SCHEMA`: project-wide in each region the project has datasets in, then per
-    collated dataset; each table the query reads must itself be seen by a read filtered to it; a
-    view or an `.sql()` source, whose tables are not known, is served only when its projects list
-    no collated column), and
-    the query's SQL names no `COLLATE`; on a
+    from `INFORMATION_SCHEMA` at each bind: project-wide in each region the project has datasets
+    in, then per collated dataset, which needs the project's `bigquery.tables.list`; when that
+    is refused the caller (a dataset-scoped account) and every table the model's `.table()`
+    sources read is known and they span at most 20 datasets, from each dataset's own
+    `` `project.dataset`.INFORMATION_SCHEMA `` instead, which the dataset's READER may read, as
+    a `storage=` build does; each table the query reads must itself be seen by a read filtered
+    to it; a view or an `.sql()` source, whose tables are not known, is served only when a
+    project-wide read lists no collated column in its projects), and
+    the query's SQL names no `COLLATE`; a read that is denied or incomplete answers live, and the
+    bind logs one warning naming the connection, project, location, dataset and a bounded
+    reason (`dataset_unread`, `project_unread`, `table_types_unread`, …); on a
     DuckDB-dialect source when the instance sets no `default_collation`
     and no `COLLATE` appears in the query's SQL or in any table or view the instance holds; on
     Postgres, for `=`, `!=` and `in`, when the column's collation is deterministic (the database
