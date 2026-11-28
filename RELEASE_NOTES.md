@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Release Notes
 
-Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and `@malloy-publisher/server` (versioned in lockstep).
+Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, `@malloy-publisher/server`, and `@malloy-publisher/cli` (versioned in lockstep).
 
 ## How this file is used
 
@@ -20,6 +20,10 @@ Both steps handle several sections, which matters because unrelated narratives a
 Give the heading a title — `## [Unreleased] — what changed`, with an em dash, a colon or a hyphen. The version is already the release's own title, so the marker is stripped and the title is what appears on the page; a bare `## [Unreleased]` has nothing to put there and fails CI on the PR that writes it.
 
 Two consequences worth knowing. A section merged to `main` ships in the **next** release, whenever that is, so do not write one for work that has not landed. And a heading already stamped with a version is history: a follow-up that changes that behaviour opens a **new** `[Unreleased]` section referencing the shipped version by number, rather than editing the old one.
+
+## [Unreleased] — the `malloy-pub` CLI publishes to npm as `@malloy-publisher/cli`
+
+**[new] The Publisher CLI, `malloy-pub`, is now on npm as `@malloy-publisher/cli`, released in lockstep with the server.** Until now it was buildable only from a clone, under a package name (`@malloydata/publisher-cli`) that was never published, so the commands the materialization docs and skills show (`malloy-pub materialize`, `malloy-pub schedule set`, `malloy-pub list materialization` and the rest) had no install path outside the repo. Run it with `npx @malloy-publisher/cli@latest <command>`, or install the binary with `npm i -g @malloy-publisher/cli`. It needs Node.js 20 or newer and no Bun. Each release publishes it at the same version as `@malloy-publisher/server`, with its API client generated from that release's `api-doc.yaml`, so match the two when you pin; `malloy-pub --version` now reports that version rather than a fixed `0.0.50`. The commands themselves are unchanged. Nothing on npm ever carried the old name, so there is nothing to migrate from.
 
 ## [0.18.6] — a file kept from before a failed recompile no longer serves stale tables when its upstream read fails
 

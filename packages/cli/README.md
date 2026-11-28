@@ -5,13 +5,27 @@ SPDX-License-Identifier: MIT
 
 # Malloy Publisher CLI
 
-Command-line interface for managing Malloy Publisher resources.
+Command-line interface for managing Malloy Publisher resources. The binary is `malloy-pub`.
 
 ## Installation
 
+The CLI is published to npm as `@malloy-publisher/cli` and needs Node.js 20 or newer (no Bun). Run it
+without installing:
+
 ```bash
-npm install -g @malloydata/publisher-cli
+npx @malloy-publisher/cli@latest list environment
 ```
+
+or install `malloy-pub` globally:
+
+```bash
+npm i -g @malloy-publisher/cli
+malloy-pub --version
+```
+
+It is released in lockstep with `@malloy-publisher/server`, so the two share a version number, and
+`malloy-pub` speaks the REST API of the server released beside it. Keep the `@latest` on `npx` for the
+same reason the server's docs give: `npx` reuses whatever version it cached last.
 
 ## Usage
 
@@ -45,21 +59,25 @@ malloy-pub list database --environment my-environment --package my-package
 
 ## Development
 
+From a clone of the repository (Bun 1.3.13 or newer, as for the rest of the repo; the API client
+generator also needs Java):
+
 ```bash
-# Install dependencies
-npm install
+# Install dependencies (at the repository root)
+bun install
 
-# Generate API client from OpenAPI spec
-npm run generate:api
+# Generate the API client from ../../api-doc.yaml
+bun run generate-api-types
 
-# Build
-npm run build
+# Build dist/index.js (runs generate-api-types first)
+bun run build
 
-# Link for local development
-npm link
+# Run from source, or the built bundle under Node
+bun run dev -- list environment --url http://localhost:4000
+node dist/index.js list environment --url http://localhost:4000
 
-# Test
-malloy-pub list environment --url http://localhost:4000
+# Unit tests
+bun run test
 ```
 
 ## Commands
