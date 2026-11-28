@@ -268,7 +268,7 @@ describe("Watch-mode source-edit live reload via --watch-env (E2E)", () => {
       // A .py is let through the watcher only because the package watches the declared set; a model or .md edit reloads regardless.
       const shaOf = async () =>
          (
-            (await (await fetch(apiUrl(baseUrl, ""))).json()) as {
+            (await (await fetch(apiUrl(baseUrl, "/status"))).json()) as {
                sourceContentSha: string;
             }
          ).sourceContentSha;

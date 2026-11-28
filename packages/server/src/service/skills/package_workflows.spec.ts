@@ -15,6 +15,7 @@ import {
    MANIFEST_DECLARATION_MAX_BYTES,
 } from "../package_revision";
 import { advertisedSkills, skillSetView } from "./package_skills";
+import { ASSET_MAX_ENTRIES } from "./skill_files";
 import {
    adoptWorkflows,
    emptyWorkflows,
@@ -1917,28 +1918,18 @@ describe("readPackageWorkflows", () => {
          ).toBe(base);
       });
 
-      it("moves with the set's overrides, whatever order they were written in", () => {
-         const entry = analyst();
-         const none = houseDigest(entry);
-         const one = houseDigest(entry, {
-            house: { path: MAIN, overrides: ["a"] },
-         });
+      it("moves with the default set's overrides, whatever order they were written in", () => {
+         const entry = { ...analyst(), skillSets: [DEFAULT] };
+         const digest = (overrides?: unknown) =>
+            houseDigest(entry, { default: { path: MAIN, overrides } }, DEFAULT);
+         const none = digest();
+         const one = digest(["a"]);
          expect(one).not.toBe(none);
-         const sorted = houseDigest(entry, {
-            house: { path: MAIN, overrides: ["a", "b"] },
-         });
+         const sorted = digest(["a", "b"]);
          expect(sorted).not.toBe(one);
-         expect(
-            houseDigest(entry, {
-               house: { path: MAIN, overrides: ["b", "a"] },
-            }),
-         ).toBe(sorted);
+         expect(digest(["b", "a"])).toBe(sorted);
          // A bad value is read as empty.
-         expect(
-            houseDigest(entry, {
-               house: { path: MAIN, overrides: ["a", "a"] },
-            }),
-         ).toBe(none);
+         expect(digest(["a", "a"])).toBe(none);
       });
 
       it("moves with a .skillignore, which changes what the set serves", () => {
@@ -2149,6 +2140,46 @@ describe("readPackageWorkflows", () => {
       });
    });
 
+   describe("overrides on a set that is not the default", () => {
+      it("is ignored with a finding, and the set and its digest are as if it had none", () => {
+         const none = read({ analyst: analyst() }, { house: { path: MAIN } });
+         const result = read(
+            { analyst: analyst() },
+            { house: { path: MAIN, overrides: ["malloy-analysis"] } },
+         );
+         expect(result.sets.has(HOUSE)).toBe(true);
+         expect(result.sets.get(HOUSE)!.overrides).toEqual([]);
+         expect(result.sets.get(HOUSE)!.digest).toBe(
+            none.sets.get(HOUSE)!.digest,
+         );
+         expectWarning(
+            result.warnings,
+            SKILL_FINDING,
+            HOUSE,
+            "'overrides' is read only on the 'default' skill set",
+         );
+         expect(result.warnings).toHaveLength(1);
+      });
+
+      it("is not a finding when it is empty, or on the default set", () => {
+         expect(
+            texts(
+               read(
+                  { analyst: analyst() },
+                  { house: { path: MAIN, overrides: [] } },
+               ).warnings,
+            ),
+         ).toEqual([]);
+         expect(
+            texts(
+               read(undefined, {
+                  default: { path: MAIN, overrides: ["malloy-analysis"] },
+               }).warnings,
+            ),
+         ).toEqual([]);
+      });
+   });
+
    describe("a bad overrides value", () => {
       const withOverrides = (overrides: unknown, workflows?: unknown) =>
          read(workflows ?? { analyst: analyst() }, {
@@ -2224,31 +2255,47 @@ describe("readPackageWorkflows", () => {
    describe("a skill named like a bundled skill", () => {
       const BUNDLED = ["malloy-analysis"];
 
-      it("is served, with a finding naming how to say it is meant to replace the bundled one", () => {
+      it("is served in the default set, with a finding naming how to say it is meant to replace the bundled one", () => {
+         writeSkill(MAIN, "malloy-analysis");
+         const result = read(undefined, { default: { path: MAIN } }, BUNDLED);
+         expect(result.sets.get(DEFAULT)!.skills.map((s) => s.dirName)).toEqual(
+            ["malloy-analysis"],
+         );
+         expect(texts(result.warnings)).toHaveLength(1);
+         expectWarning(
+            result.warnings,
+            SKILL_FINDING,
+            DEFAULT,
+            `Package skill '${MAIN}/malloy-analysis' is named like a bundled skill. Fix: add 'malloy-analysis' to 'skillSets.default.overrides' if it is meant to replace the bundled one, or rename the skill`,
+         );
+      });
+
+      it("is told, in a set that is not the default, that only the default can replace a bundled skill", () => {
          writeSkill(MAIN, "malloy-analysis");
          const result = read(undefined, { house: { path: MAIN } }, BUNDLED);
          expect(result.sets.get(HOUSE)!.skills.map((s) => s.dirName)).toEqual([
             "malloy-analysis",
          ]);
          expect(texts(result.warnings)).toHaveLength(1);
-         expectWarning(
+         const said = expectWarning(
             result.warnings,
             SKILL_FINDING,
             HOUSE,
-            `Package skill '${MAIN}/malloy-analysis' is named like a bundled skill. Fix: add 'malloy-analysis' to 'skillSets.house.overrides' if it is meant to replace the bundled one, or rename the skill`,
+            `Package skill '${MAIN}/malloy-analysis' is named like a bundled skill, and only the 'default' skill set can replace one. Fix: rename the skill`,
          );
+         expect(said.message).not.toContain("overrides");
       });
 
-      it("is quiet when the set's overrides name it, and for a skill no bundled one shares its name with", () => {
+      it("is quiet when the default set's overrides name it, and for a skill no bundled one shares its name with", () => {
          writeSkill(MAIN, "malloy-analysis");
          writeSkill(MAIN, "ours");
          const result = read(
             undefined,
-            { house: { path: MAIN, overrides: ["malloy-analysis"] } },
+            { default: { path: MAIN, overrides: ["malloy-analysis"] } },
             BUNDLED,
          );
          expect(texts(result.warnings)).toEqual([]);
-         expect(result.sets.get(HOUSE)!.skills).toHaveLength(2);
+         expect(result.sets.get(DEFAULT)!.skills).toHaveLength(2);
       });
 
       it("is not told of without the bundled names, which only the main thread knows", () => {
@@ -2256,6 +2303,126 @@ describe("readPackageWorkflows", () => {
          expect(
             texts(read(undefined, { house: { path: MAIN } }).warnings),
          ).toEqual([]);
+      });
+   });
+
+   describe("a skill directory's own name", () => {
+      /** A skill in a directory named `dir`; no `name:` is declared, so the directory's name is the skill's. */
+      const writeDir = (dir: string) =>
+         write(`${MAIN}/${dir}/SKILL.md`, "---\ndescription: d\n---\n\nbody\n");
+      const served = (result: PackageWorkflows) =>
+         result.sets.get(HOUSE)!.skills.map((s) => s.dirName);
+
+      it.skipIf(isWindows).each([
+         [
+            "a control character",
+            "x\u0007y",
+            "x\\u0007y' has a control character in its name",
+         ],
+         [
+            "a space",
+            "a b",
+            "a b' has a name outside [A-Za-z0-9_][A-Za-z0-9._-]*",
+         ],
+         [
+            "a leading hyphen",
+            "-lead",
+            "-lead' has a name outside [A-Za-z0-9_][A-Za-z0-9._-]*",
+         ],
+         ["'..' in it", "a..b", "a..b' has '..' in its name"],
+         [
+            "a non-ASCII letter, composed",
+            "caf\u00e9",
+            "caf\u00e9' has a name outside [A-Za-z0-9_][A-Za-z0-9._-]*",
+         ],
+         [
+            "a non-ASCII letter, decomposed",
+            "cafe\u0301",
+            "cafe\u0301' has a name outside [A-Za-z0-9_][A-Za-z0-9._-]*",
+         ],
+      ])(
+         "skips a skill whose directory name has %s, with a finding, and serves the rest",
+         (_what, dir, said) => {
+            writeSkill(MAIN, "ok");
+            writeDir(dir);
+            const result = read(undefined, { house: { path: MAIN } });
+            expect(served(result)).toEqual(["ok"]);
+            expectWarning(
+               result.warnings,
+               SKILL_FINDING,
+               HOUSE,
+               `'${MAIN}/${said}, so it is not served. Fix: rename the directory`,
+            );
+            expect(result.warnings).toHaveLength(1);
+         },
+      );
+
+      it.skipIf(!caseSensitiveFs)(
+         "skips the second of two skill directories that differ only by case, with a finding",
+         () => {
+            writeDir("Foo");
+            writeDir("foo");
+            const result = read(undefined, { house: { path: MAIN } });
+            expect(served(result)).toEqual(["Foo"]);
+            expectWarning(
+               result.warnings,
+               SKILL_FINDING,
+               HOUSE,
+               `Package skill '${MAIN}/foo' differs from '${MAIN}/Foo' only by case, so it is not served. Fix: rename one`,
+            );
+         },
+      );
+
+      it("serves a name the in-skill rules accept, mixed case and an underscore included", () => {
+         writeDir("Mixed_Case-1.v2");
+         expect(served(read(undefined, { house: { path: MAIN } }))).toEqual([
+            "Mixed_Case-1.v2",
+         ]);
+      });
+   });
+
+   describe("a publisher.json past the set's entry budget", () => {
+      /** `count` files under `skill`'s assets/, which a nested-manifest search reads one entry each. */
+      const fill = (skill: string, count: number) => {
+         writeSkill(MAIN, skill);
+         for (let i = 0; i < count; i++) {
+            write(
+               `${MAIN}/${skill}/assets/f${String(i).padStart(4, "0")}.txt`,
+               "x",
+            );
+         }
+      };
+
+      it("sets the skill aside, naming the budget, rather than serve what cannot be ruled out", () => {
+         writeSkill(MAIN, "plain");
+         fill("big", ASSET_MAX_ENTRIES + 5);
+         // Past the budget, where the search stops: a publisher.json it never reached.
+         write(`${MAIN}/big/assets/zz/publisher.json`, "{}");
+         const result = read(undefined, { house: { path: MAIN } });
+         expect(result.sets.get(HOUSE)!.skills.map((s) => s.dirName)).toEqual([
+            "plain",
+         ]);
+         expectWarning(
+            result.warnings,
+            SKILL_FINDING,
+            HOUSE,
+            `Package skill '${MAIN}/big' is not served: '${MAIN}/big' could not be checked for a publisher.json within the ${ASSET_MAX_ENTRIES}-entry budget its set shares`,
+         );
+      });
+
+      it("charges the budget to the set, so a later skill is set aside once an earlier one spent it", () => {
+         fill("aaa", ASSET_MAX_ENTRIES);
+         fill("zzz", 1);
+         const result = read(undefined, { house: { path: MAIN } });
+         expect(result.sets.get(HOUSE)!.skills.map((s) => s.dirName)).toEqual([
+            "aaa",
+         ]);
+         expectWarning(
+            result.warnings,
+            SKILL_FINDING,
+            HOUSE,
+            `Package skill '${MAIN}/zzz' is not served: '${MAIN}/zzz' could not be checked`,
+         );
       });
    });
 
@@ -2755,7 +2922,7 @@ describe("readPackageWorkflows", () => {
             write(`${ASSETS}/z.txt`, "x");
          };
 
-         it("walks exactly 1,000 entries per skill set and stays served past that", () => {
+         it("walks exactly 1,000 entries per skill set, and sets the skill aside, serving the workflow, past that", () => {
             fillEntries(998);
             const atCap = read({ analyst: analyst() });
             expect(listed(atCap)).toEqual([
@@ -2767,11 +2934,13 @@ describe("readPackageWorkflows", () => {
             write(`${ASSETS}/zz.txt`, "x");
             const over = read({ analyst: analyst() });
             expect(over.workflows.has("analyst")).toBe(true);
-            expect(listed(over)).toEqual([
-               `${LISTED}/a.txt`,
-               `${LISTED}/z.txt`,
-            ]);
-            expect(warned(over, "zz.txt", "1000 entries")).toBe(true);
+            expect(listed(over)).toEqual([]);
+            expect(
+               warned(
+                  over,
+                  `'${CONVENTIONS}' could not be checked for a publisher.json within the 1000-entry budget`,
+               ),
+            ).toBe(true);
          });
 
          it("lists a large file with a NUL in its head, and hashes it without reading it as text", () => {

@@ -18,6 +18,7 @@ import {
    mayChangeSkill,
    mayChangeSkillExactly,
    newWalkBudget,
+   readFilled,
    readUnfollowedFlags,
    REFERENCE_DIRS,
    SKILL_MD,
@@ -382,6 +383,15 @@ const RESERVED_WHY =
 const CONTROL_CHARS = /[\u0000-\u001f\u007f]/;
 const CONTROL_CHARS_WHY = "has a control character in its path";
 
+/** Why a skill's directory name cannot be served, by the rules a path inside the skill is held to; undefined when it can. */
+function dirNameProblem(name: string): string | undefined {
+   if (CONTROL_CHARS.test(name)) return "has a control character in its name";
+   if (name.includes("..")) return "has '..' in its name";
+   return ASSET_SEGMENT.test(name)
+      ? undefined
+      : "has a name outside [A-Za-z0-9_][A-Za-z0-9._-]*";
+}
+
 /** A path as a warning shows it: control characters escaped, so a file name cannot reshape the message. */
 const displayPath = (p: string) =>
    p.replace(
@@ -590,6 +600,8 @@ function scanSkills(
    }
 
    let examined = 0;
+   /** The directory names this set serves, lower-cased, to the spelling that took each: two that differ only by case collide. */
+   const byLower = new Map<string, string>();
    for (const entry of [...entries].sort((a, b) =>
       compareText(a.name, b.name),
    )) {
@@ -611,6 +623,13 @@ function scanSkills(
       }
       examined++;
       const rel = `${dirRel}/${entry.name}`;
+      const badName = dirNameProblem(entry.name);
+      if (badName !== undefined) {
+         unserved(
+            `Package skill '${displayPath(rel)}' ${badName}, so it is not served. Fix: rename the directory.`,
+         );
+         continue;
+      }
       if (skillInside === undefined) {
          unserved(
             skillNotServed(rel, "resolves outside the package through a link"),
@@ -652,6 +671,14 @@ function scanSkills(
          );
          continue;
       }
+      const taken = byLower.get(entry.name.toLowerCase());
+      if (taken !== undefined) {
+         unserved(
+            `Package skill '${rel}' differs from '${dirRel}/${taken}' only by case, so it is not served. Fix: rename one.`,
+         );
+         continue;
+      }
+      byLower.set(entry.name.toLowerCase(), entry.name);
 
       const found = skillFiles(skillDir, {
          budget,
@@ -672,8 +699,11 @@ function scanSkills(
             found.skillignore === null ? null : sha256(found.skillignore),
          candidates: found.files.filter((f) => f !== SKILL_MD),
          assetsRefusal: assetsRefusal(skillInside, skillDir, rel),
-         ...(nested !== undefined && {
-            manifestRefusal: `'${rel}/${displayPath(nested)}' is a publisher.json, which would make its directory a second package root; remove it or rename it`,
+         ...(nested.found !== undefined && {
+            manifestRefusal: `'${rel}/${displayPath(nested.found)}' is a publisher.json, which would make its directory a second package root; remove it or rename it`,
+         }),
+         ...(nested.unchecked && {
+            manifestRefusal: `'${rel}' could not be checked for a publisher.json within the ${ASSET_MAX_ENTRIES}-entry budget its set shares; remove files from it or move it to another skill set`,
          }),
       });
    }
@@ -1233,7 +1263,9 @@ function manifestAt(
 /**
  * The path, relative to the skill directory, of the first publisher.json inside
  * a skill: in the directory, in its `reference/` or `references/`, or anywhere
- * below its `assets/`; undefined when there is none. It reads the real tree,
+ * below its `assets/`. `unchecked` when the search ran out of `entries` before
+ * it could tell, which the caller treats as a find, since a manifest it did not
+ * reach is still one. It reads the real tree,
  * folders a `.skillignore` ignores included: that file decides what a skill is
  * made of, never what may sit in it. It follows a link only to a directory
  * inside the package, reads a reference folder or a linked `assets/` for at
@@ -1246,7 +1278,8 @@ function skillManifest(
    packageRoot: string,
    skillDir: string,
    entries: { left: number },
-): string | undefined {
+): { found?: string; unchecked?: true } {
+   let unchecked = false;
    const below = (
       dir: string,
       rel: string,
@@ -1265,7 +1298,10 @@ function skillManifest(
       }
       for (const entry of found.sort((a, b) => compareText(a.name, b.name))) {
          if (entry.name.startsWith(".")) continue;
-         if (entries.left-- <= 0) return undefined;
+         if (entries.left-- <= 0) {
+            unchecked = true;
+            return undefined;
+         }
          const relative = `${rel}/${entry.name}`;
          if (isManifest(entry.name)) return relative;
          if (entry.isDirectory() && depth < ASSET_MAX_DEPTH) {
@@ -1274,7 +1310,7 @@ function skillManifest(
                relative,
                depth + 1,
             );
-            if (deeper !== undefined) return deeper;
+            if (deeper !== undefined || unchecked) return deeper;
          }
       }
       return undefined;
@@ -1285,9 +1321,10 @@ function skillManifest(
          path.join(skillDir, place),
          place !== "",
       );
-      if (found !== undefined) return path.posix.join(place, found);
+      if (found !== undefined) return { found: path.posix.join(place, found) };
    }
-   return below(path.join(skillDir, "assets"), "assets", 1);
+   const found = below(path.join(skillDir, "assets"), "assets", 1);
+   return found !== undefined ? { found } : unchecked ? { unchecked } : {};
 }
 
 /** Read a Markdown file a workflow serves as its instructions, capped at 16 KiB. */
@@ -1349,17 +1386,7 @@ async function readListedFile(
          return undefined;
       }
       const bytes = Buffer.allocUnsafe(stat.size + 1);
-      let length = 0;
-      while (length < bytes.length) {
-         const { bytesRead } = await handle.read(
-            bytes,
-            length,
-            bytes.length - length,
-            length,
-         );
-         if (bytesRead === 0) break;
-         length += bytesRead;
-      }
+      const length = await readFilled(handle, bytes);
       // A length other than the stat size means the file changed after the stat.
       if (length !== stat.size) return undefined;
       const read = bytes.subarray(0, length);
@@ -1696,7 +1723,9 @@ function readSkillSet(
       ) {
          ctx.warnings.push(
             finding(
-               `Package skill '${skill.rel}' is named like a bundled skill. Fix: add '${skill.dirName}' to 'skillSets.${decl.name}.overrides' if it is meant to replace the bundled one, or rename the skill`,
+               advertised
+                  ? `Package skill '${skill.rel}' is named like a bundled skill. Fix: add '${skill.dirName}' to 'skillSets.${decl.name}.overrides' if it is meant to replace the bundled one, or rename the skill`
+                  : `Package skill '${skill.rel}' is named like a bundled skill, and only the '${DEFAULT_SKILL_SET}' skill set can replace one. Fix: rename the skill`,
             ),
          );
       }
@@ -1885,13 +1914,19 @@ function declareSkillSet(
       checks.roots.set(root, verdict);
    }
    if (verdict.problem !== undefined) throw verdict.problem;
-   const { overrides, problem } = declareOverrides(raw.overrides);
+   const declared = declareOverrides(raw.overrides);
+   // Only the default set's list is read, so a list on another set is said to be ignored and read as empty.
+   const ignored = name !== DEFAULT_SKILL_SET && declared.overrides.length > 0;
    return {
       name,
       path: root,
       ...(raw.description !== undefined && { description: raw.description }),
-      overrides,
-      ...(problem !== undefined && { overridesProblem: problem }),
+      overrides: ignored ? [] : declared.overrides,
+      ...((ignored || declared.problem !== undefined) && {
+         overridesProblem: ignored
+            ? `'overrides' is read only on the '${DEFAULT_SKILL_SET}' skill set, so it is ignored here. Fix: remove it from 'skillSets.${name}'`
+            : declared.problem,
+      }),
    };
 }
 

@@ -12,8 +12,8 @@
  *
  * Two findings say a package's content is no longer read, each with a stable
  * `code` that names the package after the upgrade: the `agents` key, and a
- * root `skills/` directory no workflow lists as a skill set. The usage metric
- * counts loads, not packages.
+ * root `skills/` directory no declared skill set is at or under. The usage
+ * metric counts loads, not packages.
  */
 
 import { recordDeprecatedUsage } from "../../deprecated_usage_metrics";
@@ -43,8 +43,8 @@ export function recordDeprecatedManifestKeys(
    for (const key of keys ?? []) recordDeprecatedUsage(FEATURE[key]);
 }
 
-export const PACKAGE_AGENTS_NOT_READ = "PACKAGE_AGENTS_NOT_READ";
-export const PACKAGE_SKILLS_DIR_NOT_READ = "PACKAGE_SKILLS_DIR_NOT_READ";
+export const PACKAGE_AGENTS_NOT_READ = "package-agents-not-read";
+export const PACKAGE_SKILLS_DIR_NOT_READ = "package-skills-dir-not-read";
 
 /** The finding for a manifest that declares `agents` at any value; none when it does not. */
 export function agentsNotReadFindings(parsed: {
@@ -66,7 +66,7 @@ export const SKILLS_DIR_NOT_READ: ApiPackageWarning = {
    code: PACKAGE_SKILLS_DIR_NOT_READ,
    severity: "warn",
    message:
-      'skills/ is no longer read, so none of its skills is served. Fix: add "skillSets": { "default": { "path": "skills" } } to publisher.json, or move each skill into a skill set folder and declare that folder as the "default" set',
+      'skills/ is no longer read, so none of its skills is served. Fix: add "skillSets": { "default": { "path": "skills" } } to publisher.json, listing in its "overrides" each skill that replaces a bundled one, and put anything a skill must not serve in a .skillignore; the "Migrating from agents and a root skills/" section of the packages guide has the details',
 };
 
 /** Count one load or reload of a package whose root `skills/` nothing reads. */

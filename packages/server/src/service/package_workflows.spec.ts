@@ -411,6 +411,15 @@ describe("package workflows", () => {
          expect(await shaOf()).not.toBe(afterSets);
       });
 
+      it("does not move when a file the package neither compiles nor serves changes", async () => {
+         // The sha tracks what the compiler read, so an unchanged value is evidence an edit did not reach the served copy.
+         const base = await shaOf();
+         write("notes.txt", "irrelevant");
+         expect(await shaOf()).toBe(base);
+         write("notes.txt", "still irrelevant");
+         expect(await shaOf()).toBe(base);
+      });
+
       it("does not move on a version bump or an unrelated manifest key", async () => {
          const base = await shaOf();
          fs.writeFileSync(
@@ -772,11 +781,11 @@ describe("package workflows", () => {
          expect(pkg.listWorkflows()).toEqual([]);
          expect(
             (pkg.getPackageMetadata().warnings ?? []).filter(
-               (w) => w.code === "PACKAGE_AGENTS_NOT_READ",
+               (w) => w.code === "package-agents-not-read",
             ),
          ).toEqual([
             {
-               code: "PACKAGE_AGENTS_NOT_READ",
+               code: "package-agents-not-read",
                message:
                   '"agents" is no longer read. Fix: declare "workflows" instead; the "Migrating from agents and a root skills/" section of the packages guide shows how each agent maps onto one',
                severity: "warn",
@@ -797,13 +806,13 @@ describe("package workflows", () => {
          expect(pkg.defaultSkills().skills).toEqual([]);
          expect(
             (pkg.getPackageMetadata().warnings ?? []).filter(
-               (w) => w.code === "PACKAGE_SKILLS_DIR_NOT_READ",
+               (w) => w.code === "package-skills-dir-not-read",
             ),
          ).toEqual([
             {
-               code: "PACKAGE_SKILLS_DIR_NOT_READ",
+               code: "package-skills-dir-not-read",
                message:
-                  'skills/ is no longer read, so none of its skills is served. Fix: add "skillSets": { "default": { "path": "skills" } } to publisher.json, or move each skill into a skill set folder and declare that folder as the "default" set',
+                  'skills/ is no longer read, so none of its skills is served. Fix: add "skillSets": { "default": { "path": "skills" } } to publisher.json, listing in its "overrides" each skill that replaces a bundled one, and put anything a skill must not serve in a .skillignore; the "Migrating from agents and a root skills/" section of the packages guide has the details',
                severity: "warn",
             },
          ]);
@@ -823,7 +832,7 @@ describe("package workflows", () => {
          const pkg = await load();
          expect(pkg.defaultSkills().skills).toEqual([]);
          expect(codes(pkg)).toContain("skill-set-not-served");
-         expect(codes(pkg)).not.toContain("PACKAGE_SKILLS_DIR_NOT_READ");
+         expect(codes(pkg)).not.toContain("package-skills-dir-not-read");
          expect(await used("skills_dir")).toBe(0);
       });
 
@@ -835,7 +844,7 @@ describe("package workflows", () => {
          manifest({ skillSets: { default: { path: "skills" } } });
          const pkg = await load();
          expect(pkg.defaultSkills().skills.map((s) => s.name)).toEqual(["old"]);
-         expect(codes(pkg)).not.toContain("PACKAGE_SKILLS_DIR_NOT_READ");
+         expect(codes(pkg)).not.toContain("package-skills-dir-not-read");
          expect(await used("skills_dir")).toBe(0);
       });
 
@@ -1304,7 +1313,7 @@ describe("package workflows", () => {
          expect(read.message).toContain("binary");
       });
 
-      it("keeps a workflow served when assets/ holds more than 1,000 entries", async () => {
+      it("keeps a workflow served, with its skill set aside, when assets/ holds more than 1,000 entries", async () => {
          write(`${ASSETS}/a.txt`, "x");
          for (let i = 0; i < 1000; i++) {
             fs.mkdirSync(
@@ -1314,14 +1323,16 @@ describe("package workflows", () => {
          }
          write(`${ASSETS}/z.txt`, "x");
          const pkg = await load();
+         const set = pkg.getWorkflow("analyst")!.skill_sets[0]!;
+         expect(set.assets ?? []).toEqual([]);
+         expect(set.skills).toEqual([]);
          expect(
-            pkg
-               .getWorkflow("analyst")!
-               .skill_sets[0]!.assets!.map((a) => a.relative_filepath),
-         ).toEqual([`${LISTED}/a.txt`]);
-         expect(warningsOf(pkg).some((m) => m.includes("1000 entries"))).toBe(
-            true,
-         );
+            warningsOf(pkg).some((m) =>
+               m.includes(
+                  "could not be checked for a publisher.json within the 1000-entry budget",
+               ),
+            ),
+         ).toBe(true);
       });
 
       it("refuses a listed asset once its directory is swapped for a link", async () => {
@@ -2078,11 +2089,13 @@ describe("package workflows", () => {
                   severity: "warn",
                }),
             ]);
+            // Only the default set's overrides are read, so only it can silence the finding.
             manifest({
-               skillSets: {
-                  [HOUSE]: { path: MAIN, overrides: [bundled] },
-               },
-               workflows: { analyst: analyst() },
+               skillSets: { default: { path: MAIN } },
+            });
+            expect(clash(await load())).toHaveLength(1);
+            manifest({
+               skillSets: { default: { path: MAIN, overrides: [bundled] } },
             });
             expect(clash(await load())).toEqual([]);
          });
@@ -2160,7 +2173,7 @@ describe("package workflows", () => {
                );
                const warnings = pkg.getPackageMetadata().warnings ?? [];
                expect(warnings.map((w) => w.code)).toContain(
-                  "PACKAGE_SKILLS_DIR_NOT_READ",
+                  "package-skills-dir-not-read",
                );
                expect(warnings.map((w) => w.message).join("\n")).toContain(
                   "Workflow 'refused' is not served",
@@ -2339,6 +2352,13 @@ describe("package workflows", () => {
                ).rejects.toBeInstanceOf(SkillSetsUnavailableError);
                // The unreadable set is no `default`, so the package has no skills of its own to be unavailable.
                expect(pkg.defaultSkills().skills).toEqual([]);
+               // A reload landing between a read and its not-found answer must not turn a declared name into 404.
+               expect(() => pkg.skillSetNotServed("hidden")).toThrow(
+                  SkillSetsUnavailableError,
+               );
+               expect(() => pkg.workflowNotServed("analyst")).toThrow(
+                  SkillSetsUnavailableError,
+               );
                // A name the manifest never declared is still not found.
                await expect(
                   controller.getWorkflow("env", "pkg", "nope"),
@@ -2478,6 +2498,29 @@ describe("package workflows", () => {
                   await expect(
                      controller.getSkill("env", "pkg", "conventions"),
                   ).rejects.toBeInstanceOf(SkillSetsUnavailableError);
+                  // A default skill can replace a bundled one, so a bundled name cannot be answered either.
+                  const bundled = BUNDLED_SKILL_NAMES[0]!;
+                  await expect(
+                     controller.getSkill("env", "pkg", bundled),
+                  ).rejects.toBeInstanceOf(SkillSetsUnavailableError);
+                  let handler: Handler | undefined;
+                  registerGetSkillTool(
+                     {
+                        registerTool: (_n: string, _c: unknown, h: Handler) => {
+                           handler = h;
+                        },
+                     } as never,
+                     storeFor(pkg),
+                     BUNDLED_CATALOG,
+                  );
+                  const viaMcp = await handler!({
+                     scopes: [{ environment: "env", package: "pkg" }],
+                     skill_name: bundled,
+                  });
+                  expect(viaMcp.isError).toBe(true);
+                  expect(viaMcp.content[0]!.resource?.text).toContain(
+                     `scandir '${HIDDEN}'`,
+                  );
                   const reply = skillsFor({ pkgIndex: { pkg } } as never);
                   expect(reply).toEqual({
                      skills_note: expect.stringContaining(

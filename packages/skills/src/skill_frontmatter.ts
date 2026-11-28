@@ -65,9 +65,10 @@ export function readFrontmatter(
    dirName: string,
 ): { name: string; description: string } {
    const line = (key: string) => {
-      const value = frontmatter.match(
-         new RegExp(`^${key}:[ \\t]*(\\S.*)$`, "m"),
-      )?.[1];
+      // Looks no further than the YAML cap, as the server reader does.
+      const value = frontmatter
+         .slice(0, FRONTMATTER_MAX_BYTES)
+         .match(new RegExp(`^${key}:[ \\t]*(\\S.*)$`, "m"))?.[1];
       return value === undefined ? undefined : unquote(value);
    };
    const lineRead = {

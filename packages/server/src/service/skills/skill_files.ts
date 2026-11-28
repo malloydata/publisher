@@ -236,6 +236,42 @@ function skillignoreRefusal(stat: fs.Stats): string | undefined {
       : undefined;
 }
 
+/** Reads a descriptor from its start until `bytes` is full or the file ends, which one `read` does not promise; the length read. */
+export function readFilledSync(fd: number, bytes: Buffer): number {
+   let length = 0;
+   while (length < bytes.length) {
+      const read = fs.readSync(
+         fd,
+         bytes,
+         length,
+         bytes.length - length,
+         length,
+      );
+      if (read === 0) break;
+      length += read;
+   }
+   return length;
+}
+
+/** {@link readFilledSync} without blocking the event loop. */
+export async function readFilled(
+   handle: fs.promises.FileHandle,
+   bytes: Buffer,
+): Promise<number> {
+   let length = 0;
+   while (length < bytes.length) {
+      const { bytesRead } = await handle.read(
+         bytes,
+         length,
+         bytes.length - length,
+         length,
+      );
+      if (bytesRead === 0) break;
+      length += bytesRead;
+   }
+   return length;
+}
+
 /** The text of what one descriptor gave, at most the cap plus one byte; null with the reason in `warnings` when the file outgrew the cap after its stat. */
 function skillignoreText(read: Buffer, warnings: string[]): string | null {
    if (read.length > SKILLIGNORE_MAX_BYTES) {
@@ -275,19 +311,10 @@ function readSkillignoreSync(dir: string, warnings: string[]): string | null {
          return null;
       }
       const bytes = Buffer.allocUnsafe(SKILLIGNORE_MAX_BYTES + 1);
-      let length = 0;
-      while (length < bytes.length) {
-         const read = fs.readSync(
-            fd,
-            bytes,
-            length,
-            bytes.length - length,
-            length,
-         );
-         if (read === 0) break;
-         length += read;
-      }
-      return skillignoreText(bytes.subarray(0, length), warnings);
+      return skillignoreText(
+         bytes.subarray(0, readFilledSync(fd, bytes)),
+         warnings,
+      );
    } catch (error) {
       return skillignoreFailure(error, warnings);
    } finally {
@@ -323,18 +350,10 @@ async function readSkillignoreText(
          return null;
       }
       const bytes = Buffer.allocUnsafe(SKILLIGNORE_MAX_BYTES + 1);
-      let length = 0;
-      while (length < bytes.length) {
-         const { bytesRead } = await handle.read(
-            bytes,
-            length,
-            bytes.length - length,
-            length,
-         );
-         if (bytesRead === 0) break;
-         length += bytesRead;
-      }
-      return skillignoreText(bytes.subarray(0, length), warnings);
+      return skillignoreText(
+         bytes.subarray(0, await readFilled(handle, bytes)),
+         warnings,
+      );
    } catch (error) {
       return skillignoreFailure(error, warnings);
    } finally {

@@ -206,6 +206,13 @@ const PARITY: [string, string, string, string, string][] = [
       "x",
       "d",
    ],
+   [
+      "a name and description that start past the first 4 KiB of an oversized frontmatter, which the line read never reaches",
+      `---\nx-pad: ${"p".repeat(5000)}\nname: x\ndescription: late\n---\n`,
+      "dir",
+      "dir",
+      "",
+   ],
 ];
 
 describe("the server's and the package's frontmatter readers", () => {

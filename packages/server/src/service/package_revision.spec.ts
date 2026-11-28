@@ -263,15 +263,6 @@ describe("Package serving identity", () => {
       );
       expect(build(DEFAULT_SET).getSourceContentSha()).toBe(before);
    });
-
-   it("leaves the sha alone when a non-model file in the package changes", () => {
-      // The publisher_data/ copy trap makes this the load-bearing case: the sha
-      // must track what the compiler read, so that an unchanged value is real
-      // evidence the edit did not reach the served copy.
-      const before = build().getSourceContentSha();
-      fs.writeFileSync(path.join(dir, "notes.txt"), "irrelevant");
-      expect(build().getSourceContentSha()).toBe(before);
-   });
 });
 
 describe("boundedDeclaration", () => {

@@ -784,6 +784,10 @@ export class Package implements LoadGatedPackage, ReportViewPackage {
       withFix: boolean,
       reasons: { served: R; declared: R },
    ): { reason: R; message: string } | undefined {
+      // A reload can land between a read and this answer, so an unread walk is said before any name is called absent.
+      this.readable(
+         kind === "workflow" ? { workflow: name } : { skillSet: name },
+      );
       const served =
          kind === "workflow"
             ? this.workflows.workflows.has(name)
