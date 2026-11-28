@@ -143,13 +143,23 @@ describe("filter binding guard (HTTP E2E)", () => {
             "{ aggregate: n is count() }",
       });
       expect(res.status).toBe(403);
-      const json = (await res.json()) as { code: number; message: string };
+      const json = (await res.json()) as {
+         code: number;
+         message: string;
+         reason?: string;
+      };
       expect(json.code).toBe(403);
       // No `#(access_filter)`/`#(authorize)` gate is declared here at all, so
       // this denial comes from `assertNoMisboundInheritedFilters`'s own
-      // catch (not the gate's) — it must still name the model's own alias,
-      // never the physical table identity behind it.
-      expect(json.message).toBe('Access denied for source "where_filtered".');
+      // catch (not the gate's): its own reason, and a message that names the
+      // model's own alias, never the physical table identity behind it, and
+      // says it is not a permission rule, never the filter or its field.
+      expect(json.reason).toBe("INHERITED_FILTER_UNVERIFIED");
+      expect(json.message).toStartWith(
+         'Access denied for source "where_filtered": ',
+      );
+      expect(json.message).toContain("reason: redefined_field");
+      expect(json.message).toContain("This is not a permission rule");
       expect(json.message).not.toContain("org_id");
    });
 });

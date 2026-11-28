@@ -13,6 +13,7 @@ process.on("warning", (warning) => {
   logWarning(`${warning.name}: ${warning.message}`);
 });
 
+import { readFileSync } from "node:fs";
 import { Command } from "commander";
 import { PublisherClient } from "./api/client";
 import { logError, logOutput, logWarning } from "./utils/logger.js";
@@ -24,12 +25,20 @@ import * as scheduleCommands from "./commands/schedule.js";
 import * as modelCommands from "./commands/models.js";
 import * as databaseCommands from "./commands/databases.js";
 
+// The version this package was published as. `../package.json` resolves to
+// packages/cli/package.json both from the bundle (dist/index.js) and from source
+// (src/index.ts), and npm always ships package.json, so `--version` reports the
+// lockstep release version rather than a number kept by hand.
+const { version: cliVersion } = JSON.parse(
+  readFileSync(new URL("../package.json", import.meta.url), "utf8"),
+) as { version: string };
+
 const program = new Command();
 
 program
   .name("malloy-pub")
   .description("Malloy Publisher CLI - Manage Publisher resources")
-  .version("0.0.50")
+  .version(cliVersion)
   .option(
     "--url <server>",
     "Publisher server URL (overrides MALLOY_PUBLISHER_URL)",

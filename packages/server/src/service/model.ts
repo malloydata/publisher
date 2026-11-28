@@ -22,6 +22,7 @@ import {
 } from "../materialization_metrics";
 import type { QueryServingHost } from "./query_serving";
 import { makeLegs, PersistedQueryServe } from "./materialization/serve/leg";
+import { SourceMap } from "./materialization/text/source_map";
 import {
    ModelServing,
    settledCompileError,
@@ -3297,6 +3298,18 @@ export class Model {
     * freshness edge, until the commit at that edge recompiles it, a table
     * whose window lapsed is left out by its recorded window.
     */
+   /**
+    * The stored-source ancestors this model reaches only as the declared base
+    * of a source it names, in a file it does not import, each with the named
+    * sources built on it: what a reach over this model's own compile misses.
+    */
+   public declaredAncestors(): ReadonlyMap<string, readonly string[]> {
+      const modelDef = this.getModelDef();
+      return modelDef
+         ? this.servedCopy.declaredAncestorReach(SourceMap.of(modelDef))
+         : new Map();
+   }
+
    public servedCopySourceIDs():
       | ReadonlySet<string>
       | "uncompiled"

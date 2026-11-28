@@ -146,14 +146,14 @@ async function expectBindingDeniedViaPackage(
    modelPath: string,
    queryText: string,
 ): Promise<void> {
-   const debug = spyOn(logger, "debug");
+   const debug = spyOn(logger, "info");
    try {
       await expectDeniedViaPackage(pkg, modelPath, queryText);
       const reasons = debug.mock.calls
          .filter(
             (c) =>
                String(c[0]) ===
-               "Inherited source filter binding check failed; denying",
+               "Inherited where: could not be verified; denying",
          )
          .map((c) =>
             String(

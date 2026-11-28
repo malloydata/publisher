@@ -9,7 +9,7 @@ This skill turns the signals the open-source Publisher already records (the mate
 
 > **Recommendations only. Never change a model, schedule, or scope without the user's explicit go-ahead.** Present the findings and the proposed edits, then apply them only when asked. Materializing the wrong source wastes storage and rebuild time; dropping a hot one makes queries slow. Let the user decide.
 
-Assumes the `malloy-pub` CLI is on PATH and points at the server (`--url` or `MALLOY_PUBLISHER_URL`). Substitute the real environment and package for `<env>` / `<pkg>`.
+Assumes the `malloy-pub` CLI is on PATH (`npm i -g @malloy-publisher/cli`, or prefix each command with `npx @malloy-publisher/cli@latest` in place of `malloy-pub`) and points at the server (`--url` or `MALLOY_PUBLISHER_URL`). Substitute the real environment and package for `<env>` / `<pkg>`.
 
 ## Step 1: Take inventory
 

@@ -64,7 +64,11 @@ import {
 import { createEventLoopYielder } from "../../event_loop_yield";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { packageFiles } from "../text/package_files";
-import { SourceMap } from "../text/source_map";
+import {
+   detachedNode,
+   reachableSourceIDs,
+   SourceMap,
+} from "../text/source_map";
 import {
    chainBuildFileSet,
    rollupBuildFileSet,
@@ -470,6 +474,12 @@ interface ServedCopyHost {
 type AuthorReroot = Reroot & {
    sourceID: string;
    authorDef: unknown;
+   /**
+    * Reached only as the declared base of a source this model names, in a
+    * file it does not import ({@link ServedCopyServe.authorNode}):
+    * the model holds no node for it, yet these named sources read it.
+    */
+   declaredAncestor?: readonly string[];
    /**
     * For a `#(materialize)` re-root: its rows depend on the zone it was built
     * in, which the probe compiler did not clear: a `where:` term or base
@@ -1508,9 +1518,7 @@ export class ServedCopyServe {
            [map.sourceIDOf(binding.sourceName)].filter(
               (id): id is string => id !== undefined,
            ));
-      const node =
-         authorIDs.map((id) => map.node(id)).find((n) => n !== undefined) ??
-         this.joinedDeclaration(authorIDs, map);
+      const { node, declared } = this.authorNode(authorIDs, map);
       // Another model's source: not this served copy's to re-root.
       if (!node) return undefined;
       const sourceName = plan?.sourceName ?? binding.sourceName;
@@ -1679,6 +1687,7 @@ export class ServedCopyServe {
             : {}),
          sourceID: node.sourceID,
          authorDef: node.def,
+         ...(declared ? { declaredAncestor: declared } : {}),
       } as AuthorReroot;
    }
 
@@ -1803,6 +1812,82 @@ export class ServedCopyServe {
     * sources joins it. Re-rooting it in its declaring file is what lets the
     * joining source's re-root keep its join on the destination.
     */
+   /**
+    * The author's declaration a binding re-roots, as this model reaches it:
+    * a node it holds, one it reaches only as a join, or a declared ancestor
+    * (`declared`, the named sources built on it): a source this model
+    * reaches only as the declared base of one it names, across a file it
+    * does not import (Malloy imports are not transitive, and record no edge
+    * for an extension of a table-backed source, so this model's compile
+    * holds no node for it). Its declaration, as the package model holding it
+    * compiled it, read by the declared-base walk
+    * ({@link keptAncestorChainOrDeclared}). Re-rooting it in its own file is
+    * what serves the sources this model names over it from its table.
+    */
+   private authorNode(
+      authorIDs: readonly string[],
+      map: SourceMap,
+   ): {
+      node: { sourceID: string; def: unknown } | undefined;
+      declared?: readonly string[];
+   } {
+      const held =
+         authorIDs.map((id) => map.node(id)).find((n) => n !== undefined) ??
+         this.joinedDeclaration(authorIDs, map);
+      if (held) return { node: held };
+      if (!this.declarationOf) return { node: undefined };
+      const reach = this.declaredAncestorReach(map);
+      const id = authorIDs.find((a) => reach.has(a));
+      const node = id ? detachedNode(this.declarationOf(id)) : undefined;
+      // Not one that filters its rows (its own `where:` or one it inherits):
+      // the inherited-filter guard proves a filter against its declaring
+      // source in this compile, which holds no node for it, and would deny
+      // every query; left as written, it answers live as before.
+      const filters = (node?.def as { filterList?: unknown[] } | undefined)
+         ?.filterList;
+      return node && id && !filters?.length
+         ? { node, declared: reach.get(id) ?? [] }
+         : { node: undefined };
+   }
+
+   private declaredReachMemo = new WeakMap<SourceMap, Map<string, string[]>>();
+
+   /**
+    * The declared ancestors this model holds no node for, of every source it
+    * names, across files: each with the named sources built on it.
+    */
+   declaredAncestorReach(map: SourceMap): Map<string, string[]> {
+      const memo = this.declaredReachMemo.get(map);
+      if (memo) return memo;
+      const reach = new Map<string, string[]>();
+      const lift = authorModelLiftContext(
+         map.model(),
+         compiledTextReader(map.model(), this.packagePath),
+      );
+      for (const node of map.nodes()) {
+         if (node.name === undefined) continue;
+         const url = (node.def as { location?: { url?: unknown } }).location
+            ?.url;
+         if (typeof url !== "string") continue;
+         for (const a of keptAncestorChainOrDeclared(
+            map,
+            node.sourceID,
+            url,
+            (u) => lift.fileText(u),
+            this.declarationOf,
+         )) {
+            if (!map.node(a.sourceID)) {
+               reach.set(a.sourceID, [
+                  ...(reach.get(a.sourceID) ?? []),
+                  node.sourceID,
+               ]);
+            }
+         }
+      }
+      this.declaredReachMemo.set(map, reach);
+      return reach;
+   }
+
    private joinedDeclaration(
       authorIDs: readonly string[],
       map: SourceMap,
@@ -1838,7 +1923,7 @@ export class ServedCopyServe {
       reroot: Reroot & { sourceID: string },
       map: SourceMap,
       fileText: (url: string) => string | undefined,
-   ): string | undefined {
+   ): { blocks: string; imports: string[] } | undefined {
       const plan = this.materializePlans[reroot.sourceID];
       if (!plan) return undefined;
       // Across files: an extension in a file that imports its base's file
@@ -1869,10 +1954,13 @@ export class ServedCopyServe {
             ),
          );
       if (!needed) return undefined;
-      return confirmed
-         .flatMap((a) => (a.runText ? [a.runText] : []))
-         .reverse()
-         .join(" ");
+      return {
+         blocks: confirmed
+            .flatMap((a) => (a.runText ? [a.runText] : []))
+            .reverse()
+            .join(" "),
+         imports: [...new Set(confirmed.flatMap((a) => a.imports ?? []))],
+      };
    }
 
    /**
@@ -2267,7 +2355,16 @@ export class ServedCopyServe {
          );
          const reads = readsRerootedBase(c);
          if (kept === undefined) return reads ? [] : [c];
-         const extension = { ...c, reroot: { ...c.reroot, keptBlocks: kept } };
+         const extension = {
+            ...c,
+            reroot: {
+               ...c.reroot,
+               keptBlocks: kept.blocks,
+               ...(kept.imports.length > 0
+                  ? { keptImports: kept.imports }
+                  : {}),
+            },
+         };
          withoutKept.set(extension, reads ? undefined : c);
          return [extension];
       });
@@ -3016,32 +3113,15 @@ export class ServedCopyServe {
             optOutIDs.add(node.sourceID);
          }
       }
-      // The sources stored at all: a binding the copy was compiled over.
-      const storedNames = new Set(over.map((b) => b.sourceName));
-      for (const l of leftOut) {
-         if (!l.crossConnection) continue;
-         const sourceName = l.declaration ?? l.name;
-         // The stored side is this source unless the whole source is left
-         // out for its join, whose advice is about the joined source.
-         const sourceID =
-            l.join === undefined
-               ? candidates.find(
-                    (c) =>
-                       c.reroot.sourceName === sourceName &&
-                       c.reroot.url === l.url,
-                 )?.reroot.sourceID
-               : undefined;
-         problems.push({
-            ...(sourceID !== undefined ? { storedSourceID: sourceID } : {}),
-            sourceName,
-            reason: "cross_connection_join",
-            join: l.join ?? l.name,
-            ...(l.join !== undefined ? { leftOutWhole: true as const } : {}),
-            ...(storedNames.has(sourceName)
-               ? {}
-               : { declarerNotStored: true as const }),
-         });
-      }
+      problems.push(
+         ...crossConnectionProblems(
+            leftOut,
+            candidates,
+            over,
+            modelDef,
+            servedDef,
+         ),
+      );
       const unsafeIDs = classificationCeiling(
          this.host.modelPath(),
          modelDef,
@@ -3509,16 +3589,36 @@ function rerootsLosing(
             .filter((n): n is string => n !== undefined),
       );
       chain.add(c.reroot.sourceName);
+      const excused = new Set([
+         ...leftOut
+            .filter((l) => chain.has(l.declaration ?? l.name))
+            .map((l) => l.name),
+         ...(c.reroot.columnsLeftOut ?? []),
+      ]);
+      // A declared ancestor this model holds no node for, in its served
+      // compile either: what a caller here reads of it is what the named
+      // sources built on it read, so each of them is proven instead.
+      if (c.reroot.declaredAncestor) {
+         const descendants = c.reroot.declaredAncestor;
+         if (descendants.length === 0) return "fields" as const;
+         for (const d of descendants) {
+            const loss = proveReroot({
+               author: map.node(d)?.def,
+               served: servedDefOf(servedMap, d),
+               servedHasOwnNode: hasOwnNode(servedMap, d),
+               excused,
+               termsKeptAsWritten: keptAsWritten(c),
+               givenTerms: givenReadingFilterTerms,
+            });
+            if (loss !== undefined) return loss;
+         }
+         return undefined;
+      }
       return proveReroot({
          author: c.reroot.authorDef,
          served: servedDefOf(servedMap, c.reroot.sourceID),
          servedHasOwnNode: hasOwnNode(servedMap, c.reroot.sourceID),
-         excused: new Set([
-            ...leftOut
-               .filter((l) => chain.has(l.declaration ?? l.name))
-               .map((l) => l.name),
-            ...(c.reroot.columnsLeftOut ?? []),
-         ]),
+         excused,
          termsKeptAsWritten: keptAsWritten(c),
          givenTerms: givenReadingFilterTerms,
       });
@@ -3531,6 +3631,7 @@ function rerootsLosing(
    // a caller can read here.
    const unreached = state.candidates.filter(
       (c) =>
+         c.reroot.declaredAncestor === undefined &&
          map.node(c.reroot.sourceID)?.name === undefined &&
          servedMap.node(c.reroot.sourceID) === undefined &&
          servedDefOf(servedMap, c.reroot.sourceID) === undefined,
@@ -5697,4 +5798,88 @@ function zonedTruncations(
       leftOut: truncated,
       restated: [],
    };
+}
+
+/**
+ * The `cross_connection_join` problems for the joins the served compile left
+ * out across connections: one per join, its stored side named when it is a
+ * candidate's.
+ */
+function crossConnectionProblems(
+   leftOut: readonly LeftOutDefinition[],
+   candidates: CopyPassState["candidates"],
+   over: readonly Binding[],
+   authorDef: unknown,
+   servedDef: unknown,
+): ServedCopyProblem[] {
+   const problems: ServedCopyProblem[] = [];
+   // The sources stored at all: a binding the copy was compiled over.
+   const storedNames = new Set(over.map((b) => b.sourceName));
+   const contents = (def: unknown) =>
+      Object.values(
+         (def as { contents?: Record<string, unknown> } | undefined)
+            ?.contents ?? {},
+      );
+   // What a caller can reach in this model: each source it names (the
+   // author's names: a declaration the served compile left out whole is
+   // still one), and what those reach as served (a re-rooted source reads
+   // its table, not its base).
+   const reached = reachableSourceIDs(contents(servedDef), servedDef);
+   const served = new Set(
+      Object.keys(
+         (servedDef as { contents?: Record<string, unknown> } | undefined)
+            ?.contents ?? {},
+      ),
+   );
+   // A name the served compile left out whole (a source or named query that
+   // reads a left-out join) answers live: it reaches what the author's
+   // definition reaches.
+   const leftOutWhole = Object.entries(
+      (authorDef as { contents?: Record<string, unknown> } | undefined)
+         ?.contents ?? {},
+   )
+      .filter(([name]) => !served.has(name))
+      .map(([, def]) => def);
+   for (const id of reachableSourceIDs(leftOutWhole, authorDef)) {
+      reached.add(id);
+   }
+   for (const def of contents(authorDef)) {
+      const id = (def as { sourceID?: unknown } | undefined)?.sourceID;
+      if (typeof id === "string") reached.add(id);
+   }
+   for (const l of leftOut) {
+      if (!l.crossConnection) continue;
+      const sourceName = l.declaration ?? l.name;
+      // An unstored declarer no name here reaches (an import of an import,
+      // or a base a selective import leaves out, under a source served
+      // from its table): its join is moot in this model, and the model
+      // that names it is warned. As the unreached rule for candidates.
+      if (
+         !storedNames.has(sourceName) &&
+         !reached.has(`${sourceName}@${l.url}`)
+      ) {
+         continue;
+      }
+      // The stored side is this source unless the whole source is left
+      // out for its join, whose advice is about the joined source.
+      const sourceID =
+         l.join === undefined
+            ? candidates.find(
+                 (c) =>
+                    c.reroot.sourceName === sourceName &&
+                    c.reroot.url === l.url,
+              )?.reroot.sourceID
+            : undefined;
+      problems.push({
+         ...(sourceID !== undefined ? { storedSourceID: sourceID } : {}),
+         sourceName,
+         reason: "cross_connection_join",
+         join: l.join ?? l.name,
+         ...(l.join !== undefined ? { leftOutWhole: true as const } : {}),
+         ...(storedNames.has(sourceName)
+            ? {}
+            : { declarerNotStored: true as const }),
+      });
+   }
+   return problems;
 }
