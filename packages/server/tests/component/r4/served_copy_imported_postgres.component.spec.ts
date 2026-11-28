@@ -361,7 +361,10 @@ for (const [shape, deals] of Object.entries(SHAPES)) {
 
          // `deals11` joins the stored `crm_current` to the warehouse's rows:
          // no engine reads both, and it is never built by recomputing
-         // `crm_current` from raw, so it is refused and answered live.
+         // `crm_current` from raw, so it is refused and answered live. The
+         // plan sees it (the join's keys read the warehouse), so it is
+         // refused there, never attempted; a build that tried it failed the
+         // same way.
          it("refuses the stored source over the joining stage, and answers it live, equal to live", async () => {
             const entry = Object.values(
                (
@@ -373,7 +376,14 @@ for (const [shape, deals] of Object.entries(SHAPES)) {
                   }
                ).entries,
             ).find((e) => e.sourceName === "deals11");
-            expect(entry?.error ?? "").toContain(
+            const pkg = await env!.getPackage(parsePackageName(PKG), false);
+            const refused = Object.values(
+               (pkg.getBuildPlan()?.refusedSources ?? {}) as Record<
+                  string,
+                  { name?: string; message?: string }
+               >,
+            ).find((r) => r.name === "deals11");
+            expect(refused?.message ?? entry?.error ?? "").toContain(
                "a downstream is never built by recomputing its upstreams from raw",
             );
             const [model, q] = queries[2];

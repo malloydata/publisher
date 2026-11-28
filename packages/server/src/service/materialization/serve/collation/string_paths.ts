@@ -14,8 +14,9 @@ import { fieldPathsIn } from "../gate_paths";
  * cannot be followed (fail closed). A path through a join is followed into
  * the joined source's fields. A computed field compares the fields its
  * expression reads, so each of those must be a path here too (the walk
- * lists them), and a field of a query-shaped source, whose stage output may
- * be computed from fields no path names, fails closed unless it is a string.
+ * lists them), and a query-shaped source's stage output, which may be
+ * computed from fields no path names, fails closed unless it is a string; a
+ * field its `extend { … }` declares is followed by its expression.
  */
 export function stringPaths(
    struct: unknown,
@@ -41,7 +42,14 @@ export function stringPaths(
          at = field;
       }
       if (field?.type !== "string") {
-         if ((owner as { query?: unknown } | undefined)?.query !== undefined) {
+         // A query-shaped source's stage output carries no expression: what
+         // it was computed from is no path here, so it fails closed. A field
+         // its `extend { … }` declares carries one, followed as any other
+         // computed field's (`dimension: is_open is close.type is null`).
+         if (
+            (owner as { query?: unknown } | undefined)?.query !== undefined &&
+            field?.e === undefined
+         ) {
             return undefined;
          }
          if (field?.e !== undefined) {
