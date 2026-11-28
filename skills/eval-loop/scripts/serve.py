@@ -104,6 +104,20 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent.parent.parent
 import config  # noqa: E402
 
 
+def gone(pid: int, seconds: float) -> bool:
+    """Whether process `pid` has exited, waiting up to `seconds`."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            return False
+        time.sleep(0.2)
+    return False
+
+
 def alive(port: int) -> bool:
     try:
         with urllib.request.urlopen(f"http://localhost:{port}/api/v0/projects",
@@ -327,12 +341,29 @@ def warm_retrieval(port: int, mcp_port: int, environment: str, package: str,
                     f"it settles, so nothing measured now is semantic")
 
 
-def server_cmd(server: pathlib.Path, root: pathlib.Path, port: int,
+NPX_PACKAGE = "@malloy-publisher/server"
+
+
+def server_cmd(server: pathlib.Path | list[str], root: pathlib.Path, port: int,
                mcp_port: int, seed: bool) -> list[str]:
-    """The argv for one Publisher, with `--init` only when seeding."""
-    cmd = ["node", str(server), "--server_root", str(root),
+    """The argv for one Publisher, with `--init` only when seeding.
+
+    `server` is a clone's dist/server.mjs, run with node, or an argv that
+    starts one (the npx form `npx_launch` builds).
+    """
+    launch = ["node", str(server)] if isinstance(server, pathlib.Path) else list(server)
+    cmd = [*launch, "--server_root", str(root),
            "--port", str(port), "--mcp_port", str(mcp_port)]
     return [*cmd, "--init"] if seed else cmd
+
+
+def npx_launch(version: str | None) -> list[str]:
+    """The published server through npx, for a machine with no built clone.
+
+    `--no-mcp-config`: the server would otherwise write a .mcp.json into its
+    working directory, the server root, which no session reads.
+    """
+    return ["npx", "-y", f"{NPX_PACKAGE}@{version or 'latest'}", "--no-mcp-config"]
 
 
 def truth_inside_model(cfg: config.Config) -> str | None:
@@ -549,6 +580,12 @@ def main(argv: list[str] | None = None) -> int:
         info = json.loads(pidfile.read_text())
         try:
             os.killpg(info["pid"], signal.SIGTERM)
+            # Wait for it to go. A start right after a stop that returned early
+            # met the old server still holding publisher.db's lock, and the new
+            # one failed to initialise while its port answered.
+            if not gone(info["pid"], 20):
+                os.killpg(info["pid"], signal.SIGKILL)
+                gone(info["pid"], 5)
             print(f"stopped pid {info['pid']} (port {info['port']})")
         except ProcessLookupError:
             print(f"pid {info['pid']} was not running")
@@ -557,16 +594,25 @@ def main(argv: list[str] | None = None) -> int:
 
     if a.warm_retrieval and not (a.environment and a.package):
         raise SystemExit("--warm-retrieval needs --environment and --package")
-    if not a.publisher_dir:
-        raise SystemExit("--publisher-dir is required to start. Build Publisher "
-                         "in this clone (bun run build), or set [paths] "
-                         "publisher_dir in the set's eval.toml")
-    # Resolved: it is also the child's cwd, so a relative path would be read
-    # twice over, once from here and once from inside itself.
-    a.publisher_dir = a.publisher_dir.resolve()
-    server = a.publisher_dir / "dist" / "server.mjs"
-    if not server.exists():
-        raise SystemExit(f"{server} not found; build Publisher first")
+    if a.publisher_dir:
+        # Resolved: it is also the child's cwd, so a relative path would be read
+        # twice over, once from here and once from inside itself.
+        a.publisher_dir = a.publisher_dir.resolve()
+        server: pathlib.Path | list[str] = a.publisher_dir / "dist" / "server.mjs"
+        if not server.exists():
+            raise SystemExit(f"{server} not found; build Publisher first")
+        cwd = a.publisher_dir
+    elif cfg is not None:
+        version = cfg.get("paths", "publisher_version")
+        server = npx_launch(version)
+        cwd = a.server_root.resolve()
+        print(f"no built Publisher clone: running {NPX_PACKAGE}@{version or 'latest'}"
+              + ("" if version else f". Pin it with [paths] publisher_version in "
+                 f"{cfg.file_hint}, so every run is answered by the same server"))
+    else:
+        raise SystemExit("--publisher-dir is required to start without --role. "
+                         "Build Publisher (bun run build), or pass --role and "
+                         "--set to run the published server through npx")
     for key, port in (("port", a.port), ("mcp_port", a.mcp_port)):
         if listening(port):
             fix = (f"change `{key}` under [{a.role}] in {cfg.file_hint}; every "
@@ -585,6 +631,9 @@ def main(argv: list[str] | None = None) -> int:
     changed, previous = (write_config(root, role_config(cfg, a.role))
                          if cfg is not None else (False, None))
     env = {**os.environ, "SERVER_ROOT": str(root)}
+    if cfg is not None and a.role == "model" and cfg.get("model", "versioning") is not None:
+        # Unset leaves the server's default (on, from 0.13).
+        env["PUBLISHER_PACKAGE_VERSIONING"] = "on" if cfg.versioned() else "off"
     if a.allow_proxy:
         env["PUBLISHER_ALLOW_PROXY_CONNECTIONS"] = "true"
     if a.trace_retrieval:
@@ -600,9 +649,11 @@ def main(argv: list[str] | None = None) -> int:
     if note:
         print(note)
     cmd = server_cmd(server, root, a.port, a.mcp_port, seed)
-    log = (root / "publisher.log").open("a")
+    logfile = root / "publisher.log"
+    log_start = logfile.stat().st_size if logfile.exists() else 0   # this start's lines follow
+    log = logfile.open("a")
     p = subprocess.Popen(
-        cmd, cwd=str(a.publisher_dir), stdout=log, stderr=log, env=env,
+        cmd, cwd=str(cwd), stdout=log, stderr=log, env=env,
         start_new_session=True)   # its own session: the shell's exit cannot reach it
     pidfile.write_text(json.dumps({"pid": p.pid, "port": a.port, "mcpPort": a.mcp_port,
                                    "startedAt": time.strftime("%Y-%m-%dT%H:%M:%SZ",
@@ -615,9 +666,20 @@ def main(argv: list[str] | None = None) -> int:
                 restore_config(root, previous)
             print(f"server exited with {p.returncode}; see {root / 'publisher.log'}")
             return 1
-        if alive(a.port):
-            text = (root / "publisher.log").read_text()
-            errs = [l for l in text.splitlines() if "load_errors=" in l]
+        mine = logfile.read_bytes()[log_start:].decode(errors="replace")
+        failed = [l for l in mine.splitlines() if "PUBLISHER_INIT_FAILED" in l]
+        if failed:
+            # The REST port answers before storage initialises, so a server that
+            # failed to start can still look alive. Its own signal says otherwise.
+            os.killpg(p.pid, signal.SIGTERM)
+            if changed:
+                restore_config(root, previous)
+            print(f"the server failed to initialise: {failed[-1].strip()[:400]}")
+            return 1
+        # PUBLISHER_READY is the server's own word that it serves; the REST port
+        # alone answers before storage has initialised.
+        if alive(a.port) and "PUBLISHER_READY" in mine:
+            errs = [l for l in mine.splitlines() if "load_errors=" in l]
             print(f"serving: http://localhost:{a.port}  mcp: http://localhost:{a.mcp_port}"
                   f"  pid {p.pid}  log {root / 'publisher.log'}")
             if errs and "load_errors=0" not in errs[-1]:

@@ -19,6 +19,79 @@ def record(*cells):
     return {"kind": "record_cell", "record_value": list(cells)}
 
 
+class PackageVersionTests(unittest.TestCase):
+    """Read off GET package (versionId, latestVersion) and GET versions/{id}."""
+
+    def read(self, responses):
+        def fake(base, path, timeout=30):
+            r = responses.get(path)
+            if isinstance(r, Exception):
+                raise r
+            return r
+        with unittest.mock.patch.object(publisher_rest, "get_json", side_effect=fake):
+            return publisher_rest.package_version("http://x", "e", "p")
+
+    def test_published_latest_with_its_hash(self):
+        got = self.read({
+            "api/v0/environments/e/packages/p": {"versionId": "1.2.0", "latestVersion": "1.2.0"},
+            "api/v0/environments/e/packages/p/versions/1.2.0":
+                {"id": "1.2.0", "latest": True, "contentHash": "h", "archiveStatus": "unarchive"}})
+        self.assertEqual(got, {"id": "1.2.0", "latest": True, "contentHash": "h", "archived": False})
+
+    def test_unversioned_package_has_no_id(self):
+        self.assertEqual(self.read({"api/v0/environments/e/packages/p": {"name": "p"}}), {"id": None})
+
+    def test_unreachable_server_is_empty(self):
+        self.assertEqual(self.read({"api/v0/environments/e/packages/p": OSError("refused")}), {})
+
+    def test_a_failed_version_read_keeps_the_id(self):
+        got = self.read({
+            "api/v0/environments/e/packages/p": {"versionId": "1.2.0", "latestVersion": "1.3.0"},
+            "api/v0/environments/e/packages/p/versions/1.2.0": OSError("404")})
+        self.assertEqual(got, {"id": "1.2.0", "latest": False, "contentHash": None, "archived": None})
+
+
+class ServedPackageDirTests(unittest.TestCase):
+    """A published version lives in <package>/<version>/; latest's is the one served."""
+
+    def setUp(self):
+        import tempfile, pathlib
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        (self.root / "p" / "1.0.1").mkdir(parents=True)
+        (self.root / "p" / "1.0.1" / "m.malloy").write_text("source: s is x")
+
+    def resolve(self, version_id):
+        def fake(base, path, timeout=30):
+            if path == "api/v0/projects":
+                return [{"name": "e", "location": str(self.root)}]
+            if path == "api/v0/environments/e/packages/p":
+                return {"versionId": version_id, "latestVersion": version_id}
+            raise OSError(path)
+        with unittest.mock.patch.object(publisher_rest, "get_json", side_effect=fake):
+            return (publisher_rest.served_package_dir("http://x", "e", "p"),
+                    publisher_rest.served_model_path("http://x", "e", "p", "m.malloy"))
+
+    def test_a_published_package_resolves_to_latest_s_directory(self):
+        d, m = self.resolve("1.0.1")
+        self.assertEqual(d, self.root / "p" / "1.0.1")
+        self.assertEqual(m, self.root / "p" / "1.0.1" / "m.malloy")
+
+    def test_build_metadata_maps_to_the_server_s_folder_name(self):
+        (self.root / "p" / "1.0.0_b1").mkdir()
+        d, _ = self.resolve("1.0.0+b1")
+        self.assertEqual(d, self.root / "p" / "1.0.0_b1")
+
+    def test_a_version_whose_folder_is_missing_is_none_not_the_root(self):
+        d, m = self.resolve("2.0.0")
+        self.assertIsNone(d)
+        self.assertIsNone(m)
+
+    def test_an_unversioned_package_is_its_own_directory(self):
+        d, m = self.resolve(None)
+        self.assertEqual(d, self.root / "p")
+        self.assertIsNone(m)
+
+
 class UncellTests(unittest.TestCase):
     def test_scalars_by_value_key(self):
         self.assertEqual(uncell({"string_value": "Levi's"}), "Levi's")
@@ -193,6 +266,49 @@ class PackageIdentityTests(unittest.TestCase):
             self.identity({"api/v0/status": status,
                            "api/v0/environments/env/packages/pkg": pkg}),
             {"sourceContentSha": "abc", "servedRevision": "r1"})
+
+class BuildCosts(unittest.TestCase):
+    def test_one_row_per_built_table_with_what_the_server_reported(self):
+        manifest = {"entries": {
+            "b@m": {"sourceName": "b", "rowCount": 10, "buildDurationMs": 400,
+                    "queryCostBytes": None, "storageDestinationName": "lake"},
+            "a@m": {"sourceName": "a", "origin": "preaggregate", "rowCount": 3,
+                    "buildDurationMs": None, "queryCostBytes": 2048},
+            "bad@m": {"sourceName": "bad", "error": "boom"}}}
+        got = publisher_rest.build_costs(manifest)
+        self.assertEqual([b["source"] for b in got], ["a", "b", "bad"])  # sorted
+        # A failed table is kept with its error: it cost a build and serves nothing.
+        self.assertEqual(got[2], {"source": "bad", "origin": "persist", "error": "boom"})
+        self.assertEqual((got[0]["origin"], got[0]["buildMs"], got[0]["scannedBytes"]),
+                         ("preaggregate", None, 2048))                  # null stays null
+        self.assertEqual((got[1]["origin"], got[1]["rows"], got[1]["storage"]),
+                         ("persist", 10, "lake"))
+
+    def test_serve_verdicts_are_one_row_per_table_and_say_which_do_not_serve(self):
+        raw = [{"sourceName": "r2", "origin": "rollup", "tier": "database", "verdict": "serves",
+                "message": "The rollup of `oi` at (category, region) serves from its table."},
+               {"sourceName": "r1", "origin": "materialize", "tier": "database", "verdict": "live",
+                "reason": "served_copy", "message": "m", "fixes": ["f"]}, "junk"]
+        got = publisher_rest.serve_verdicts(raw)
+        self.assertEqual([v["source"] for v in got], ["r1", "r2"])
+        self.assertEqual((got[0]["reason"], got[0]["fixes"]), ("served_copy", ["f"]))
+        self.assertNotIn("reason", got[1])
+
+    def test_no_manifest_is_no_builds(self):
+        for m in (None, {}, {"entries": None}, "x"):
+            self.assertEqual(publisher_rest.build_costs(m), [])
+
+
+class Auth(unittest.TestCase):
+    def test_a_token_is_sent_only_when_one_is_given(self):
+        import os
+        from unittest import mock
+        with mock.patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("EVAL_PUBLISHER_TOKEN", None)
+            self.assertEqual(publisher_rest.auth_headers(), {})
+        with mock.patch.dict(os.environ, {"EVAL_PUBLISHER_TOKEN": "t0k"}):
+            self.assertEqual(publisher_rest.auth_headers(), {"Authorization": "Bearer t0k"})
+
 
 if __name__ == "__main__":
     os.chdir(os.path.dirname(__file__))

@@ -103,6 +103,32 @@ An A/A is not a repeat in the sense the sampling rule forbids. It is a one-off
 calibration of the instrument, and the loop's whole acceptance rule rests on
 the constant it produces.
 
+## The check does this part
+
+`eval.py accept` applies the per-case half of all this by itself. It looks for
+a second run of the baseline: another complete run with the baseline's exact
+pins, the model's included. Two nights with no edit between them are one, so a
+set that runs every night usually has it for nothing. `--aa <run>` names one,
+and `--aa none` uses none.
+
+A case whose verdict differs between those two runs is **unstable**. Then:
+
+- An unstable failure is not a default target, and a named one is not required
+  to pass. It may pass tomorrow with nothing changed, so passing after the
+  edit shows nothing.
+- A regression on an unstable case does not fail the edit. It is listed.
+- An edit whose only targets are unstable is not accepted: there is nothing to
+  see it fix.
+
+With no second run the check prints `noise: NOT MEASURED` and every case
+counts, which is the old behaviour: stricter on regressions, and open to a fix
+that is really a coin landing the other way. This is why the first thing to do
+on a new set, or after any change to the judge or the answerer, is to run the
+baseline twice.
+
+The flip-count table above is still yours to read for a broad change. The
+check does not apply it.
+
 ## What CALIBRATION.md holds
 
 The file lives with the set, beside `cases.jsonl`, and holds one block per
@@ -151,6 +177,35 @@ retrieval and for nothing else, and the block records that.
 written before the harness recorded this would make the gate unusable rather
 than safe. It is not evidence that the arms matched.
 
+## Timings have a band too
+
+A query replay (`query-performance.md`) times queries rather than scoring
+answers, and timings move with nothing changed: a warm cache, a busy warehouse,
+another tenant. Two replays of one version, back to back, measure how far. Set
+`[performance] latency_band` in `eval.toml` from that, not from the 20% default,
+before you call a 25% speedup real. The floor (`--min-delta-ms`) keeps a 2 ms
+query that took 4 ms out of the count. Changed rows are never noise: they block,
+whatever the band.
+
+## A band belongs to the cases it was measured on
+
+A noise band measured on the whole set says nothing about a 15-case slice, and
+one measured on one slice says nothing about another. So:
+
+- A targeted run is judged by the per-case rules below: name the cases first,
+  then they flip, in two post-edit arms.
+- Quote an aggregate band for a slice only when it was measured on that same
+  slice (`flip_table.py --set <set> --slice <name> --calibration` records the
+  slice in the `CALIBRATION.md` block).
+
+**Comparison is per case.** `flip_table.py` sets a case aside, and lists it,
+when its `question_sha` or `golden_revision` differs between the two runs: that
+case was not the same case, and a flip across the edit is the edit. Every other
+case stays comparable, so a stored full run survives one case's key being
+fixed. This loosens nothing about the judge: the run-level pins (judge model,
+`rubricSha`, `judgePromptSha`, answerer model, retrieval mode) must still match
+for a band to be quoted.
+
 ## A targeted fix needs a targeted test
 
 The flip-count table is the right instrument for a broad change and the wrong
@@ -198,8 +253,9 @@ delivered means returned as a ranked entity, under a sibling source, or named
 in a returned source's documentation). It is measured on the agent's real
 search text against real questions, so it needs no hand-written terms. Read
 it within an arm, to attribute a failure; it moves with the answerer, so a
-cross-arm comparison of retrieval *itself* is not this loop's job -- that is
-the engine-side `eval-retrieval` skill, which ships to no customer.
+cross-arm comparison of retrieval *itself* is not what an answer run is for.
+To compare retrieval on fixed requests, with no answerer, replay them:
+`retrieval-replay.md`, beside this file.
 Coverage (can the model answer this at all) is a property of the model and its
 data and is never reported under a retrieval heading.
 

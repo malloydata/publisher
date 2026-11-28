@@ -492,6 +492,19 @@ class SelectingWhatToDiagnose(unittest.TestCase):
             len(excluded["holdout, withheld from diagnosis"]), 1,
             "a holdout failure is still withheld, and still non-passing")
 
+    def test_a_test_case_is_never_diagnosed_and_no_flag_lets_it_through(self):
+        events = [{"kind": "score", "qid": "t0", "sample": None, "phase": "baseline",
+                   "verdict": "no_match", "reason": "r"},
+                  {"kind": "score", "qid": "t1", "sample": None, "phase": "baseline",
+                   "verdict": "match", "reason": "ok"}]
+        cases = {"t0": {"qid": "t0", "split": "test"}, "t1": {"qid": "t1", "split": "test"}}
+        for include in (False, True):
+            failed, passed, _, excluded, excluded_passes = diagnose.select_cases(
+                events, cases, ("no_match",), include_holdout=include)
+            self.assertEqual((failed, passed), ([], []))
+            self.assertEqual(excluded["test, never diagnosed"], ["t0"])
+            self.assertEqual(excluded_passes["test, never diagnosed"], ["t1"])
+
     def test_only_records_what_it_dropped_as_an_exclusion(self):
         failed, _, _, excluded = self.select(
             self.scores(4), self.cases(4), only="q0,q1")
@@ -689,6 +702,27 @@ class NothingToDiagnose(unittest.TestCase):
         self.main()
         self.assertEqual((self.run / "clusters.jsonl").read_text(),
                          '{"clusterId": "c1"}\n')
+
+
+class Effort(unittest.TestCase):
+    def test_a_pass_that_took_far_more_calls_or_failed_queries_is_diagnosed_for_effort(self):
+        ev = [{"kind": "attempt", "qid": f"q{i}", "n_get_context": 2, "n_execute": 2} for i in range(5)]
+        ev += [{"kind": "attempt", "qid": "slow", "n_get_context": 5, "n_execute": 5},
+               {"kind": "attempt", "qid": "errs", "n_get_context": 1, "n_execute": 4, "n_execute_errors": 3},
+               {"kind": "attempt", "qid": "bit", "n_get_context": 3, "n_execute": 4},
+               {"kind": "attempt", "qid": "failed", "n_get_context": 9, "n_execute": 9}]
+        passed = [f"q{i}" for i in range(5)] + ["slow", "errs", "bit"]
+        got = diagnose.effortful(ev, passed)
+        self.assertEqual(sorted(got), ["errs", "slow"])
+        self.assertEqual(got["slow"], {"calls": 10, "median": 4, "errors": 0})
+        self.assertEqual(diagnose.effortful(ev, []), {})
+        # Advice that slows every case hides from the run's own median; the
+        # same cases in an earlier run show it.
+        slow_all = [{"kind": "attempt", "qid": f"q{i}", "n_get_context": 5, "n_execute": 5} for i in range(5)]
+        self.assertEqual(diagnose.effortful(slow_all, [f"q{i}" for i in range(5)]), {})
+        got = diagnose.effortful(slow_all, [f"q{i}" for i in range(5)], ev)
+        self.assertEqual(sorted(got), [f"q{i}" for i in range(5)])
+        self.assertEqual(got["q0"]["median"], 4)
 
 
 if __name__ == "__main__":

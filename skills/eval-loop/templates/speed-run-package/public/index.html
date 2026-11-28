@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Speed Run</title>
+<style>
+  :root {
+    --bg: #f7f7f5; --surface: #fff; --text: #1d1d1b; --text-2: #5f5e5a; --border: #e2e1dc;
+    --before: #a3a29c; --after: #2f6fb3; --bad: #b3261e; --good: #2e7d32;
+    --font: system-ui, -apple-system, "Segoe UI", sans-serif; --mono: ui-monospace, Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg: #161615; --surface: #1f1f1d; --text: #ecebe6; --text-2: #a3a29c; --border: #34332f;
+            --before: #6b6a64; --after: #6ea8e6; --bad: #f2b8b5; --good: #8fd19e; }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.45 var(--font); }
+  header, main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  header { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; align-items: end; }
+  h1 { margin: 0; font-size: 20px; } header p { margin: 4px 0 0; color: var(--text-2); }
+  select { font: inherit; padding: 6px 8px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); max-width: 100%; }
+  #kpis { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 12px; min-height: 92px; }
+  .kpi, .panel { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 14px; }
+  .kpi-label { color: var(--text-2); font-size: 12px; text-transform: uppercase; letter-spacing: .04em; }
+  .kpi-value { font-size: 24px; font-weight: 650; font-variant-numeric: tabular-nums; }
+  .panel { margin-top: 12px; } .panel h2 { margin: 0 0 8px; font-size: 14px; }
+  .blocked { border-color: var(--bad); } .blocked h2 { color: var(--bad); }
+  .row { display: grid; grid-template-columns: minmax(140px, 260px) 1fr 92px; gap: 8px; align-items: center;
+         padding: 6px 4px; border-bottom: 1px solid var(--border); cursor: pointer; }
+  .row:hover, .row[aria-expanded="true"] { background: var(--bg); }
+  .qid { overflow-wrap: anywhere; } .src { color: var(--text-2); font-size: 12px; }
+  .bars { display: grid; gap: 3px; } .bar { height: 9px; border-radius: 2px; min-width: 2px; }
+  .bar.before { background: var(--before); } .bar.after { background: var(--after); }
+  .ms { font-variant-numeric: tabular-nums; text-align: right; font-size: 12px; }
+  .faster { color: var(--good); } .slower, .rows_changed, .broke { color: var(--bad); }
+  .detail { grid-column: 1 / -1; font: 12px/1.4 var(--mono); white-space: pre-wrap; background: var(--bg);
+            padding: 8px; border-radius: 6px; overflow-wrap: anywhere; }
+  .legend { color: var(--text-2); font-size: 12px; margin-bottom: 6px; }
+  .legend span { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin: 0 4px 0 10px; vertical-align: middle; }
+  .is-error { color: var(--bad); } .muted { color: var(--text-2); padding: 12px 0; }
+</style>
+</head>
+<body>
+<header>
+  <div><h1>Speed run</h1><p>Each stored query, timed before and after. Rows first: a changed answer blocks.</p></div>
+  <label>Comparison <select id="pair" aria-label="Comparison"></select></label>
+</header>
+<main>
+  <div id="kpis"></div>
+  <section class="panel blocked" id="blocked-panel" hidden><h2>Answers changed: this blocks the edit</h2><div id="blocked"></div></section>
+  <section class="panel"><h2>Per query</h2>
+    <div class="legend">median ms<span style="background:var(--before)"></span>baseline<span style="background:var(--after)"></span>this replay</div>
+    <div id="queries"><div class="muted">Loading</div></div>
+  </section>
+</main>
+<script src="/sdk/publisher.js"></script>
+<script type="module" src="./app.js"></script>
+</body>
+</html>

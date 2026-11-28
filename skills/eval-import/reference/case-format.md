@@ -19,6 +19,7 @@ On the case:
 | `source` | how it arrived: the filename, or the log query | say `unknown` rather than guessing a provenance |
 | `golden` | see the classification table in `SKILL.md` | absent. A case with no golden is legitimate |
 | `expectedEntities` | almost never present | leave it out. Guessing which fields an answer needs invents a retrieval expectation nobody stated, and it scores as a retrieval miss forever. The one exception is a key you derived yourself (`SKILL.md`, Deriving a key yourself): then you are not guessing, you are recording what you used |
+| `searchTargets` | almost never present | leave it out on arrival, for the same reason. Propose it only when you derive a key yourself (`SKILL.md`, Proposing search targets) |
 
 `expectedEntities` is the one most worth leaving empty. A wrong `required` id
 cannot be delivered by any run, so it reads as a model failure on every case
@@ -63,7 +64,7 @@ trusting a name that looks familiar, and write down the mapping you used in
 | `sql`, `malloy`, `gold_query` | their derivation | Malloy: run it (`SKILL.md` step 3). SQL: keep it as evidence of how they got the number, but do not run it; derive the number in Malloy over the truth package instead. Either way, this is the field that upgrades a typed number into something checkable |
 | `criteria`, `rubric`, `assertions`, `must_include` | prose criteria | apply the query test in `SKILL.md` step 4 to EACH one, not to the field |
 | `id`, `case_id`, `uuid` | their id | keep it, prefixed. Two sets from one customer collide otherwise |
-| `difficulty`, `category`, `tags` | their own labels | keep as-is on the case for slicing. Never let one become `split` |
+| `difficulty`, `category`, `tags` | their own labels | keep as-is: copy them into the case's `tags` (a `category` of `joins` becomes the tag `joins`), so a slice in `slices.json` can select them. Never let one become `split` |
 
 A field you cannot map is a question for its author. Keep it verbatim under a
 `sourceFields` object on the case rather than discarding it or forcing it into
@@ -155,3 +156,20 @@ out by channel" is a shape nothing can settle with a query, so it became
 rubric prose and scores on day one; and "Up 12.4%" is a second figure the
 rubric now has to state consistently with the value, which
 `verify_goldens.py` reads the accepting clause for.
+
+## A question asked mid-conversation
+
+Two optional fields under `context`:
+
+- `context.priorQuestions`: the earlier questions a follow-up needs, oldest
+  first, at most three. A run answers them first, in the same session, and
+  judges only the case's own question. `eval.py build-set` writes it from what
+  production judging recorded in `depends_on`; write it by hand for a
+  hand-authored follow-up. The key answers the case's question as asked after
+  those, so derive it with them in mind.
+- `context.earlierMessages` and `context.nextMessage`: written only on a
+  judging set (`eval.py judge-sample pick`). The session's earlier user
+  messages, each with `question`, `kind` and an `answer` excerpt, and what the
+  person said next. The judge reads both. When you derive a key for a judging
+  case, read the earlier messages first: "all summers, year over year" after
+  "Ray-Ban summer sales" is about Ray-Ban.

@@ -67,6 +67,16 @@ intent):
 - the prediction: the rows the CONDUCTOR re-executed from the answerer's
   `final_query` (never the answerer's self-reported rows)
 - the relevant source and field definitions from the model (docs, join list)
+- when the question was asked mid-conversation: the EARLIER MESSAGES of that
+  conversation (each with a short excerpt of its answer), and sometimes WHAT
+  THE PERSON SAID NEXT
+
+A follow-up ("all summers, year over year") means nothing alone. Read it in the
+light of the earlier messages, and list in `depends_on` the numbers of the ones
+it cannot be understood without, directly or through another (`[]` when it
+stands alone). What the person said next is evidence about the answer (a
+correction, the same question asked again), never the verdict by itself: people
+also ask again because they want a chart, and correct answers they misread.
 
 Output, exactly this shape:
 
@@ -77,7 +87,8 @@ Output, exactly this shape:
   "why": "one short paragraph",
   "column_pairing": { "gold_col": "pred_col", ... },
   "gold_status": "verified | verified_benign | suspect | verified_wrong",
-  "gold_note": "why, when not verified"
+  "gold_note": "why, when not verified",
+  "depends_on": []
 }
 ```
 

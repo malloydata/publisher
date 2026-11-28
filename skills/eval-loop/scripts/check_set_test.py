@@ -54,6 +54,17 @@ class Report(unittest.TestCase):
         self.assertEqual(problems, [])
         self.assertIn("1 cases from 1 lines", notes)
 
+    def test_a_workload_only_run_needs_no_cases_but_a_bad_case_still_fails(self):
+        with mock.patch.object(check_set.serve, "listening", return_value=False):
+            for cases in (None, []):
+                problems, notes = check_set.report(a_set(MODEL, cases), workload_only=True)
+                self.assertEqual(problems, [])
+                self.assertIn("no cases: fine, this run times a query workload", notes)
+            problems, _ = check_set.report(a_set(MODEL, None))
+            self.assertIn("no cases.jsonl", "\n".join(problems))
+            problems, _ = check_set.report(a_set(MODEL, [{"question": "no qid"}]), workload_only=True)
+            self.assertTrue(problems)
+
     def test_every_gap_is_named_at_once(self):
         # No cases.jsonl, no [model] environment, a truth package named in
         # set.json with no [truth]: three scripts used to find these one by one.
@@ -63,6 +74,17 @@ class Report(unittest.TestCase):
         self.assertIn("no cases.jsonl", text)
         self.assertIn("no [model] environment", text)
         self.assertIn("has no [truth] section", text)
+
+    def test_a_model_served_elsewhere_needs_no_repo_and_no_truth(self):
+        # An agent computer serves the model itself: nothing to edit, nothing
+        # to re-derive keys with, and the run still scores against stored keys.
+        d = a_set('[model]\nenvironment = "e"\npackage = "p"\n'
+                  'publisher = "http://localhost:4000"\n', [CASE], truth="t")
+        problems, notes = self.report(d)
+        self.assertEqual(problems, [])
+        text = "\n".join(notes)
+        self.assertIn("no [model] repo: runs record no model git sha", text)
+        self.assertIn("runs score against the keys as stored", text)
 
     def test_a_truth_ref_that_leaves_the_package_is_a_problem(self):
         d = a_set(MODEL + '[truth]\npackage_dir = "../truth"\n', [CASE], truth="t",
@@ -78,12 +100,29 @@ class Report(unittest.TestCase):
         pkg = d.parent / "pkg"
         (pkg / "data").mkdir()
         (pkg / "data" / "u.parquet").write_text("")
-        (pkg / "m.malloy").write_text("source: u is duckdb.table('data/u.parquet')\n")
+        (pkg / "data" / "v-01.parquet").write_text("")
+        (pkg / "m.malloy").write_text("source: u is duckdb.table('data/u.parquet')\n"
+                                      "source: v is duckdb.table('data/v-*.parquet')\n")
         with mock.patch("builtins.print"):
             check_set.init_truth_package.main(
                 ["--package", str(pkg), "--out", str(d.parent / "truth"), "--name", "t"])
         problems, _ = self.report(d)
         self.assertEqual(problems, [])
+
+    def test_no_clone_is_a_note_naming_the_release_npx_will_run(self):
+        d = a_set(MODEL + '[paths]\npublisher_version = "0.12.5"\n', [CASE])
+        with mock.patch.object(check_set.config.Config, "publisher_dir", return_value=None):
+            problems, notes = self.report(d)
+        self.assertEqual(problems, [])
+        self.assertTrue(any("@malloy-publisher/server@0.12.5" in n for n in notes))
+
+    def test_a_store_inside_the_model_repo_is_a_problem(self):
+        d = a_set(MODEL, [CASE])
+        with mock.patch.object(check_set, "git_toplevel", return_value=d.parent):
+            (d / "eval.toml").write_text((d / "eval.toml").read_text()
+                                         + f'[store]\npath = "{d.parent / "runs-here"}"\n')
+            problems, _ = self.report(d)
+        self.assertTrue(any("never go in git" in p for p in problems), problems)
 
     def test_eval_toml_and_set_json_naming_two_packages_is_a_problem(self):
         d = a_set(MODEL, [CASE])
@@ -116,6 +155,16 @@ class Report(unittest.TestCase):
             f"model port 4811 is in use by another process. Fix: change "
             f"`port` under [model] in {d / 'eval.toml'}"])
 
+
+    def test_a_server_the_set_names_by_url_is_not_a_port_problem(self):
+        # `cred dev` serves the model through a hosted connection: the set
+        # names its URL, and nothing here started it or binds its ports.
+        d = a_set(MODEL + 'publisher = "http://localhost:4811"\n', [CASE])
+        with mock.patch.object(check_set.serve, "listening", return_value=True):
+            problems, notes = check_set.report(d)
+        self.assertEqual(problems, [])
+        self.assertTrue(any("http://localhost:4811" in n and "not started by" in n
+                            for n in notes), notes)
 
 if __name__ == "__main__":
     unittest.main()

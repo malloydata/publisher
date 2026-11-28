@@ -46,7 +46,9 @@ swallow.
 from __future__ import annotations
 
 import json
+import os
 import pathlib
+import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -57,6 +59,16 @@ from typing import Any
 # scalars while always naming the value key.
 SCALAR_KEYS = ("number_value", "string_value", "boolean_value", "date_value",
                "timestamp_value", "json_value")
+
+
+def auth_headers() -> dict[str, str]:
+    """A bearer token for a hosted Publisher, from EVAL_PUBLISHER_TOKEN.
+
+    A local Publisher takes none, so the variable is unset there. A hosted one
+    (a Credible environment's data plane) answers 401 without it. The token is
+    read from the environment and never printed or written."""
+    tok = os.environ.get("EVAL_PUBLISHER_TOKEN")
+    return {"Authorization": f"Bearer {tok}"} if tok else {}
 
 
 def _query_url(base: str, environment: str, package: str, model: str) -> str:
@@ -119,7 +131,7 @@ def query(base: str, environment: str, package: str, model: str, malloy: str,
     req = urllib.request.Request(
         _query_url(base, environment, package, model),
         data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"})
+        headers={"Content-Type": "application/json", **auth_headers()})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return rows_from_result(json.loads(r.read().decode()))
 
@@ -142,8 +154,184 @@ def try_query(base: str, environment: str, package: str, model: str,
         return [], f"{exc}"[:300] or exc.__class__.__name__
 
 
+def timed_query(base: str, environment: str, package: str, model: str,
+                malloy: str, timeout: int = 180,
+                givens: dict[str, Any] | None = None,
+                version: str | None = None) -> dict[str, Any]:
+    """Run a Malloy query and keep what the server says about how it ran. Never raises.
+
+    `{"rows", "error", "executionTimeMs", "servedFrom", "queryCostBytes",
+    "path", "roundTripMs"}`. `executionTimeMs` is the server's own figure:
+    compile, authorize, routing and the warehouse round trip, without
+    serialization or transport. `roundTripMs` is what this caller waited, so it
+    reads higher. `path` is the server's path report (0.13 and later): which
+    table answered (`servedBy`, kind `live` for none), each table it passed
+    over and why (`considered`), and the query's shape (`query`: source,
+    grouped-by and filtered-by fields, measures). It is the only per-query
+    proof that a table answered; `servedFrom` names only the tier (`storage`,
+    `database`, `live_fallback`), and is null on an older server.
+
+    `version` pins a published package version (`versionId` on the request),
+    which REST can do and the MCP tools cannot.
+    """
+    body: dict[str, Any] = {"query": malloy, "compactJson": True}
+    if givens:
+        body["givens"] = givens
+    if version:
+        body["versionId"] = version
+    req = urllib.request.Request(
+        _query_url(base, environment, package, model),
+        data=json.dumps(body).encode(),
+        headers={"Content-Type": "application/json", **auth_headers()})
+    out: dict[str, Any] = {"rows": [], "error": None, "executionTimeMs": None,
+                           "servedFrom": None, "queryCostBytes": None, "path": None,
+                           "roundTripMs": None}
+    t0 = time.perf_counter()
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as r:
+            payload = json.loads(r.read().decode())
+    except urllib.error.HTTPError as exc:
+        out["error"] = f"HTTP {exc.code}: {exc.read().decode()[:300]}"
+        return out
+    except Exception as exc:                        # noqa: BLE001
+        out["error"] = f"{exc}"[:300] or exc.__class__.__name__
+        return out
+    out["roundTripMs"] = round((time.perf_counter() - t0) * 1000, 1)
+    try:
+        out["rows"] = rows_from_result(payload)
+    except (ValueError, TypeError) as exc:
+        out["error"] = f"unreadable result: {exc}"[:300]
+    if isinstance(payload, dict):
+        for k in ("executionTimeMs", "servedFrom", "queryCostBytes", "path"):
+            out[k] = payload.get(k)
+    return out
+
+
+def materialization_state(base: str, environment: str, package: str,
+                          version: str | None = None) -> dict[str, Any]:
+    """What the package persists and whether its tables are bound. Never raises.
+
+    Read from `GET …/build-plan` (the persist sources a build makes, and the
+    ones it refuses), `GET …/status` (`manifestBindingStatus`,
+    `manifestEntryCount`, `storageServeBindings`) and the newest
+    `GET …/materializations` entry, whose manifest gives `builds`: what each
+    built table cost (`build_costs`). A key the server could not answer is absent.
+
+    `persistSources` with `bound` false is the state to warn about: the model
+    declares persisted tables, and queries still compute live, because no build
+    ran since the last load or reload.
+    """
+    pkg_path = (f"api/v0/environments/{urllib.parse.quote(environment)}"
+                f"/packages/{urllib.parse.quote(package)}")
+    q = f"?versionId={urllib.parse.quote(version)}" if version else ""
+    out: dict[str, Any] = {}
+    try:
+        plan = get_json(base, f"{pkg_path}/build-plan{q}")
+        if isinstance(plan, dict):
+            out["persistSources"] = sorted(str(k).split("@")[0]
+                                           for k in (plan.get("sources") or {}))
+            out["refusedSources"] = sorted(str(k).split("@")[0]
+                                           for k in (plan.get("refusedSources") or {}))
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        st = get_json(base, f"{pkg_path}/status{q}")
+        if isinstance(st, dict):
+            for k in ("manifestBindingStatus", "manifestEntryCount"):
+                if k in st:
+                    out[k] = st[k]
+            ssb = st.get("storageServeBindings")
+            if isinstance(ssb, list):
+                out["storageServeBindings"] = len(ssb)
+            verdicts = serve_verdicts(st.get("serveVerdicts"))
+            if verdicts:
+                out["serveVerdicts"] = verdicts
+                out["notServing"] = sorted(v["source"] for v in verdicts
+                                           if v["verdict"] != "serves")
+    except Exception:                                   # noqa: BLE001
+        pass
+    try:
+        runs = get_json(base, f"{pkg_path}/materializations?limit=1"
+                        + (f"&versionId={urllib.parse.quote(version)}" if version else ""))
+        if isinstance(runs, list) and runs and isinstance(runs[0], dict):
+            m = runs[0]
+            out["latestMaterialization"] = {k: m.get(k) for k in
+                                            ("id", "status", "completedAt")}
+            if not isinstance(m.get("manifest"), dict) and m.get("id"):
+                # A listing may leave the manifest out; the record itself has it.
+                full = get_json(base, f"{pkg_path}/materializations/"
+                                      f"{urllib.parse.quote(str(m['id']))}{q}")
+                m = full if isinstance(full, dict) else m
+            builds = build_costs(m.get("manifest"))
+            if builds:
+                out["builds"] = builds
+    except Exception:                                   # noqa: BLE001
+        pass
+    if "serveVerdicts" in out:
+        # Per table, and it covers v2 tables, which the package-wide binding
+        # status does not.
+        out["bound"] = not out["notServing"]
+    elif "persistSources" in out:
+        out["bound"] = (out.get("manifestBindingStatus") == "bound"
+                        or bool(out.get("storageServeBindings")))
+    return out
+
+
+def serve_verdicts(raw: Any) -> list[dict[str, Any]]:
+    """Whether each table the package declares serves queries, from `…/status`
+    (or a dry-run publish): one row per table with `source`, `origin`
+    (`persist`, `materialize`, `rollup`, `view`, `query`), `tier`, `verdict`
+    (`serves`, `awaiting_build`, `live`), `reason` when it is live, and the
+    server's `message`. A `serves` table can still be passed over for one
+    query; only the path report says which table answered a query."""
+    out = []
+    for v in raw if isinstance(raw, list) else []:
+        if not isinstance(v, dict):
+            continue
+        row = {"source": v.get("sourceName"), "origin": v.get("origin"),
+               "tier": v.get("tier"), "verdict": v.get("verdict"),
+               "message": v.get("message")}
+        for k in ("reason", "notServedIn", "fixes"):
+            if v.get(k):
+                row[k] = v[k]
+        out.append(row)
+    return sorted(out, key=lambda r: str(r["source"]))
+
+
+def build_costs(manifest: Any) -> list[dict[str, Any]]:
+    """What each built table cost, from a materialization's manifest.
+
+    One row per source the build made a table for: `rows`, `buildMs` (wall
+    clock for that one table) and `scannedBytes` (warehouse bytes the build
+    read, which is the recurring cost of keeping the source materialized).
+    Each is null when the server did not report it: a reused table was not
+    built again, and DuckDB reports no bytes. Null is not zero. The server
+    reports no size on disk, so rows is the only size here.
+    """
+    entries = (manifest or {}).get("entries") if isinstance(manifest, dict) else None
+    out = []
+    for e in (entries or {}).values() if isinstance(entries, dict) else []:
+        if not isinstance(e, dict):
+            continue
+        if e.get("error"):
+            # A table that failed to build costs a build and serves nothing:
+            # kept, so a failed candidate is never read as free.
+            out.append({"source": e.get("sourceName"), "origin": e.get("origin") or "persist",
+                        "error": str(e.get("error"))[:300]})
+            continue
+        out.append({"source": e.get("sourceName"),
+                    "origin": e.get("origin") or "persist",
+                    "storage": e.get("storageDestinationName"),
+                    "rows": e.get("rowCount"),
+                    "buildMs": e.get("buildDurationMs"),
+                    "scannedBytes": e.get("queryCostBytes"),
+                    "dataAsOf": e.get("dataAsOf")})
+    return sorted(out, key=lambda b: str(b["source"]))
+
+
 def get_json(base: str, path: str, timeout: int = 30) -> Any:
-    with urllib.request.urlopen(f"{base.rstrip('/')}/{path.lstrip('/')}",
+    with urllib.request.urlopen(urllib.request.Request(
+            f"{base.rstrip('/')}/{path.lstrip('/')}", headers=auth_headers()),
                                 timeout=timeout) as resp:
         return json.loads(resp.read())
 
@@ -153,13 +341,28 @@ def served_package_dir(base: str, environment: str,
     """The directory the running Publisher serves this package FROM, or None.
 
     A host commonly serves a copy rather than your working tree, so this is the
-    only path whose bytes are the ones answering queries.
+    only path whose bytes are the ones answering queries. A published version
+    lives one level down, in `<package>/<version>/`, and the version answering
+    a request that names none is `latest`: that directory is the one returned,
+    or None when it is not there. Without it a versioned package's model was
+    never found, and a run lost its snapshot and its re-execution with nothing
+    said.
     """
     try:
         for proj in get_json(base, "api/v0/projects"):
             if proj.get("name") == environment and proj.get("location"):
                 p = pathlib.Path(proj["location"]) / package
-                return p if p.is_dir() else None
+                if not p.is_dir():
+                    return None
+                vid = package_version(base, environment, package).get("id")
+                if not vid:
+                    return p
+                # The server's `versionDirName` (semver.ts): a version's
+                # folder is its id with every `+` made `_`. A missing folder
+                # is None, not the package root, whose bytes are not the
+                # version answering queries.
+                v = p / vid.replace("+", "_")
+                return v if v.is_dir() else None
     except (OSError, ValueError):   # unreachable or non-JSON: absence is reported
         return None
     return None
@@ -195,13 +398,57 @@ def served_model_path(base: str, environment: str, package: str,
     judge shown the working tree may be reading a model the run never used.
     """
     try:
-        for proj in get_json(base, "api/v0/projects"):
-            if proj.get("name") == environment and proj.get("location"):
-                p = pathlib.Path(proj["location"]) / package / model_path
-                return p if p.exists() else None
+        root = served_package_dir(base, environment, package)
     except Exception:            # noqa: BLE001 - absence is reported, not fatal
         return None
-    return None
+    if root is None:
+        return None
+    p = root / model_path
+    return p if p.exists() else None
+
+
+def package_version(base: str, environment: str, package: str) -> dict[str, Any]:
+    """The published version answering a request that names none, i.e. `latest`.
+
+    `{"id", "latest", "contentHash", "archived"}`, read from `GET …/packages/{pkg}`
+    (`versionId`, `latestVersion`) and `GET …/versions/{id}` (`contentHash`).
+    `{"id": None}` for a package with no published versions, which is every
+    package unless the server runs with `PUBLISHER_PACKAGE_VERSIONING=on` and
+    the package was published. `{}` when the server cannot be read.
+
+    `contentHash` covers every file in the version except `.git`, so it is the
+    version's identity; `id` is the name a person uses for it.
+    """
+    pkg_path = (f"api/v0/environments/{urllib.parse.quote(environment)}"
+                f"/packages/{urllib.parse.quote(package)}")
+    try:
+        d = get_json(base, pkg_path)
+    except Exception:                                   # noqa: BLE001
+        return {}
+    vid = d.get("versionId") if isinstance(d, dict) else None
+    if not isinstance(vid, str) or not vid:
+        return {"id": None}
+    out: dict[str, Any] = {"id": vid, "latest": vid == d.get("latestVersion"),
+                           "contentHash": None, "archived": None}
+    try:
+        v = get_json(base, f"{pkg_path}/versions/{urllib.parse.quote(vid)}")
+        out["contentHash"] = v.get("contentHash")
+        out["latest"] = bool(v.get("latest", out["latest"]))
+        out["archived"] = v.get("archiveStatus") == "archive"
+    except Exception:                                   # noqa: BLE001
+        pass
+    return out
+
+
+def package_versions(base: str, environment: str, package: str) -> list[dict[str, Any]]:
+    """Every version the package holds, highest first, archived ones included
+    (`GET …/packages/{pkg}/versions`). [] when unversioned or unreachable."""
+    try:
+        rows = get_json(base, f"api/v0/environments/{urllib.parse.quote(environment)}"
+                              f"/packages/{urllib.parse.quote(package)}/versions")
+    except Exception:                                   # noqa: BLE001
+        return []
+    return [r for r in rows if isinstance(r, dict)] if isinstance(rows, list) else []
 
 
 def package_identity(base: str, environment: str, package: str) -> dict[str, str]:
@@ -216,8 +463,9 @@ def package_identity(base: str, environment: str, package: str) -> dict[str, str
 
     Measured on a live server: bumping `version` in publisher.json does not move
     `sourceContentSha`, and neither does adding a non-model file to the package
-    directory. So `publisher.json` version pins nothing (nothing reads it) and a
-    set of goldens living inside the package needs its own hash.
+    directory. On an unversioned package `publisher.json`'s version pins
+    nothing; on a published one, `package_version` reads the version and its
+    `contentHash`, which covers every file.
     """
     keys = ("sourceContentSha", "servedRevision")
     pkg_path = (f"api/v0/environments/{urllib.parse.quote(environment)}"

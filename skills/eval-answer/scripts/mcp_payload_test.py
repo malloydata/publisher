@@ -11,7 +11,7 @@ are now `delivered, wrong` and `not retrieved`.
 """
 import unittest
 
-from mcp_payload import entity_hits, entity_ids, search_terms
+from mcp_payload import entity_hits, entity_ids, search_targets, search_terms
 
 FLAT = {"results": [
     {"kind": "measure", "name": "total_sales_2022", "source": "order_items",
@@ -109,6 +109,23 @@ class SearchTerms(unittest.TestCase):
     def test_a_request_with_no_terms_yields_none(self):
         self.assertEqual(search_terms({"scopes": [{"package": "ecommerce"}]}), [])
         self.assertEqual(search_terms({"query": "  "}), [])
+
+
+class SearchTargets(unittest.TestCase):
+    def test_every_target_is_kept_as_sent_including_a_bare_one(self):
+        # `search_terms` drops the bare target and flattens the rest; this is
+        # the request target by target, which score_targets pairs with goldens.
+        self.assertEqual(
+            search_targets({"search_targets": [
+                {"target_type": "dimension", "search_text": " category ",
+                 "example_values": ["Outerwear"]},
+                {"target_type": "source"}]}),
+            [{"target_type": "dimension", "search_text": "category",
+              "example_values": ["Outerwear"]},
+             {"target_type": "source", "search_text": None}])
+
+    def test_the_query_string_convention_has_no_targets(self):
+        self.assertEqual(search_targets({"query": "total sales"}), [])
 
 
 class EntityIds(unittest.TestCase):
@@ -281,6 +298,17 @@ class EntityHits(unittest.TestCase):
              "entities": [{"entity_id": "measure:f:x", "relevance": 0.1}]}]}
         ids = [h["entity_id"] for h in entity_hits(dup)]
         self.assertEqual(ids.count("measure:f:x"), 1)
+
+    def test_a_card_that_states_its_own_attribution_carries_it(self):
+        """A host that attributes source cards says so on the card; Publisher's card stays unattributed."""
+        body = {"sources": [
+            {"source_info": {"resource_id": {"source": "orders"}}, "relevance": 0.9,
+             "matched_targets": [{"search_text": "order facts", "relevance": 0.9}], "entities": []},
+            {"source_info": {"resource_id": {"source": "customers"}}, "entities": []}]}
+        h = {x["entity_id"]: x for x in entity_hits(body)}
+        self.assertEqual((h["source:orders:orders"]["relevance"], h["source:orders:orders"]["matched_targets"]),
+                         (0.9, [{"search_text": "order facts", "relevance": 0.9}]))
+        self.assertIsNone(h["source:customers:customers"]["matched_targets"])
 
     def test_an_empty_payload_is_no_hits(self):
         self.assertEqual(entity_hits({}), [])

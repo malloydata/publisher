@@ -1,0 +1,33 @@
+// The options a speed simulation found (skills/eval-loop/scripts/simulate.py).
+// Every number is a prediction; `tier` says how it was made (`estimate` from
+// the replay alone, `dry-run` from the server's build plan) and
+// assumptions.csv says what was assumed.
+
+#(doc) One option: a set of tables to add, with its predicted metrics against the objective
+source: options is duckdb.table('options.csv') extend {
+  primary_key: option
+  dimension:
+    #(doc) true when the option meets every limit in the objective
+    meets_objective is feasible = 'yes'
+  measure:
+    #(doc) Options simulated
+    option_count is count()
+}
+
+#(doc) One query under one option: its time now and its predicted time, and whether a table would answer it
+source: predictions is duckdb.table('predictions.csv') extend {
+  join_one: options with option
+  dimension:
+    #(doc) Time this query would save in a day: the time saved per run by how often it runs
+    saved_ms is (before_ms - predicted_ms) * `count`
+  measure:
+    #(doc) Queries
+    query_count is count()
+    #(doc) Queries a table would answer
+    answered_count is count() { where: covered = 'yes' }
+    #(doc) Time saved in a day across these queries, in milliseconds
+    total_saved_ms is saved_ms.sum()
+}
+
+#(doc) What the simulation assumed and the objective it scored against, one line each
+source: assumptions is duckdb.table('assumptions.csv')

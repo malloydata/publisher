@@ -61,6 +61,7 @@ from agent_harness import (NO_EDITS, NO_SHELL, default_manifest,  # noqa: E402
                            manifest_skills, skills_roots, spawn_agent)
 import config  # noqa: E402
 import ledger  # noqa: E402
+import slices  # noqa: E402
 import cluster_failures  # noqa: E402
 import golden_rows  # noqa: E402
 import score_retrieval  # noqa: E402
@@ -152,6 +153,9 @@ def evidence_for(qid: str, case: dict[str, Any],
     for c in calls:
         if c.get("tool") != "get_context":
             continue
+        # None means the response was never logged: not measured, which is
+        # different from a search that returned nothing.
+        measured = c.get("rankedSummary") is not None
         summary = c.get("rankedSummary") or {}
         asked.append({"targets": c.get("targets"),
                       # Without this a narrow scope is invisible, and a miss it
@@ -160,7 +164,7 @@ def evidence_for(qid: str, case: dict[str, Any],
                       # about a call scoped to one source, and charged the miss
                       # to retrieval on that premise.
                       "scopes": c.get("scopes"),
-                      "returnedInRankOrder": summary.get("entityIds") or [],
+                      "returnedInRankOrder": (summary.get("entityIds") or []) if measured else None,
                       "resultCount": summary.get("resultCount"),
                       "error": c.get("error")})
 
@@ -218,6 +222,8 @@ EVIDENCE FROM THE RUN
 
 In `getContextCalls`, `targets` is what the agent searched for, `scopes` is
 the scope it searched UNDER, and `returnedInRankOrder` is what came back.
+A `returnedInRankOrder` of null means the response was not logged, so what
+came back is unknown: do not read it as a search that returned nothing.
 
 **If `passedInAnotherArm` is present, start there.** Another run of the SAME
 model answered this question correctly. That is a matched pair: same question,
@@ -262,6 +268,7 @@ the analysis inside it is.
 def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
                  a: argparse.Namespace, art: pathlib.Path, *,
                  answered_correctly: bool = False,
+                 effort: dict[str, Any] | None = None,
                  passed_elsewhere: dict[str, Any] | None = None) -> dict[str, Any]:
     d = art / qid
     out = d / "diagnosis.json"
@@ -280,6 +287,14 @@ def diagnose_one(qid: str, case: dict[str, Any], events: list[dict[str, Any]],
                     "answer that is right without the model's own entity is "
                     "right for now, not right by design.\n"
                     if answered_correctly else "")
+    if effort:
+        correct_line = (f"\nTHIS ANSWER WAS CORRECT, but it took {effort['calls']} tool "
+                        f"calls (against {effort['median']} for the yardstick: the same "
+                        f"case in --compare-run, else this run's median) and {effort['errors']} failed queries. Diagnose the "
+                        f"EFFORT only: what sent the agent the wrong way before it found "
+                        f"the answer. Quote the doc, skill instruction or name that misled "
+                        f"it (code MISLED, owner where that text lives), or say nothing "
+                        f"misled it (code STUMBLED). Do NOT look for a wrong number.\n")
     platform = a.target == "platform"
     scope_line = ""
     if platform and a.scope:
@@ -581,6 +596,40 @@ def cluster(issues: list[dict[str, Any]], a: argparse.Namespace,
     return res
 
 
+EFFORT_MIN_CALLS = 8
+EFFORT_FACTOR = 2
+EFFORT_ERRORS = 3
+
+
+def calls_of(events: list[dict[str, Any]]) -> dict[str, int]:
+    return {e["qid"]: (e.get("n_get_context") or 0) + (e.get("n_execute") or 0)
+            for e in events if e.get("kind") == "attempt" and e.get("qid")}
+
+
+def effortful(events: list[dict[str, Any]], passed: list[str],
+              before: list[dict[str, Any]] | None = None) -> dict[str, dict[str, Any]]:
+    """Passing cases that took far more effort than they should have: at least
+    EFFORT_FACTOR times the yardstick and EFFORT_MIN_CALLS tool calls, or
+    EFFORT_ERRORS failed queries. The yardstick is the same case's calls in an
+    earlier run (`before`, the --compare-run), when it has one, because advice
+    that slows every case also raises the run's own median; otherwise the
+    median of this run's passes. qid -> {calls, median, errors}."""
+    att = {e["qid"]: e for e in events if e.get("kind") == "attempt" and e.get("qid") in passed}
+    calls = {q: (e.get("n_get_context") or 0) + (e.get("n_execute") or 0) for q, e in att.items()}
+    if not calls:
+        return {}
+    ordered = sorted(calls.values())
+    median = ordered[len(ordered) // 2]
+    earlier = calls_of(before or [])
+    out = {}
+    for q, n in calls.items():
+        errors = att[q].get("n_execute_errors") or 0
+        yard = earlier.get(q, median)
+        if (n >= EFFORT_MIN_CALLS and n >= EFFORT_FACTOR * max(yard, 1)) or errors >= EFFORT_ERRORS:
+            out[q] = {"calls": n, "median": yard, "errors": errors}
+    return out
+
+
 def select_cases(events: list[dict[str, Any]],
                  cases: dict[str, dict[str, Any]],
                  want_verdicts: set[str] | tuple[str, ...],
@@ -634,6 +683,16 @@ def select_cases(events: list[dict[str, Any]],
             # says which, and none of them is a model failure.
             exclude(f"unscored ({e.get('reason') or 'no reason recorded'})",
                     qid)
+        elif case.get("split") == "test":
+            # Never diagnosed, and no flag makes it so. `test` is the split the
+            # reported number comes from: a diagnosis of one of its failures is
+            # read by the improve step, and then the number has been tuned on.
+            # Holdout can be spent by choice (--include-holdout); this cannot.
+            if verdict == "match":
+                excluded_passes.setdefault(
+                    "test, never diagnosed", []).append(qid)
+            else:
+                exclude("test, never diagnosed", qid)
         elif case.get("split") == "holdout" and not include_holdout:
             # Ahead of the verdict checks, beside contamination and for the
             # same reason: what split a case is on does not depend on how it
@@ -741,6 +800,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--timeout", type=int, default=900)
     ap.add_argument("--retries", type=int, default=2)
     ap.add_argument("--only", default=None, help="comma-separated qids")
+    slices.add_arguments(ap)
     ap.add_argument("--verdicts", default="no_match",
                     help="comma-separated verdicts to diagnose. A near_match "
                          "that is STABLE across two arms is a coverage "
@@ -754,6 +814,11 @@ def main(argv: list[str] | None = None) -> int:
                          "findings -- the answer was right by another route -- "
                          "so this is an opt-out for a run that only wants "
                          "answer failures, not a default.")
+    ap.add_argument("--no-effort", action="store_true",
+                    help="do not diagnose a case that answered correctly but "
+                         "took far more tool calls or failed queries than the "
+                         "run's other passing cases. Those usually point at a "
+                         "doc or skill that misled the agent.")
     ap.add_argument("--include-holdout", action="store_true",
                     help="diagnose holdout cases too. Holdout is normally "
                          "withheld so the acceptance check keeps something "
@@ -847,8 +912,16 @@ def main(argv: list[str] | None = None) -> int:
               "may not be the version this run measured. Pass --target-version "
               "or --scope ENV/PACKAGE@VERSION.")
 
+    if run_meta.get("phase") == "query-replay":
+        # Timings, not verdicts: every finding is read off the replay, so no
+        # agent runs and none of the flags above apply.
+        import perf_findings
+        perf_findings.report(a.run, perf_findings.write(a.run))
+        return 0
+
     events = read_jsonl(a.run / "events.jsonl")
     cases = {c["qid"]: c for c in read_jsonl(a.set_dir / "cases.jsonl")}
+    slices.narrow(a, a.set_dir, list(cases.values()))
     codes = skill_codes()
 
     # Dev failures only. A holdout case the improve step never saw is the only
@@ -884,7 +957,12 @@ def main(argv: list[str] | None = None) -> int:
     # why did the model not deliver what the answer needed. They are told
     # apart on the way in, so the prompt can say the answer was right, and on
     # the way out, so a reader never mistakes one for a wrong number.
-    to_diagnose = failed + retrieval_only
+    before = (read_jsonl(a.compare_run / "events.jsonl")
+              if a.compare_run and (a.compare_run / "events.jsonl").is_file() else None)
+    effort = {} if a.no_effort or a.limit is not None or a.only else effortful(events, passed, before)
+    effort = {q: v for q, v in effort.items() if q not in retrieval_only
+              and (cases.get(q) or {}).get("split") not in ("test", "holdout")}
+    to_diagnose = failed + retrieval_only + sorted(effort)
     if not to_diagnose:
         print("no diagnosable failures in this run")
         # An empty clusters.jsonl records "diagnosed, nothing to cluster", so
@@ -900,6 +978,8 @@ def main(argv: list[str] | None = None) -> int:
     art.mkdir(parents=True, exist_ok=True)
     extra = (f" + {len(retrieval_only)} that answered correctly without a "
              f"required entity" if retrieval_only else "")
+    if effort:
+        extra += f" + {len(effort)} right but far more effort than the rest"
     print(f"tier 1: {len(failed)} failed dev cases{extra}, {a.model}, "
           f"{a.parallel} at a time  ({len(codes)} codes in the skill)")
 
@@ -931,6 +1011,7 @@ def main(argv: list[str] | None = None) -> int:
     with futures.ThreadPoolExecutor(max_workers=a.parallel) as ex:
         fut = {ex.submit(diagnose_one, q, cases[q], events, a, art,
                          answered_correctly=q in retrieval_only,
+                         effort=effort.get(q),
                          passed_elsewhere=other_arm.get(q)): q
                for q in to_diagnose}
         for i, f in enumerate(futures.as_completed(fut), 1):
@@ -946,7 +1027,8 @@ def main(argv: list[str] | None = None) -> int:
             else:
                 obj["_invalid"] = validate(obj, codes)
                 tag = "=" if obj.get("_cached") else ("!" if obj["_invalid"] else ".")
-                mark = " (answered correctly)" if q in retrieval_only else ""
+                mark = (" (answered correctly)" if q in retrieval_only
+                        else " (right, far more effort)" if q in effort else "")
                 print(f"  [{i}/{len(to_diagnose)}] {tag} {q}{mark} "
                       f"{obj.get('component')}/{obj.get('primary_code')} "
                       f"-> {obj.get('owner')}"
@@ -1063,6 +1145,7 @@ def main(argv: list[str] | None = None) -> int:
     invalid = [i for i in good if i.get("_invalid")]
     spend = sum(i.get("cost_usd") or 0 for i in issues) + \
         (clusters.get("_cost_usd") or 0)
+    ledger.update_run(a.run, diagnoseCostUsd=round(spend, 4))
     print(f"\n{len(good)}/{len(to_diagnose)} diagnosed, "
           f"{len(clusters.get('clusters', []))} clusters, "
           f"{len(new) // 2} issues in {ev_path}")

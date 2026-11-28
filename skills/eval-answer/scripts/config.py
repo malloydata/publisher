@@ -19,6 +19,12 @@ the servers and paths every step of a run needs:
     [paths]
     workdir = "~/.malloy-eval/storefront-tour"   # runs, packages, server roots
 
+    [performance]              # query_replay.py; all optional
+    budget_ms    = 2000        # a query slower than this is marked slow
+    repeats      = 5           # timed calls per query, after one warm-up
+    latency_band = 0.2         # a change under 20% is noise, not faster or slower
+    table_storage = "warehouse"  # where a materialized table may live: warehouse, credible, either
+
 A value is taken from a flag first, then this file, then `set.json`, then a
 built-in. Relative paths in the file resolve against the file's own directory,
 so a command reads the same from any working directory.
@@ -58,10 +64,50 @@ CLONE = pathlib.Path(__file__).resolve().parents[3]
 # the file's directory.
 SCHEMA: dict[str, dict[str, Any]] = {
     "model": {"environment": str, "package": str, "repo": "path",
-              "port": int, "mcp_port": int, "publisher": str, "mcp_url": str},
+              "port": int, "mcp_port": int, "publisher": str, "mcp_url": str,
+              # PUBLISHER_PACKAGE_VERSIONING for the model server: true
+              # publishes each edit as the version publisher.json names,
+              # false installs it in place. Unset, the server's default (on).
+              "versioning": bool},
     "truth": {"environment": str, "port": int, "mcp_port": int,
               "publisher": str, "package_dir": "path"},
-    "paths": {"publisher_dir": "path", "skills_root": "path", "workdir": "path"},
+    # `publisher_version`: the npm release `eval.py serve` runs through npx
+    # when there is no built clone. Pin it: a run records which server answered.
+    "paths": {"publisher_dir": "path", "skills_root": "path", "workdir": "path",
+              "publisher_version": str},
+    # Where finished runs are shared (eval-loop's run_store.py): a folder, or
+    # commands for anything else. Unset, runs stay in the workdir.
+    "store": {"path": "path", "push": str, "pull": str, "list": str},
+    # How a query replay times queries (eval-loop's query_replay.py), and the
+    # speed objective a simulation scores options against (simulate.py).
+    # `budget_ms` marks a query slow; unset, a replay only reports times.
+    # `objective` is the number to lower: `weighted_ms` (each query's time by
+    # how often it ran) or `p95_ms`. The `max_*` keys are limits an option must
+    # meet; the `usd_*` keys are prices, which turn build time and bytes into
+    # money; `table_read_ms` is the time assumed for a query a table answers
+    # before one is built and measured.
+    "performance": {"budget_ms": "count", "repeats": "count", "latency_band": "fraction",
+                    "objective": str, "max_staleness_hours": "positive",
+                    "max_build_ms_per_day": "positive", "max_usd_per_day": "positive",
+                    "usd_per_compute_hour": "positive", "usd_per_tb_scanned": "positive",
+                    "usd_per_gb_month": "positive", "table_read_ms": "positive",
+                    # What Credible charges to read a table it stores, and to
+                    # store it: a table read is priced here, a live query and
+                    # a build at the warehouse's price.
+                    "credible_usd_per_compute_hour": "positive",
+                    "credible_usd_per_gb_month": "positive",
+                    "max_query_ms": "positive",
+                    # Where a materialized table may live: "warehouse" (the
+                    # source's own, the default), "credible" (a storage
+                    # destination, `storage=`), or "either". Improve mode
+                    # refuses an edit that puts one anywhere else.
+                    "table_storage": str},
+    # The optimization package (eval-loop's optimization_package.py): where its
+    # tables, both models and both apps live; the environments whose traffic is
+    # the loop's own and never production (ingest_logs.py); and how many
+    # production turns a night's judging samples (judge_sample.py).
+    "optimization": {"package_dir": "path", "production_environment": str,
+                     "exclude_environments": "names", "judge_sample": "count"},
 }
 
 BUILTIN: dict[tuple[str, str], Any] = {
@@ -70,7 +116,25 @@ BUILTIN: dict[tuple[str, str], Any] = {
     ("truth", "port"): 4881,
     ("truth", "mcp_port"): 4882,
     ("truth", "environment"): "truth",
+    ("performance", "repeats"): 5,
+    ("performance", "latency_band"): 0.2,
+    ("performance", "objective"): "weighted_ms",
+    ("performance", "table_read_ms"): 10.0,
+    ("performance", "table_storage"): "warehouse",
+    ("optimization", "judge_sample"): 25,
 }
+
+
+TABLE_STORAGE = ("warehouse", "credible", "either")
+
+
+def table_storage(cfg: Any) -> str:
+    """`[performance] table_storage`, checked."""
+    v = cfg.get("performance", "table_storage")
+    if v not in TABLE_STORAGE:
+        raise SystemExit(f"Invalid eval.toml on 'performance.table_storage': expected one of "
+                         f"{', '.join(TABLE_STORAGE)}, got {v!r}. Fix: table_storage = \"warehouse\"")
+    return v
 
 
 def within(path: pathlib.Path, directory: pathlib.Path) -> bool:
@@ -195,6 +259,12 @@ class Config:
     def truth_package_dir(self) -> pathlib.Path:
         return self.get("truth", "package_dir") or (self.set_dir / "truth-package")
 
+    def optimization_dir(self) -> pathlib.Path:
+        """The optimization package: production history, eval runs, both models
+        and both apps. Never inside the served package: it holds the answer key."""
+        return (self.get("optimization", "package_dir")
+                or self.workdir() / "packages" / f"optimization-{self.set_name}")
+
     def workdir(self) -> pathlib.Path:
         """Where runs, built packages and server roots go: never the repository.
 
@@ -224,6 +294,9 @@ class Config:
             return given
         here = CLONE / "packages" / "server"
         return here if (here / "dist" / "server.mjs").exists() else None
+
+    def versioned(self) -> bool:
+        return bool(self.get("model", "versioning"))
 
     def summary(self) -> dict[str, Any]:
         """What run.json records: the file read, and what it said."""
@@ -291,6 +364,36 @@ def _check(path: pathlib.Path, raw: dict[str, Any]) -> dict[str, dict[str, Any]]
                 p = pathlib.Path(value).expanduser()
                 out[section][key] = (p if p.is_absolute()
                                      else path.parent / p).resolve()
+            elif kind == "count":
+                if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+                    raise ConfigError(f"Invalid {path} on '{section}.{key}': "
+                                      f"expected a whole number of at least 1, got {value!r}.")
+                out[section][key] = value
+            elif kind == "fraction":
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not 0 < value < 1):
+                    raise ConfigError(f"Invalid {path} on '{section}.{key}': "
+                                      f"expected a fraction between 0 and 1, such as 0.2, "
+                                      f"got {value!r}.")
+                out[section][key] = float(value)
+            elif kind == "positive":
+                if (isinstance(value, bool) or not isinstance(value, (int, float))
+                        or not value > 0):
+                    raise ConfigError(f"Invalid {path} on '{section}.{key}': "
+                                      f"expected a number above 0, such as 24, got {value!r}.")
+                out[section][key] = float(value)
+            elif kind == "names":
+                if (not isinstance(value, list) or not value
+                        or not all(isinstance(v, str) and v for v in value)):
+                    raise ConfigError(f"Invalid {path} on '{section}.{key}': "
+                                      f"expected a list of names, such as [\"evals\"], "
+                                      f"got {value!r}.")
+                out[section][key] = list(value)
+            elif kind is bool:
+                if not isinstance(value, bool):
+                    raise ConfigError(f"Invalid {path} on '{section}.{key}': "
+                                      f"expected true or false, got {value!r}.")
+                out[section][key] = value
             elif kind is int:
                 if isinstance(value, bool) or not isinstance(value, int):
                     raise ConfigError(f"Invalid {path} on '{section}.{key}': "

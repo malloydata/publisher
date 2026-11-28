@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 """Tests for eval.py: how `--label` names the run a verb reads."""
+import contextlib
+import io
 import pathlib
+import shutil
 import sys
 import tempfile
 import unittest
@@ -56,7 +59,7 @@ class Help(unittest.TestCase):
         # It once needed --set first, so no script's flags were reachable.
         import contextlib
         import io
-        for verb in (["run"], ["serve"], ["serve", "truth"], ["check"]):
+        for verb in (["run"], ["replay"], ["serve"], ["serve", "truth"], ["check"]):
             with self.subTest(verb=verb):
                 out = io.StringIO()
                 with contextlib.redirect_stdout(out), self.assertRaises(SystemExit) as e:
@@ -78,6 +81,43 @@ class UnreadableConfig(unittest.TestCase):
                 code = entry.main(["verify", "--set", d])
         self.assertEqual(code, 3)
         self.assertIn("set.json is not valid JSON", err.getvalue())
+
+
+class ReadsTheTeamsRuns(unittest.TestCase):
+    """`runs`, `versions` and `history` pull what the store holds before they list."""
+
+    def setUp(self):
+        self.root = pathlib.Path(tempfile.mkdtemp())
+        self.set = self.root / "set"
+        self.set.mkdir()
+        (self.set / "set.json").write_text('{"name": "s"}')
+        (self.set / "cases.jsonl").write_text('{"qid": "a"}\n')
+        (self.set / "eval.toml").write_text(
+            f'[paths]\nworkdir = "{self.root / "w"}"\n[store]\npath = "{self.root / "store"}"\n')
+        shared = self.root / "store" / "s" / "runs" / "theirs"
+        shared.mkdir(parents=True)
+        (shared / "run.json").write_text('{"status": "complete", "started": "2026-11-01"}')
+        (shared / "events.jsonl").write_text('{"kind": "attempt", "qid": "a"}\n')
+
+    def tearDown(self):
+        shutil.rmtree(self.root, ignore_errors=True)
+
+    def test_runs_lists_a_run_only_the_store_held(self):
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            code = entry.dispatch(["runs", "--set", str(self.set)])
+        self.assertEqual(code, 0)
+        self.assertIn("theirs", out.getvalue())
+        self.assertTrue((self.root / "w" / "runs" / "theirs" / "run.json").exists())
+
+    def test_a_store_that_cannot_be_read_is_said_and_the_local_runs_still_list(self):
+        (self.set / "eval.toml").write_text(
+            f'[paths]\nworkdir = "{self.root / "w"}"\n[store]\npull = "false"\nlist = "false"\n')
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            code = entry.dispatch(["runs", "--set", str(self.set)])
+        self.assertEqual(code, 0)
+        self.assertIn("the store was not read", err.getvalue())
 
 
 if __name__ == "__main__":

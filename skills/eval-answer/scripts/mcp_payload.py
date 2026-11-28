@@ -107,9 +107,9 @@ def entity_hits(payload: dict[str, Any]) -> list[dict[str, Any]]:
     source cards, so flattening card by card interleaves. The harness used to
     write `range(1, n+1)` here and call it a rank; read `relevance` instead.
 
-    Entities are the only thing that carries this. A source card's own target
-    attribution is discarded by the server before an entity object exists, so
-    a `source:` hit has none and says so with `matched_targets: None`.
+    Publisher attributes entities only: a `source:` hit there has none and
+    says so with `matched_targets: None`. A host that states attribution on
+    the source card itself keeps it on the `source:` hit.
     """
     hits: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -143,7 +143,11 @@ def entity_hits(payload: dict[str, Any]) -> list[dict[str, Any]]:
         src = rid.get("source") if isinstance(rid, dict) else None
         if not isinstance(src, str) or not src:
             continue
-        add(f"source:{src}:{src}", src, None, 0)
+        # A host that attributes source cards states it on the card itself;
+        # Publisher does not, and the card then reads as before (None).
+        card = ({"relevance": node.get("relevance"), "matched_targets": node.get("matched_targets")}
+                if isinstance(node.get("matched_targets"), list) else None)
+        add(f"source:{src}:{src}", src, card, 0)
         for i, ent in enumerate(node.get("entities") or [], 1):
             if not isinstance(ent, dict):
                 continue
@@ -183,6 +187,36 @@ def target_shapes(tool_input: dict[str, Any]) -> list[dict[str, Any]]:
         text = t.get("search_text") or t.get("text")
         out.append({"type": t.get("target_type") or "?",
                     "has_text": bool(isinstance(text, str) and text.strip())})
+    return out
+
+
+def search_targets(tool_input: dict[str, Any]) -> list[dict[str, Any]]:
+    """The `search_targets` the answerer sent, one row per target, as sent.
+
+    `search_terms` flattens each target to `"measure: revenue"` and drops one
+    with no text; `target_shapes` keeps the type and loses the text. Neither
+    can be compared target by target against a golden's `searchTargets`, and
+    both lose `example_values`. This keeps the three fields a golden target
+    names, in the request's own order, so `score_targets.py` can pair each
+    golden target with what the agent actually asked for.
+
+    `example_values` is kept when the host's get_context accepts it.
+    Publisher's does not, so on Publisher it is only ever absent.
+    """
+    out: list[dict[str, Any]] = []
+    for t in tool_input.get("search_targets") or []:
+        if not isinstance(t, dict):
+            continue
+        text = t.get("search_text") or t.get("text")
+        row: dict[str, Any] = {
+            "target_type": t.get("target_type") or "?",
+            "search_text": text.strip() if isinstance(text, str) and text.strip()
+            else None}
+        values = t.get("example_values")
+        if isinstance(values, list) and values:
+            row["example_values"] = [v for v in values
+                                     if isinstance(v, (str, int, float))]
+        out.append(row)
     return out
 
 
