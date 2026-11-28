@@ -138,6 +138,9 @@ export interface RefSummaryLike {
 /** Walk bounds: large enough for any real model, small enough that a
  *  pathological or cyclic one fails closed instead of hanging. */
 const MAX_CLOSURE_SIZE = 256;
+/** How many declarations one condition's proof may visit in their own
+ *  compiles: about one per file in a chain of imports. Past it, deny. */
+const MAX_OWN_COMPILE_PROOFS = 256;
 /** The number of joins from the entry source that any join walk follows. */
 export const MAX_JOIN_RECURSION_DEPTH = 16;
 /** The distinct join paths one join walk visits per entry source: bounds a fan-out that depth alone does not. */
@@ -1825,6 +1828,11 @@ function assertInheritedConditionBinds(
          }
          return;
       }
+      if (anchor && ownCompileOf(anchor, proof)) {
+         assertProvenInOwnCompile(anchor, condition, proof);
+         return;
+      }
+      if (proveThroughHolder(struct, condition, proof)) return;
       if (anchor && proof.resolveSibling) {
          assertProvenInOwnCompile(anchor, condition, proof);
          return;
@@ -1837,6 +1845,72 @@ function assertInheritedConditionBinds(
       if (err instanceof InheritedFilterUnverifiedError) throw err;
       throw InheritedFilterUnverifiedError.of(err, condition, declaring);
    }
+}
+
+/**
+ * The last resort for a struct with no base this compile can name and no
+ * compile of its own to be proven in, such as a source declared in the
+ * request text over a table-backed source (whose base the inferred-base
+ * reader cannot order against an import): any declaration in this compile
+ * that holds the condition is a candidate. `struct` is compared against it
+ * here and, unless it wrote the condition, it is proven in its own compile,
+ * so each attempt is a whole proof and the first that succeeds suffices; a
+ * neighbour that holds the condition but redefines a field it reads fails its
+ * own proof. True when one succeeds; THROWS the first failure when every
+ * candidate fails; false when there is none.
+ */
+function proveThroughHolder(
+   struct: SourceDef,
+   condition: FilterCondition,
+   proof: ConditionProof,
+): boolean {
+   const { modelDef, unresolved } = proof;
+   if (!modelDef) return false;
+   const at = firstFieldUsageLocation(condition);
+   const candidates = new Set<SourceDef>();
+   for (const value of [
+      ...Object.values(modelDef.contents),
+      ...Object.values(modelDef.sourceRegistry ?? {}).map((v) => v.entry),
+   ]) {
+      const def = value as SourceDef | undefined;
+      if (
+         def &&
+         isSourceDef(def) &&
+         def !== struct &&
+         !isSameDeclaration(def, struct) &&
+         !(unresolved && isSameDeclaration(def, unresolved)) &&
+         holdsCondition(def, condition)
+      ) {
+         candidates.add(def);
+      }
+   }
+   // The writer first: it needs no further proof.
+   const ordered = [...candidates].sort(
+      (a, b) => Number(declares(b, at)) - Number(declares(a, at)),
+   );
+   let firstFailure: unknown;
+   for (const holder of ordered) {
+      try {
+         assertFilterConditionBindsToDeclaringSource(
+            holder,
+            struct,
+            condition,
+            unresolved,
+         );
+         if (!declares(holder, at)) {
+            assertProvenInOwnCompile(
+               { declaration: holder, hops: [] },
+               condition,
+               proof,
+            );
+         }
+         return true;
+      } catch (err) {
+         firstFailure ??= err;
+      }
+   }
+   if (firstFailure !== undefined) throw firstFailure;
+   return false;
 }
 
 /**
@@ -1891,7 +1965,7 @@ function ownCompileOf(
    const url = anchor.declaration.location?.url;
    if (typeof sourceID !== "string" || !url) return undefined;
    if (proof.proving.has(sourceID)) return undefined;
-   if (proof.proving.size >= ANCESTOR_WALK_MAX_DEPTH) return undefined;
+   if (proof.proving.size >= MAX_OWN_COMPILE_PROOFS) return undefined;
    const compile = proof.resolveSibling?.(canonicalUrl(url));
    const own = Object.values(compile?.contents ?? {}).find(
       (v): v is SourceDef => isSourceDef(v) && v.sourceID === sourceID,

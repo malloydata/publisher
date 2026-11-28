@@ -333,8 +333,124 @@ import 'alias.malloy'
                   route,
                   answer(await run(model, count("alias_of_honest"))),
                ]).toEqual([route, '[{"n":4}]']);
+               expect([
+                  route,
+                  answer(
+                     await run(
+                        model,
+                        `source: mine is alias_of_honest extend { measure: z is count() }\nrun: mine -> { aggregate: n is count() }`,
+                     ),
+                  ),
+               ]).toEqual([route, '[{"n":4}]']);
+               expect([
+                  route,
+                  answer(
+                     await run(
+                        model,
+                        `source: mine is alias_of_honest extend { ${REDEFINE} }\nrun: mine -> { aggregate: n is count() }`,
+                     ),
+                  ),
+               ]).toEqual([route, DENIED("mine")]);
             }
          });
       }
+   });
+   describe("a source declared in the request text, over a table-backed source whose where: another file writes", () => {
+      const H = "##! experimental.access_modifiers";
+      const N = 40;
+      const files: Record<string, string> = {
+         "s.malloy": `${H}
+source: raw is duckdb.table('events.csv')
+source: deals is raw extend {
+  dimension: is_deleted is event_type = 'clarify:delete'
+  where: not is_deleted
+}
+source: two is deals extend { measure: c is count() }
+source: two_rebound is deals extend {
+  ${REDEFINE}
+}
+`,
+         "u.malloy": `${H}
+import 's.malloy'
+source: three is deals extend { measure: c3 is count() }
+`,
+         "t_sel.malloy": `${H}
+import { two, two_rebound } from 's.malloy'
+`,
+         "t_chain.malloy": `${H}
+import 'u.malloy'
+source: four is three extend { measure: c4 is count() }
+`,
+         "events.csv": EVENTS,
+      };
+      // A chain of files, each importing only the one before.
+      files["f0.malloy"] = `${H}
+import 's.malloy'
+source: s0 is deals extend { measure: m0 is count() }
+`;
+      for (let i = 1; i < N; i++) {
+         files[`f${i}.malloy`] = `${H}
+import 'f${i - 1}.malloy'
+source: s${i} is s${i - 1} extend { measure: m${i} is count() }
+`;
+      }
+      const request = (base: string, body: string, run = "") =>
+         `source: mine is ${base} extend { ${body} }\nrun: mine -> { aggregate: n is ${run}count() }`;
+      let loader: Awaited<ReturnType<typeof loadFixture>> | undefined;
+      beforeAll(async () => {
+         await freshLoadPool();
+         loader = await loadFixture(files);
+      }, 120_000);
+      afterAll(async () => loader?.dispose());
+
+      it("answers an honest one, filtered, through a selective import and a chain of files", async () => {
+         for (const [model, q] of [
+            ["t_sel.malloy", request("two", "measure: z is count()")],
+            ["t_chain.malloy", request("three", "measure: z is count()")],
+            ["t_chain.malloy", request("four", "measure: z is count()")],
+            [
+               "t_chain.malloy",
+               request(
+                  "four",
+                  "join_one: o is four on deal_id = o.deal_id",
+                  "o.",
+               ),
+            ],
+         ]) {
+            expect([q, answer(await loader?.run(model, q))]).toEqual([
+               q,
+               '[{"n":4}]',
+            ]);
+         }
+      });
+
+      it("denies one that redefines the field, even beside a neighbour that redefines it the same way", async () => {
+         for (const [model, base] of [
+            ["t_sel.malloy", "two"],
+            ["t_chain.malloy", "four"],
+         ]) {
+            expect(
+               answer(await loader?.run(model, request(base, REDEFINE))),
+            ).toBe(DENIED("mine"));
+         }
+         expect(
+            answer(await loader?.run("t_sel.malloy", count("two_rebound"))),
+         ).toBe(DENIED("two_rebound"));
+      });
+
+      it(`proves a source ${N} files down a chain of imports`, async () => {
+         const last = `f${N - 1}.malloy`;
+         expect(answer(await loader?.run(last, count(`s${N - 1}`)))).toBe(
+            '[{"n":4}]',
+         );
+         expect(
+            answer(
+               await loader?.run(
+                  last,
+                  `run: s${N - 1} extend { ${REDEFINE} } -> { aggregate: n is count() }`,
+               ),
+            ),
+         ).toBe(DENIED(`s${N - 1}`));
+      });
    });
 });
