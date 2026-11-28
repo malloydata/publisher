@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import { managedScopeOf } from "./dialects/ducklake_catalog";
 import { isUnderStorageLocation } from "../driver_errors";
 import type { GivenValue } from "@malloydata/malloy";
 import { recordAnnotationFindings } from "../materialization_metrics";
@@ -97,7 +98,7 @@ import {
    refuseListedDestinationSchema,
 } from "./destination_overlap";
 import type { PackageMaterialization } from "./materialization";
-import { Package } from "./package";
+import { Package, upstreamWithdrawalSentences } from "./package";
 import { canonicalJson } from "./package_revision";
 import { applyLoadGates } from "./package_load_gates";
 import { resolvePatchedSettings } from "./package_patch";
@@ -1208,7 +1209,7 @@ export class Environment {
                // a reload replaces can serve an older model than its files.
                isStale: () =>
                   next.getVersionId() === undefined &&
-                  this.getStaleCompileErrors().has(next.getPackageName()),
+                  this.getRefusedReloads().has(next.getPackageName()),
             })
             .then((derived) => {
                if (derived) {
@@ -1346,6 +1347,16 @@ export class Environment {
 
    public async getMalloyConnection(connectionName: string) {
       return this.malloyConfig.malloyConfig.connections.lookupConnection(
+         connectionName,
+      );
+   }
+
+   /** The build port's `managedStorageScope` (build_upstreams.ts). */
+   public async managedStorageScope(
+      connectionName: string,
+   ): Promise<readonly string[] | undefined> {
+      return managedScopeOf(
+         await this.getMalloyConnection(connectionName),
          connectionName,
       );
    }
@@ -3805,22 +3816,26 @@ export class Environment {
                // staleness to /status; cleared on the next successful load.
                // An explicit refresh that found an upstream table changed
                // stops serving the stored tables built from it: the kept
-               // model would answer from them as if nothing moved.
+               // model would answer from them as if nothing moved. One it
+               // could not read is not known to be unchanged, so it stops
+               // them too (withdrawChangedUpstreams fails closed).
                const withdrawn = refreshSchemas
-                  ? await existingPackage
-                       .withdrawChangedUpstreams()
-                       .catch(() => ({ sources: [], tables: [] }))
-                  : { sources: [], tables: [] };
+                  ? await existingPackage.withdrawChangedUpstreams({
+                       hold: true,
+                    })
+                  : undefined;
                const message = redactPgSecrets(
                   error instanceof Error ? error.message : String(error),
                );
                this.transition(packageName, {
                   type: "reloadFailed",
                   stale: {
-                     message:
-                        withdrawn.sources.length > 0
-                           ? `${message} Upstream table ${withdrawn.tables.join(", ")} changed since the last build, so ${withdrawn.sources.join(", ")} answer live until a reload compiles and a run rebuilds them.`
-                           : message,
+                     message: [
+                        message,
+                        ...(withdrawn
+                           ? upstreamWithdrawalSentences(withdrawn)
+                           : []),
+                     ].join(" "),
                      failedAt: new Date().toISOString(),
                   },
                });
@@ -4297,9 +4312,10 @@ export class Environment {
                oldPackage !== undefined &&
                this.packages.get(packageName) === oldPackage
             ) {
-               const withdrawn = await oldPackage
-                  .withdrawChangedUpstreams()
-                  .catch(() => ({ sources: [], tables: [] }));
+               // One it could not read stops serving too, as unread.
+               const withdrawn = await oldPackage.withdrawChangedUpstreams({
+                  hold: true,
+               });
                if (withdrawn.sources.length > 0) {
                   logger.warn(
                      "A failed publish found upstream tables changed; their stored tables answer live",
@@ -4307,6 +4323,16 @@ export class Environment {
                         environmentName: this.environmentName,
                         packageName,
                         sources: withdrawn.sources,
+                     },
+                  );
+               }
+               if (withdrawn.unread.sources.length > 0) {
+                  logger.warn(
+                     "A failed publish could not read upstream tables; their stored tables answer live until a read succeeds",
+                     {
+                        environmentName: this.environmentName,
+                        packageName,
+                        sources: withdrawn.unread.sources,
                      },
                   );
                }
@@ -4768,6 +4794,10 @@ export class Environment {
             (await pkg.reloadAllModels(tableNameManifest, {
                ifChanged: recompile === "if-changed",
             }));
+         // No recompile, so read again here what a rebind reads again: the
+         // upstream of a stored table withdrawn while it was unread.
+         if (!(hasDatabase || hadDatabase))
+            await pkg.rereadWithdrawnUpstreams();
 
          if (hasStorage || hadStorage) {
             await pkg.materialization().bindCompiled({
@@ -5505,12 +5535,31 @@ export class Environment {
    }
 
    /**
-    * SERVING packages whose most recent reload failed to compile: the served
-    * model is stale relative to the files on disk. Disjoint from
+    * SERVING packages that answer from a model older than their latest
+    * compile: their most recent reload failed to compile, so the served model
+    * is stale relative to the files on disk; or a recompile kept a file's
+    * last good model because a table under that file changed
+    * (`Package.getKeptModelStaleness`). Disjoint from
     * {@link getFailedPackages} in practice (a successful load clears the
     * record; a failed first load records a load failure instead).
     */
    public getStaleCompileErrors(): ReadonlyMap<string, StaleCompileError> {
+      const stale = new Map(this.lifecycle.staleRecords());
+      for (const [packageName, pkg] of this.packages) {
+         const kept = pkg.getKeptModelStaleness();
+         if (kept && !stale.has(packageName)) stale.set(packageName, kept);
+      }
+      return stale;
+   }
+
+   /**
+    * The packages whose most recent reload refused their files, so they
+    * serve a model older than those files: a run would build what the reload
+    * refused. Unlike {@link getStaleCompileErrors}, a package that kept a
+    * file's model over a changed table is not here: its files are the ones
+    * that model compiled from.
+    */
+   public getRefusedReloads(): ReadonlyMap<string, StaleCompileError> {
       return this.lifecycle.staleRecords();
    }
 

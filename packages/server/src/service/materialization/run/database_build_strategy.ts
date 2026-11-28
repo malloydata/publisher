@@ -42,6 +42,41 @@ import {
 import { backupSuffix, stagingSuffix } from "./build_table_names";
 import { transactionalSwapSql } from "./warehouse_sql";
 import { runAsInternalStatement } from "../../duckdb_lockdown";
+import { ContainerNotFoundError } from "../../../errors";
+import {
+   containerOfTableName,
+   missingContainerReason,
+} from "../domain/target_containers";
+import { readTargetContainerOrUnread } from "./target_container_read";
+
+/**
+ * Throw {@link ContainerNotFoundError} when the table's `name=` places it in
+ * a container (a BigQuery dataset, a schema) its warehouse does not hold, or
+ * holds in another location than the connection declares, as the plan's
+ * `container_not_found` refusal says. A read that fails stops nothing.
+ */
+async function assertContainerExists(args: {
+   connection: MalloyConnection;
+   physicalTableName: string;
+   connectionName: string;
+   sourceName: string;
+   runOptions: DatabaseBuildRequest["runOptions"];
+}): Promise<void> {
+   const container = containerOfTableName(args.physicalTableName);
+   if (container === undefined) return;
+   const target = { connectionName: args.connectionName, container };
+   const reading = await readTargetContainerOrUnread(
+      async () => args.connection,
+      target,
+      { runOptions: args.runOptions },
+   );
+   if ("notFound" in reading || "otherLocation" in reading) {
+      throw new ContainerNotFoundError(
+         `Source '${args.sourceName}' cannot be built: ` +
+            `${missingContainerReason(target, args.connection.dialectName, reading)}.`,
+      );
+   }
+}
 
 /**
  * A full rebuild of a database table in the source's own warehouse: COPY into
@@ -150,6 +185,17 @@ export class DatabaseTier
             incrementalRefresh.lineage,
          );
       }
+
+      // Before any statement: a container the warehouse does not hold fails
+      // every attempt the same way, and the plan's read of it may have
+      // failed open, or it was dropped since.
+      await assertContainerExists({
+         connection,
+         physicalTableName,
+         connectionName: persistSource.connectionName,
+         sourceName: persistSource.name,
+         runOptions,
+      });
 
       const startTime = performance.now();
       await connection.runSQL(

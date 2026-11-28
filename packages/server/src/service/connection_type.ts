@@ -22,6 +22,12 @@ const recorded = new WeakMap<object, string>();
  */
 const managed = new WeakMap<object, ReadonlySet<string>>();
 /**
+ * The configuration each connection was resolved from, for the build's
+ * catalog identity check (`isSameCatalog`), which a served copy reads to
+ * tell a destination and a connection over one catalog.
+ */
+const configs = new WeakMap<object, object>();
+/**
  * The schemas a managed read-only DuckLake view may read besides `main`, as one
  * canonical list: sorted, deduplicated, `main` dropped, undefined when empty. The
  * one place that decides which lists mean the same, so a reordering never
@@ -156,14 +162,27 @@ function overrideOf(connection: object): string | undefined {
 export function recordConnectionType<T extends object>(
    connection: T,
    type: string | undefined,
-   options: { managed?: boolean; schemas?: ReadonlySet<string> } = {},
+   options: {
+      managed?: boolean;
+      schemas?: ReadonlySet<string>;
+      /** The configuration it was resolved from ({@link connectionConfigOf}). */
+      config?: object;
+   } = {},
 ): T {
    const recordedType = overrideOf(connection) ?? type;
    if (recordedType) recorded.set(connection, recordedType);
+   if (options.config) configs.set(connection, options.config);
    if (options.managed === true || managedOverrideOf(connection)) {
       managed.set(connection, options.schemas ?? MAIN_ONLY);
    }
    return connection;
+}
+
+/** The configuration `connection` was resolved from, when it was recorded. */
+export function connectionConfigOf(
+   connection: object | null | undefined,
+): object | undefined {
+   return connection ? configs.get(connection) : undefined;
 }
 
 /** Whether `connection` was recorded as configured `managed`. */

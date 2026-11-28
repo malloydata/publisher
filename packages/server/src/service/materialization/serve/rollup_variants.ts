@@ -157,7 +157,14 @@ import {
    rollupCompanionURLOf,
    viewNoteTexts,
 } from "../text/read_text";
-import { splitSourceID, type RollupVariantPlan } from "../domain/table_plans";
+import {
+   splitSourceID,
+   type RollupPathColumn,
+   type RollupVariantPlan,
+} from "../domain/table_plans";
+import { grainColumnOf, grainPathOf } from "../domain/rollup_grain";
+import { TIMEFRAMES } from "../text/inlined_join_text";
+import { annotatedJoinedOutput } from "../../governance/ir/joined_field_output";
 import { SourceMap, type SourceNode } from "../text/source_map";
 import {
    authorNameImports,
@@ -717,7 +724,7 @@ export class RollupVariantServe {
                        .map((p) => p.slice(1)),
                // A join branch past an entry point's gate declines below.
                undefined,
-               branch.plan.grainDimensions.map((d) => [d]),
+               branch.plan.grainDimensions.map((d) => d.split(".")),
             );
             if (zone) {
                first ??= zone;
@@ -907,9 +914,23 @@ export class RollupVariantServe {
             { shapeCheck: true },
          );
       }
-      const grain = new Set(plan.grainDimensions);
+      // A path grain is read only on the base's own variant: through a
+      // join, the joined source's rollup declares no record of it.
+      const grain = new Set(
+         plan.grainDimensions.filter((g) => grainPathOf(g) === undefined),
+      );
       const measures = new Set(plan.rollupMeasures.map((m) => m.name));
-      const coarse = joinGrainDecline(name, q.shape, grain, measures);
+      const coarse =
+         joinGrainDecline(name, q.shape, grain, measures) ??
+         joinOneDecline(
+            plan,
+            {
+               groupedBy: readThroughJoin(name, q.shape.groupedBy),
+               filteredBy: readThroughJoin(name, q.shape.filteredBy),
+               measures: readThroughJoin(name, q.shape.measures),
+            },
+            (join) => this.grainJoinKeyUniqueness(plan, join, q.args.pinned),
+         );
       if (coarse) throw coarse;
       const missing = joinCoverageDecline(name, q.shape, grain, measures);
       if (missing) throw missing;
@@ -1465,16 +1486,13 @@ export class RollupVariantServe {
       const dimensions = query.extension
          ? extensionDimensions(query.extension, plan, measures)
          : [];
-      const grain = new Set([
-         ...plan.grainDimensions,
-         ...dimensions.map((d) => d.name),
-      ]);
+      const grain = queryGrainOf(plan, dimensions);
       // Cheap first, from the caller's own compile: what it groups and filters
       // by must be in the grain, what it aggregates must be stored.
-      const coarse = grainDecline(shape, grain, measures);
-      if (coarse) throw coarse;
-      const missing = coverageDecline(shape, measures);
-      if (missing) throw missing;
+      const shapeSkip = baseShapeDecline(plan, shape, grain, measures, (join) =>
+         this.grainJoinKeyUniqueness(plan, join, args.pinned),
+      );
+      if (shapeSkip) throw shapeSkip;
       if (query.zoned) {
          const zone = zoneDecline(
             plan,
@@ -1583,6 +1601,7 @@ export class RollupVariantServe {
       }
       const routed = await readPreparedQuery(runnable);
       checkCoverage(plan, queryLevelFacts(routed));
+      annotatedPathDecline(plan, routed.pipeline, query.struct);
       // Route, then govern: past an entry-point gate, the gate must be
       // provable on this rollup before it is used, so `govern()`'s re-proof
       // (graft, bind guard, gate-set equality) denies only on a defect.
@@ -1655,6 +1674,32 @@ export class RollupVariantServe {
               ? undefined
               : pinned.snapshot.entries[id]?.keyUniqueness?.unique,
       );
+   }
+
+   /**
+    * What the build of `plan`'s table found of the key of `join`, a join_one
+    * its grain reads (`grainJoinKeyChecks`), over the joined source: checked
+    * under the key the join is on now, so a join re-keyed since reads as
+    * `unknown`, as does a table no run checked (a host's manifest's) or a
+    * check that did not run.
+    */
+   private grainJoinKeyUniqueness(
+      plan: RollupVariantPlan,
+      join: string,
+      pinned: Pinned,
+   ): KeyVerdict {
+      const keyColumn = SourceMap.of(this.host.modelDef())
+         .joinsOf(plan.baseSourceID)
+         .find((j) => j.name === join)?.keyColumn;
+      const table = this.tableOf(plan, pinned);
+      const id = table?.sourceEntityId;
+      if (keyColumn === undefined || table === undefined) return "unknown";
+      const checks = table.binding
+         ? table.binding.grainJoinKeys
+         : id === undefined
+           ? undefined
+           : pinned.snapshot.entries[id]?.keyUniqueness?.grainJoinKeys;
+      return verdictOf(checks?.[`${join}.${keyColumn}`]);
    }
 
    /**
@@ -2875,6 +2920,9 @@ function withoutLeftOut(
          ...(plan.privateGrain
             ? { privateGrain: plan.privateGrain.filter((g) => !gone(g)) }
             : {}),
+         ...(plan.pathColumns
+            ? { pathColumns: plan.pathColumns.filter((p) => !gone(p.column)) }
+            : {}),
       },
       dropped,
    };
@@ -3210,7 +3258,7 @@ function sourceOverRollup(
    if (use.kind === "base") {
       // malloy-text: variantAdditions emits names through identifier, and the author's own notes, expressions and view definitions (marked there)
       const extension = additions;
-      return `source: ${identifier(use.localName)} is ${identifier(servedName)}${internalPartials(plan)}${reappliedTerms(plan)}${extension}`;
+      return `source: ${identifier(use.localName)} is ${identifier(servedName)}${internalPartials(plan)}${pathRecords(plan)}${reappliedTerms(plan)}${extension}`;
    }
    const { join } = use.branch;
    const keyword = use.branch.relationship === "one" ? "join_one" : "join_many";
@@ -3290,6 +3338,9 @@ function internalPartials(plan: RollupVariantPlan): string {
    const hidden = [
       ...plan.rollupMeasures.flatMap((m) => m.partials.map((p) => p.column)),
       ...(plan.internalGrain ?? []),
+      // A path grain's stored column (`account__region`): read through the
+      // join's record, as live reads the path, and by no query by its name.
+      ...storedPathColumns(plan),
    ]
       .map((n) => identifier(n))
       .join(", ");
@@ -3297,6 +3348,74 @@ function internalPartials(plan: RollupVariantPlan): string {
    // None left (every measure's partials left out of a stored rollup).
    if (!hidden && !priv) return "";
    return ` include {${hidden ? ` internal: ${hidden}` : ""}${priv ? ` private: ${priv}` : ""} public: * }`;
+}
+
+/** The stored columns of the plan's path grains (`account__region`). */
+function storedPathColumns(plan: RollupVariantPlan): string[] {
+   return (plan.pathColumns ?? [])
+      .filter((p) => p.column !== p.grain)
+      .map((p) => p.column);
+}
+
+/**
+ * ` extend { dimension: account is { region is account__region } }`: each
+ * join a stored column holds a one-hop path through, declared as a record
+ * of those columns (a timeframe restored, as the served copy's `inline=`
+ * record restores one), so `account.region` in a query, a view or a
+ * filter compiles against the rollup and reads the stored column. Any
+ * other field of the join, its measures and an aggregate through it
+ * (`account.count()`) are not in the record and do not compile.
+ */
+function pathRecords(plan: RollupVariantPlan): string {
+   const byJoin = new Map<string, Map<string, RollupPathColumn>>();
+   for (const p of plan.pathColumns ?? []) {
+      const fields = byJoin.get(p.join) ?? new Map();
+      if (!fields.has(p.field)) fields.set(p.field, p);
+      byJoin.set(p.join, fields);
+   }
+   if (byJoin.size === 0) return "";
+   // malloy-text: names through identifier, a timeframe from TIMEFRAMES
+   const records = [...byJoin]
+      .map(([join, fields]) => {
+         const lines = [...fields.values()]
+            .map((p) => {
+               const read =
+                  p.timeframe && TIMEFRAMES.has(p.timeframe)
+                     ? `${identifier(p.column)}.${p.timeframe}`
+                     : identifier(p.column);
+               return `      ${identifier(p.field)} is ${read}`;
+            })
+            .join(",\n");
+         return `    ${identifier(join)} is {\n${lines}\n    }`;
+      })
+      .join("\n");
+   return ` extend {\n  dimension:\n${records}\n}`;
+}
+
+/**
+ * What a query on the base may group and filter by: the grain, each path a
+ * stored column holds (`account.region`), and an extension's dimensions over
+ * the grain.
+ */
+function queryGrainOf(
+   plan: RollupVariantPlan,
+   dimensions: readonly { name: string }[],
+): Set<string> {
+   return new Set([
+      ...plan.grainDimensions,
+      ...pathGrainEntries(plan).keys(),
+      ...dimensions.map((d) => d.name),
+   ]);
+}
+
+/** Each path a stored column holds, dotted (`account.region`), to its grain entry. */
+function pathGrainEntries(plan: RollupVariantPlan): Map<string, string> {
+   const out = new Map<string, string>();
+   for (const p of plan.pathColumns ?? []) {
+      const path = `${p.join}.${p.field}`;
+      if (!out.has(path)) out.set(path, p.grain);
+   }
+   return out;
 }
 
 /**
@@ -3330,7 +3449,15 @@ function grainColumns(
       }
    }
    const notes = baseFieldNotes(plan, modelDef);
-   return plan.grainDimensions.map((name) => {
+   // A path grain is stored under its column's name, with the joined
+   // dimension's timeframe; a record's field carries no notes.
+   for (const p of plan.pathColumns ?? []) {
+      if (p.column !== p.grain && p.timeframe !== undefined) {
+         timeframes.set(p.column, p.timeframe);
+      }
+   }
+   return plan.grainDimensions.map((grain) => {
+      const name = grainColumnOf(grain);
       const timeframe = timeframes.get(name);
       return {
          name,
@@ -3537,6 +3664,43 @@ function proveGivenTerms(
 }
 
 /**
+ * Throw `MISSING_FIELD` when the compiled query returns, as a column, a
+ * joined dimension a stored path column holds and the author annotated: the
+ * variant's record field cannot carry its notes, which live's column
+ * carries (the served copy's rule for an `inline=` record,
+ * governance/ir/joined_field_output.ts). A field that reads it under another
+ * name, a filter and a grouping by a dimension over it carry none live
+ * either, and are served.
+ */
+function annotatedPathDecline(
+   plan: RollupVariantPlan,
+   pipeline: unknown,
+   struct: object | undefined,
+): void {
+   const annotated = new Map<string, Set<string>>();
+   for (const p of plan.pathColumns ?? []) {
+      if (!p.annotated) continue;
+      const fields = annotated.get(p.join) ?? new Set<string>();
+      fields.add(p.field);
+      annotated.set(p.join, fields);
+   }
+   if (annotated.size === 0) return;
+   const out = annotatedJoinedOutput(
+      pipeline,
+      (struct as { fields?: unknown } | undefined)?.fields,
+      annotated,
+   );
+   if (out.output || out.unreadable) {
+      throw new LegDecline(
+         "rollup_missing_field",
+         out.output
+            ? `the query returns \`${out.output.path.join(".")}\`, whose annotations the rollup's record of stored columns cannot carry; a field under a name of its own (\`group_by: r is ${out.output.path.join(".")}\`), which carries none live either, is served from the rollup`
+            : "the query's output columns cannot be read",
+      );
+   }
+}
+
+/**
  * Throw a {@link LegDecline} unless every aggregate the compiled query computes
  * is a stored measure's merge and every fan-out grain dimension is fixed.
  * Read from the compiled query's IR (`queryLevelFacts`), never its text: the
@@ -3568,6 +3732,16 @@ function checkCoverage(
    const anyMeasureFanOut = new Set(
       plan.rollupMeasures.flatMap((m) => m.fanOutDimensions),
    );
+   // A field named by a path a stored column holds (`account.region`) is
+   // its grain entry. Only grouping by a path fixes it: a `where:` on one
+   // does not (a single value would be exact, an `IN` or a range is not).
+   const paths = pathGrainEntries(plan);
+   const grainOfRef = (ref: readonly string[] | undefined) =>
+      ref?.length === 1
+         ? ref[0]
+         : ref?.length === 2
+           ? paths.get(ref.join("."))
+           : undefined;
    const visit = (level: QueryLevelFacts, fixedAbove: ReadonlySet<string>) => {
       if (level.kind !== "reduce") {
          throw new LegDecline(
@@ -3603,7 +3777,7 @@ function checkCoverage(
                `\`${f.name}\` re-sums across a fan-out dimension of the rollup's grain`,
             );
          }
-         const ref = f.ref?.length === 1 ? f.ref[0] : undefined;
+         const ref = grainOfRef(f.ref);
          const named = ref !== undefined ? measureFanOut.get(ref) : undefined;
          if (ref !== undefined && named === undefined) grouped.add(ref);
          else if (named !== undefined) {
@@ -3854,11 +4028,87 @@ function zoneDecline(
       timeframe?: unknown;
    };
    const memo = new Map<string, boolean>();
+   const storedPaths = pathGrainEntries(plan);
+   // A one-hop path a stored column holds, as the build read it through
+   // the join: a column of the joined source stored as it has it holds the
+   // same value in every zone; a truncation, a computed time, or a join
+   // whose condition reads a time does not. Anything unread is zoned.
+   const joinOf = (name: string) =>
+      fields.get(name) as
+         | (Field & { fields?: unknown[]; onExpression?: unknown })
+         | undefined;
+   const joinedOf = (join: { fields?: unknown[] }) =>
+      new Map(
+         (join.fields ?? []).map((f) => {
+            const field = f as { name?: unknown; as?: unknown };
+            return [String(field.as ?? field.name), f as Field];
+         }),
+      );
+   const temporal = (f: Field | undefined) =>
+      !f || f.join !== undefined || ZONED_TYPES.has(String(f.type));
+   // Whether the condition of the join `name` reads a time, or anything it
+   // cannot read: the build evaluated it in the model's zone.
+   const conditionDependsOnZone = (name: string): boolean => {
+      const join = joinOf(name);
+      if (!join || join.join === undefined) return true;
+      const joined = joinedOf(join);
+      return (
+         hasZonedNode(join.onExpression) ||
+         fieldPathsIn(join.onExpression).some((p) =>
+            p.length === 1
+               ? temporal(fields.get(p[0] as string) as Field | undefined)
+               : p.length !== 2 ||
+                 p[0] !== name ||
+                 temporal(joined.get(p[1] as string)),
+         )
+      );
+   };
+   // A one-hop path a stored column holds, as the build read it through
+   // the join: a column of the joined source stored as it has it holds the
+   // same value in every zone; a truncation, a computed time, or a join
+   // whose condition reads a time does not. Anything unread is zoned.
+   const joinedDependsOnZone = (path: readonly string[]): boolean => {
+      const join = joinOf(path[0] as string);
+      if (!join || conditionDependsOnZone(path[0] as string)) return true;
+      const joined = joinedOf(join);
+      const f = joined.get(path[1] as string);
+      if (!f || f.join !== undefined) return true;
+      if (f.e === undefined) {
+         return f.timeframe !== undefined && ZONED_TYPES.has(String(f.type));
+      }
+      return (
+         ZONED_TYPES.has(String(f.type)) ||
+         hasZonedNode(f.e) ||
+         fieldPathsIn(f.e).some(
+            (p) =>
+               p.length !== 1 ||
+               temporal(joined.get(p[0] as string)) ||
+               joined.get(p[0] as string)?.e !== undefined,
+         )
+      );
+   };
+   const pathJoins = new Set(
+      [...storedPaths.keys()].map((p) => p.slice(0, p.indexOf("."))),
+   );
+   // A read of a stored path's join condition (`account.account_id`, which
+   // a query reading the path reads through the join): judged with it.
+   const conditionRead = (path: readonly string[]) =>
+      path.length === 2 &&
+      pathJoins.has(path[0] as string) &&
+      fieldPathsIn(joinOf(path[0] as string)?.onExpression).some(
+         (p) => p.join(".") === path.join("."),
+      );
+   const isStoredPath = (path: readonly string[]) =>
+      path.length === 2 && storedPaths.has(path.join("."));
    // A field's value as the table holds it: does it depend on the zone?
    const storedDependsOnZone = (path: readonly string[]): boolean => {
       const [name] = path;
       // An empty path reads no field (`count()`).
       if (name === undefined) return false;
+      if (isStoredPath(path)) return joinedDependsOnZone(path);
+      if (conditionRead(path)) {
+         return conditionDependsOnZone(path[0] as string);
+      }
       if (path.length !== 1) return true;
       const f = fields.get(name) as Field | undefined;
       if (!f) return false;
@@ -3881,6 +4131,7 @@ function zoneDecline(
    const evaluatedReadsTime = (path: readonly string[]): boolean => {
       const [name] = path;
       if (name === undefined) return false;
+      if (isStoredPath(path)) return joinedDependsOnZone(path);
       if (path.length !== 1) return true;
       const f = fields.get(name) as Field | undefined;
       if (!f) return false;
@@ -3927,6 +4178,100 @@ export function grainDecline(
       );
    }
    return undefined;
+}
+
+/**
+ * The cheap checks of a base branch, from the caller's own compile, in
+ * order: the grain ({@link grainDecline}), the stored measures
+ * ({@link coverageDecline}), and the join_ones the grain reads
+ * ({@link joinOneDecline}).
+ */
+function baseShapeDecline(
+   plan: RollupVariantPlan,
+   shape: Pick<
+      ReturnType<typeof queryShapeOf>,
+      "groupedBy" | "filteredBy" | "measures"
+   >,
+   grain: ReadonlySet<string>,
+   measures: ReadonlySet<string>,
+   keyVerdict: (join: string) => KeyVerdict,
+): LegDecline | undefined {
+   return (
+      grainDecline(shape, grain, measures) ??
+      coverageDecline(shape, measures) ??
+      joinOneDecline(plan, shape, keyVerdict)
+   );
+}
+
+/**
+ * `COUNT_SEMANTICS` when the rollup's grain reads through a join_one
+ * (`RollupVariantPlan.joinOneGrain`) that the query does not read, and the
+ * build did not find the join's key unique (`keyVerdict`, the grain join key
+ * check). The build joined it, so a key the data repeats repeated the rows
+ * each partial summed; live joins it only for a query that reads one of its
+ * fields, so a query that reads none (`group_by: period_month` over a grain
+ * of `account.region` and `period_month`) would re-aggregate inflated
+ * partials. The query reads the join when it groups, filters or aggregates
+ * a field through it (`account.region`), a grain entry that reads it
+ * (`region is account.region`), or a stored measure that does; it then joins
+ * live as the build did, and the rows agree whatever the key holds. A key
+ * the build's check found unique is read as repeating no row; the check is
+ * a separate query after the build, so it reads the joined source as it was
+ * then. A join the build joins past for the grain (`uncovered`) is never
+ * read as unique.
+ */
+function joinOneDecline(
+   plan: Pick<RollupVariantPlan, "joinOneGrain" | "rollupMeasures">,
+   shape: Pick<
+      ReturnType<typeof queryShapeOf>,
+      "groupedBy" | "filteredBy" | "measures"
+   >,
+   keyVerdict: (join: string) => KeyVerdict,
+): LegDecline | undefined {
+   const reads = [...shape.groupedBy, ...shape.filteredBy, ...shape.measures];
+   const measureReads = (name: string, join: string) =>
+      plan.rollupMeasures.some(
+         (m) =>
+            m.name === name &&
+            m.partials.some(
+               (p) =>
+                  p.leaf.joinPath[0] === join ||
+                  p.leaf.reads.some((r) => r[0] === join),
+            ),
+      );
+   let verdict = "unique" as KeyVerdict;
+   let past = false;
+   const unread = (plan.joinOneGrain ?? []).find(
+      ({ join, grain, uncovered }) => {
+         if (
+            reads.some(
+               (p) =>
+                  p.startsWith(`${join}.`) ||
+                  grain.includes(p) ||
+                  measureReads(p, join),
+            )
+         ) {
+            return false;
+         }
+         // Joined past it for the grain: no check of this key covers the rows
+         // the other joins repeat, whatever one records.
+         past = uncovered === true;
+         verdict = past ? "unknown" : keyVerdict(join);
+         return !requireUnique(verdict);
+      },
+   );
+   if (unread === undefined) return undefined;
+   const why = past
+      ? "the build joined past it, through another join no key check covers, so a repeat there would have inflated the partials it summed"
+      : verdict === "repeated"
+        ? "the rollup's last build found its key held more than once in the joined source, so the partials it summed are inflated"
+        : "its key was not checked unique when the rollup was built, so a repeat would have inflated the partials it summed";
+   return new LegDecline(
+      "rollup_count_semantics",
+      // malloy-text: a decline detail for a person, not Malloy
+      `the query reads nothing through \`${unread.join}\`, a join_one the rollup's grain reads (${unread.grain.map((g) => `\`${g}\``).join(", ")}): ${why}, where live, not joining it, counts each row once`,
+      { shapeCheck: true },
+   );
 }
 
 /**

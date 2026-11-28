@@ -228,13 +228,16 @@ export type DropOccasion = (typeof DROP_OCCASIONS)[number];
  * What a key check reads (`publisher_materialization_key_check_total{kind}`):
  * `inline_join`, an inlined join_one's key, which fails the build when it
  * repeats; `rollup`, a rollup's join_one key over its base's rows; `parent`, a
- * query source's primary key beside a rollup; `pair_leaf`, a pair table's
- * leaf key; `stored`, a stored table's primary key in its destination.
+ * query source's primary key beside a rollup; `grain_join`, the key of a
+ * join_one a rollup's grain reads, over the joined source's rows;
+ * `pair_leaf`, a pair table's leaf key; `stored`, a stored table's primary
+ * key in its destination.
  */
 export const KEY_CHECK_KINDS = [
    "inline_join",
    "rollup",
    "parent",
+   "grain_join",
    "pair_leaf",
    "stored",
 ] as const;

@@ -12,6 +12,7 @@
  * builds into; and a run's results named package-relative.
  */
 
+import type { BigQueryBuildUnread } from "../domain/collation";
 import { declaredDestination, storageWritable } from "../domain/placement";
 import { underCompilerKeys } from "../domain/binding";
 import { readsTable } from "../domain/table_name";
@@ -664,6 +665,15 @@ export interface BuildEnvironment {
    getApiConnection(connectionName: string): ApiConnection;
    getStorageDestination(destinationName: string): ApiConnection;
    getEnvironmentPath(): string;
+   /**
+    * The scope managed connection `connectionName`'s storage secret was built
+    * with when it attached (`managedScopeOf`), attaching it first; undefined
+    * when none is recorded. A same-catalog build holds the files it reads to
+    * it. Absent in test doubles: such a build is refused.
+    */
+   managedStorageScope?(
+      connectionName: string,
+   ): Promise<readonly string[] | undefined>;
    /** For the usage record a metered build emits. */
    getEnvironmentName(): string;
    /**
@@ -676,12 +686,14 @@ export interface BuildEnvironment {
     * Whether a `storage=` build's BigQuery SQL reads only strings compared
     * byte-exact, read from the catalog as an answer's check reads it (the
     * host port's; serve/admission_lookup.ts), for its column contract. Absent,
-    * its strings are recorded compared `none`.
+    * its strings are recorded compared `none`. `onUnread` is told why when
+    * the read failed or saw too little, and the answer is false.
     */
    bigqueryBuildCompareBinary?(args: {
       connection: Connection;
       source: PersistSource;
       sql: string;
+      onUnread?: (unread: BigQueryBuildUnread) => void;
    }): Promise<boolean>;
    /**
     * The root of the package being built, which the build's reads of author

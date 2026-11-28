@@ -1,6 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
+import type { Relationship } from "@malloydata/malloy-interfaces";
 import type { MalloyGivenApi } from "../given";
 
 /**
@@ -37,6 +38,8 @@ export interface JoinSourceMetadata {
    original_source_name?: string | null;
    original_source_path?: string | null;
    is_nested_index?: boolean;
+   /** Rows of the joined source per parent row: Malloy's compiled `join`. */
+   relationship?: Relationship;
 }
 
 export interface DimIndexFingerprint {
@@ -54,6 +57,12 @@ export interface Entity {
    /** The field's annotation lines, trimmed. */
    tags?: string[];
    description?: string;
+   /**
+    * The one-hop join path (`account.region`) whose `#(doc)` `description`
+    * is: the field is a dimension defined as exactly that path, with no doc
+    * of its own.
+    */
+   doc_inherited_from?: string;
    table_info?: TableInfo | null;
    join_source_metadata?: JoinSourceMetadata | null;
    dim_index_fingerprint?: DimIndexFingerprint | null;

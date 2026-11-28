@@ -171,8 +171,7 @@ export function storedElsewhereReason(
       ? `its upstream '${stored.name}' is stored in the storage= destination ` +
            `'${stored.storage}', whose table a build in the warehouse cannot ` +
            `read, and a downstream is never built by recomputing its upstream ` +
-           `from raw; it is ` +
-           `answered live, over '${stored.name}''s table`
+           `from raw; it is answered live`
       : undefined;
 }
 
@@ -221,7 +220,6 @@ export function placementReason(
       `its upstream '${upstream.name}' is stored in the storage= destination ` +
       `'${upstream.storage}', and it is built into the storage= destination ` +
       `'${downstream}', which cannot read that table; a downstream is never ` +
-      `built by recomputing its upstream from raw, so it is answered live, ` +
-      `over '${upstream.name}''s table`
+      `built by recomputing its upstream from raw, so it is answered live`
    );
 }

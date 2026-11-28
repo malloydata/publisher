@@ -26,6 +26,10 @@ import type {
 } from "@malloydata/malloy";
 import type { components } from "../../../api";
 import type { UpstreamSchemaReadings, UpstreamTable } from "./upstream_schemas";
+import type {
+   TargetContainer,
+   TargetContainerReadings,
+} from "./target_containers";
 
 type WirePackageMaterialization =
    components["schemas"]["PackageMaterializationConfig"];
@@ -69,6 +73,15 @@ export interface BuildPlanPackage {
       tables: UpstreamTable[],
       use: "load" | "run",
    ): Promise<UpstreamSchemaReadings>;
+   /**
+    * Whether each of `containers` (the datasets and schemas its database
+    * tables' `name=` place them in) exists, each read once, so the plan
+    * refuses a table whose container does not (`container_not_found`).
+    * Absent (a spec's package), none is read and none is refused for it.
+    */
+   readTargetContainers?(
+      containers: TargetContainer[],
+   ): Promise<TargetContainerReadings>;
    /**
     * The served copy's chain text, for a `storage=` view or query over
     * upstreams in its own destination (plan/storage_over_stored.ts). Absent

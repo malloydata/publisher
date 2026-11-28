@@ -40,7 +40,11 @@ import {
 } from "./run_plan";
 import { authorModelLiftContext } from "../text/author_model";
 import { reachPersisted } from "../text/source_map";
-import { BuildInstruction, ManifestEntry } from "../domain/types";
+import {
+   BuildInstruction,
+   isLegacyFailedEntry,
+   ManifestEntry,
+} from "../domain/types";
 import { servableContract } from "../domain/column_contract";
 import { isPersistedResultSourceID } from "../domain/table_plans";
 import type { ExtensionParent } from "./incremental_apply";
@@ -82,6 +86,7 @@ import {
 } from "./database_column_read";
 import { readStoredEntries, type StoredTableSite } from "./stored_table_read";
 import { liveCollationsOf } from "./column_contract_capture";
+import type { BigQueryBuildUnread } from "../domain/collation";
 
 /**
  * The persisted sources `persistSource` reads, from the author's model
@@ -396,11 +401,8 @@ function renderBuildSQL(
    );
    // Entries left out of the warehouse render only because they are at the
    // wrong tier for the upstream as declared now, by address.
-   const wrongTier = Object.entries(builtEntries).filter(
-      ([address, entry]) =>
-         !entry.storageDestinationName &&
-         address in manifest.buildManifest.entries &&
-         !upstreamEntryIsCurrent(address, entry, planFacts),
+   const wrongTier = Object.entries(builtEntries).filter(([address, entry]) =>
+      suppliedAtWrongTier(address, entry, manifest, planFacts),
    );
    // The wrong-tier upstreams a strict render misses, by the name its
    // error quotes; a reference carries no sourceName, so the plan's names
@@ -1006,6 +1008,8 @@ export async function buildSource(
                        connection,
                        source: persistSource,
                        sql: buildSQL,
+                       onUnread: (unread) =>
+                          logBigQueryBuildUnread(persistSource, unread),
                     })
                : undefined,
          ),
@@ -1147,4 +1151,53 @@ function reportingDrift<T>(environment: BuildEnvironment, render: () => T): T {
       }
       throw err;
    }
+}
+
+/**
+ * Whether `entry`, at `address`, is a table supplied at the wrong tier for
+ * its upstream as declared now: in the build manifest, labeled a warehouse
+ * table, and not current. A failed or refused upstream's mirror
+ * (`ManifestEntry.error`) is no table at any tier, so its downstream fails
+ * as that upstream having failed in this run (strictMissReason).
+ */
+function suppliedAtWrongTier(
+   address: string,
+   entry: ManifestEntry,
+   manifest: Manifest,
+   planFacts: ChainedPlanFacts,
+): boolean {
+   return (
+      !isLegacyFailedEntry(entry) &&
+      !entry.storageDestinationName &&
+      address in manifest.buildManifest.entries &&
+      !upstreamEntryIsCurrent(address, entry, planFacts)
+   );
+}
+
+/**
+ * The one warning a BigQuery `storage=` build logs when its catalog read did
+ * not prove its strings byte-exact: its contract then records them compared
+ * `none`, which refuses every `storage=` table built over it that compares
+ * them, on every run. Names where the read looked (connection, project,
+ * location, dataset, table) and a bounded reason, never a driver's text.
+ */
+export function logBigQueryBuildUnread(
+   source: PersistSource,
+   unread: BigQueryBuildUnread,
+): void {
+   logger.warn(
+      "BigQuery catalog read did not prove a storage= build's strings byte-exact; its column contract records them compared none, which refuses a storage= table built over it that compares them",
+      {
+         sourceName: source.name,
+         connectionName: source.connectionName,
+         reason: unread.reason,
+         ...(unread.project !== undefined ? { project: unread.project } : {}),
+         location: unread.location ?? "per-dataset",
+         ...(unread.dataset !== undefined ? { dataset: unread.dataset } : {}),
+         ...(unread.table !== undefined ? { table: unread.table } : {}),
+         ...(unread.tableType !== undefined
+            ? { tableType: unread.tableType }
+            : {}),
+      },
+   );
 }

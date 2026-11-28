@@ -32,6 +32,7 @@ import {
    type BuildPlanPackage,
    type BuildPlanParts,
    type FinishedBuildPlan,
+   type TargetContainerPlanReader,
    type UpstreamSchemaReader,
 } from "./build_plan";
 import { loadGateText } from "./load_gate_text";
@@ -47,10 +48,13 @@ import {
 } from "./rollup_plan";
 import type { RollupVariantPlan } from "../domain/table_plans";
 import {
+   compileGrainJoinKeyChecks,
    compileParentKeyChecks,
    parentKeyCheckCompiler,
+   type GrainJoinKeySource,
 } from "./rollup_compile";
-import { SourceMap } from "../text/source_map";
+import { reachableSourceIDs, SourceMap } from "../text/source_map";
+import type { SourceJoin } from "../../governance/ir/source_graph";
 import { createEventLoopYielder } from "../../event_loop_yield";
 import { packageFiles } from "../text/package_files";
 import type { ModelMaterializer } from "@malloydata/malloy";
@@ -74,6 +78,10 @@ interface KeyCheckInputs {
    }[];
    /** Every declared primary key, by sourceID. */
    primaryKeys: Map<string, string>;
+   /** Every declaration's joins, by sourceID, as the first model declaring it has them. */
+   joins: Map<string, SourceJoin[]>;
+   /** Every named source, with its first naming model's compiler: what a grain join key check reads. */
+   namedSources: Map<string, GrainJoinKeySource>;
    /** Each `#(materialize)` uniqueness check's compiler over a run's manifest. */
    keyCheckCompilers: Map<string, KeyCheckCompiler>;
 }
@@ -84,6 +92,8 @@ function emptyKeyCheckInputs(): KeyCheckInputs {
       parentKeyNeeds: [],
       joinedKeyNeeds: [],
       primaryKeys: new Map(),
+      joins: new Map(),
+      namedSources: new Map(),
       keyCheckCompilers: new Map(),
    };
 }
@@ -94,24 +104,39 @@ function addKeyCheckInputs(
    malloyModel: Parameters<typeof modelDefOf>[0],
    materializer: ModelMaterializer,
 ): void {
-   const map = SourceMap.of(modelDefOf(malloyModel));
+   const modelDef = modelDefOf(malloyModel);
+   const map = SourceMap.of(modelDef);
+   const compile = parentKeyCheckCompiler(materializer);
    for (const key of joinOneKeysOf(map)) into.joinOneKeys.add(key);
    for (const node of map.nodes()) {
       const key = primaryKeyOf(node.def);
       if (key !== undefined && !into.primaryKeys.has(node.sourceID)) {
          into.primaryKeys.set(node.sourceID, key);
       }
+      if (!into.joins.has(node.sourceID)) {
+         into.joins.set(node.sourceID, map.joinsOf(node.sourceID));
+      }
+      if (node.name !== undefined && !into.namedSources.has(node.sourceID)) {
+         const connection = (node.def as { connection?: unknown }).connection;
+         into.namedSources.set(node.sourceID, {
+            name: node.name,
+            connectionName:
+               typeof connection === "string" ? connection : undefined,
+            reads: () => reachableSourceIDs([node.def], modelDef),
+            compile,
+         });
+      }
    }
    for (const need of parentKeyNeedsOf(map)) {
       into.parentKeyNeeds.push({
          need,
-         compile: parentKeyCheckCompiler(materializer),
+         compile,
       });
    }
    for (const need of joinedKeyNeedsOf(map)) {
       into.joinedKeyNeeds.push({
          need,
-         compile: parentKeyCheckCompiler(materializer),
+         compile,
       });
    }
 }
@@ -120,8 +145,9 @@ function addKeyCheckInputs(
  * The key checks a run's builds run, set on the collected `parts`: a rollup
  * key check no join_one of the package reads is dropped (it would scan the
  * base for nothing), a query source read through a join_many keyed on its
- * primary key, and a rollup's base reached by a join on another column, are
- * checked by the rollup's build, and a `storage=` rollup read that way has
+ * primary key, a rollup's base reached by a join on another column, and the
+ * key of each join_one a rollup's grain reads, are checked by the rollup's
+ * build, and a `storage=` rollup read that way has
  * each stored source's key checked at its own build instead. Compiles
  * queries, so only a run's plan pays for it: no load reads any of it.
  */
@@ -146,6 +172,16 @@ async function compileRunKeyChecks(
       rollupPlans,
       inputs.parentKeyNeeds,
       inputs.joinedKeyNeeds,
+   );
+   await compileGrainJoinKeyChecks(
+      rollupPlans,
+      (sourceID) => inputs.joins.get(sourceID) ?? [],
+      (sourceID) => inputs.namedSources.get(sourceID),
+      new Set(
+         Object.keys(parts.tables).filter(
+            (sourceID) => !parts.tables[sourceID].rollup,
+         ),
+      ),
    );
    const storedKeyChecks = storedKeyChecksOf(
       rollupPlans,
@@ -236,9 +272,16 @@ async function collectPackageParts(
 function upstreamReaderOf(
    pkg: BuildPlanPackage,
    use: "load" | "run",
-): { readUpstreamSchemas?: UpstreamSchemaReader } {
+): {
+   readUpstreamSchemas?: UpstreamSchemaReader;
+   readTargetContainers?: TargetContainerPlanReader;
+} {
    const read = pkg.readUpstreamSchemas?.bind(pkg);
-   return read ? { readUpstreamSchemas: (tables) => read(tables, use) } : {};
+   const containers = pkg.readTargetContainers?.bind(pkg);
+   return {
+      ...(read ? { readUpstreamSchemas: (tables) => read(tables, use) } : {}),
+      ...(containers ? { readTargetContainers: containers } : {}),
+   };
 }
 
 /**

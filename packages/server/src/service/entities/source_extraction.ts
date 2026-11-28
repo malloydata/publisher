@@ -9,8 +9,10 @@ import {
 import { logger } from "../../logger";
 import {
    getAccessModifier,
+   getDescriptionFromTags,
    getDirectTaglines,
    getEntityFromMalloyField,
+   getTags,
    getRawTaglines,
    parseDocAnnotation,
 } from "./field_helpers";
@@ -23,9 +25,11 @@ import type {
    SourceMetadata,
 } from "./internal_types";
 
-import type {
-   Explore as MalloyExplore,
-   Model as MalloyModel,
+import {
+   isJoined,
+   isJoinedSource,
+   type Explore as MalloyExplore,
+   type Model as MalloyModel,
 } from "@malloydata/malloy";
 
 import { type Refuse, throwRefusal } from "./dim_index_discovery";
@@ -160,6 +164,40 @@ export function parseJoinCode(
 }
 
 /**
+ * What a join field joins, and how many rows of it each parent row meets.
+ *
+ * The relationship is Malloy's compiled `join` (`one`, `many` or `cross`), not
+ * the `join_one:` / `join_many:` text, so it is right for every join form.
+ *
+ * A record or repeated-record column is an explore field like a join, but it
+ * has no join text and no source of its own. Its members exist only through
+ * it, so it is always nested and names no source. Parsed as a join, the
+ * column's own name was taken as the joined source: a top-level source with
+ * that name hid the members from the walk, and a reader drew a join edge to
+ * that unrelated source. A record is `one`; a repeated record is `many`.
+ */
+export function joinMetadataOf(
+   field: MalloyExplore,
+   docString: string,
+   sourceToModelPath: Map<string, string>,
+): JoinSourceMetadata {
+   const structDef = field.structDef;
+   const metadata: JoinSourceMetadata = isJoinedSource(structDef)
+      ? parseJoinCode(
+           extractCodeFromEntity(field, docString),
+           field.name,
+           sourceToModelPath,
+        )
+      : {
+           original_source_name: null,
+           original_source_path: null,
+           is_nested_index: true,
+        };
+   if (isJoined(structDef)) metadata.relationship = structDef.join;
+   return metadata;
+}
+
+/**
  * Whether the extraction reports a public join's fields under the join's dotted
  * path, rather than only under the joined source's own top-level walk. The
  * `#(index)` candidate walk asks the same question ({@link joinDescent}), so it
@@ -215,11 +253,7 @@ export function joinDescent(
    const topLevelExploreNames = new Set(explores.map((e) => e.name));
    return (join, parentSourceName) =>
       descendsIntoJoin(
-         parseJoinCode(
-            extractCodeFromEntity(join, docString),
-            join.name,
-            sourceToModelPath,
-         ),
+         joinMetadataOf(join, docString, sourceToModelPath),
          parentSourceName.split(".")[0]!,
          topLevelExploreNames,
          boundary,
@@ -273,14 +307,13 @@ function getEntitiesFromExplore(
 
       let joinMetadata: JoinSourceMetadata | null = null;
       if (field.isExploreField()) {
-         // Parse the join to understand what kind it is. Use the
-         // file-aware ``extractCodeFromEntity`` (not ``getCode``) so a
-         // field imported from another file is read from its OWN file
-         // rather than slicing line numbers out of the current
+         // Parse the join to understand what kind it is. The join text is
+         // read with the file-aware ``extractCodeFromEntity`` (not
+         // ``getCode``) so a field imported from another file is read from
+         // its OWN file rather than slicing line numbers out of the current
          // ``docString`` (which would mis-parse imported joins as
          // direct-table joins and spuriously recurse the extraction).
-         const joinCode = extractCodeFromEntity(field, docString);
-         joinMetadata = parseJoinCode(joinCode, field.name, sourceToModelPath);
+         joinMetadata = joinMetadataOf(field, docString, sourceToModelPath);
 
          // Recurse into the joined source when its fields are otherwise
          // unreachable from the top-level walk:
@@ -355,6 +388,7 @@ function getEntitiesFromExplore(
          nameOverride,
          explore.sourceStructDef?.dialect ?? null,
       );
+      inheritJoinedDoc(codeEntity, field, explore);
       // An ``#(index)``-tagged dimension carries its definitional fingerprint
       // (the compiled-SQL hash and required-filter set), from which a host can
       // derive an id that stays stable across versions. A candidate whose
@@ -375,6 +409,76 @@ function getEntitiesFromExplore(
 
    return entities;
 }
+
+/**
+ * A dimension defined as exactly a one-hop join path (`region is
+ * account.region`, read from its compiled definition, never its text) with
+ * no `#(doc)` of its own reports the joined field's, marked
+ * `doc_inherited_from`. A doc on the dimension wins; an expression over the
+ * path (`upper(account.region)`) is not the path, so inherits nothing; a
+ * hidden join or joined field gives nothing. The path is written in plain
+ * names (`source.x`), as the package index writes it.
+ */
+function inheritJoinedDoc(
+   entity: Entity,
+   field: MalloyExplore["allFields"][number],
+   explore: MalloyExplore,
+): void {
+   if (entity.description !== undefined || field.isExploreField()) return;
+   const defs = (explore.structDef as { fields?: unknown[] }).fields as
+      | { name?: unknown; as?: unknown; e?: unknown }[]
+      | undefined;
+   const pathOf = (name: string): string[] | undefined => {
+      const e = defs?.find((f) => (f.as ?? f.name) === name)?.e as
+         | { node?: unknown; path?: unknown }
+         | undefined;
+      return e?.node === "field" &&
+         Array.isArray(e.path) &&
+         e.path.every((p) => typeof p === "string")
+         ? (e.path as string[])
+         : undefined;
+   };
+   // A dimension defined as exactly another of the source's (`a_chain is
+   // a_res`), each link public and undocumented, is followed to its path.
+   let path = pathOf(field.name);
+   for (let depth = 0; path?.length === 1; depth++) {
+      const link = explore.getFieldByNameIfExists(path[0] as string);
+      if (
+         depth >= MAX_ALIAS_CHAIN ||
+         !link ||
+         link.isExploreField() ||
+         getAccessModifier(link) !== AccessModifierEnum.Public ||
+         getDescriptionFromTags(getTags(link)) !== undefined
+      ) {
+         return;
+      }
+      path = pathOf(link.name);
+   }
+   if (path?.length !== 2) return;
+   const [joinName, fieldName] = path as [string, string];
+   const join = explore.getFieldByNameIfExists(joinName);
+   if (
+      !join?.isExploreField() ||
+      getAccessModifier(join) !== AccessModifierEnum.Public
+   ) {
+      return;
+   }
+   const joined = join.getFieldByNameIfExists(fieldName);
+   if (
+      !joined ||
+      joined.isExploreField() ||
+      getAccessModifier(joined) !== AccessModifierEnum.Public
+   ) {
+      return;
+   }
+   const doc = getDescriptionFromTags(getTags(joined));
+   if (doc === undefined) return;
+   entity.description = doc;
+   entity.doc_inherited_from = `${joinName}.${fieldName}`;
+}
+
+/** How many dimension-to-dimension links {@link inheritJoinedDoc} follows. */
+const MAX_ALIAS_CHAIN = 8;
 
 /*
  * Extracts documentation string from an explore's block note annotations.
@@ -760,12 +864,7 @@ function planJoinAuthorizeMetadata(
       }
       if (getAccessModifier(field) !== AccessModifierEnum.Public) continue;
 
-      const joinCode = extractCodeFromEntity(field, docString);
-      const joinMetadata = parseJoinCode(
-         joinCode,
-         field.name,
-         sourceToModelPath,
-      );
+      const joinMetadata = joinMetadataOf(field, docString, sourceToModelPath);
 
       // Direct-table joins (`a is duckdb.table(...)`) have no separate named
       // source declared elsewhere — `targetName` is null — but the join

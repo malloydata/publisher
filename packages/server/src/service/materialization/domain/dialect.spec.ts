@@ -77,6 +77,8 @@ const DECIDED: Record<Flag, DialectName[]> = {
    // A stored DOUBLE compares as live only where live's double orders NaN
    // as DuckDB does (not BigQuery's FLOAT64).
    binary64Types: ["duckdb", "postgres", "snowflake"],
+   // Where a `name=`'s container is read (F-03); elsewhere it is not.
+   containerCatalog: ["duckdb", "postgres", "snowflake", "standardsql"],
 };
 
 /** Each dialect's leaf budget, as decided (`domain/table_name.ts`). */

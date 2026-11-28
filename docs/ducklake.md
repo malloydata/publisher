@@ -483,7 +483,22 @@ source carrying an `.sql()` source or a `sql_*` expression anywhere beneath it i
 DuckLake source was before, and so is a table read from a file or URL (`lake.table('/x.csv')`),
 which that session would read with the destination's storage credential. Such a source is refused when
 the package loads (`persist-not-built`, reason `storage_source_unsupported`) and answered live, rather
-than failing its build. On a connection configured `managed` the same holds with no `storage=` too: a
+than failing its build. A build from a `managed` connection also reads only what that connection could
+read itself, since the destination's credential reaches the whole catalog: base tables, never a view
+(whose body is not held to the connection's scope), each made only of data and delete files under the
+storage prefixes the connection's storage secret was built with when it attached (`main` and the
+`readableSchemas` that existed then; a catalog writer can register any file into a table with
+`ducklake_add_data_files`). A file path is matched
+byte for byte against prefixes that end in `/`, so `main_evil/` never passes for `main/`, and a path with a
+`.` or `..` segment, a backslash or a percent escape fails. An unmanaged connection reads the whole catalog
+itself, so its build may read a view. The check runs in the build's own transaction, so the build reads the
+catalog as the check saw it. A served copy that reads a managed connection's tables through the
+destination, to serve a join across the one catalog, holds to the same rule and checks it again before
+every query it answers, failing closed; it reuses a check's verdict while the catalog's snapshot id is
+unchanged. That check and the query run in separate transactions: a query whose check passed before a
+catalog write that breaks the rule committed, and whose own read begins after it, reads what the write
+made, once. Every query in flight across each such write can, and only a writer with catalog write access
+(the host or orchestrator) can make one. Any query checked after the commit answers live. On a connection configured `managed` the same holds with no `storage=` too: a
 managed catalog's tables are built inside it, so a `#@ persist`, `#(materialize)` or rollup over author
 SQL there is refused at load whatever it declares. A chained build (a
 downstream stacked on its stored parents in the destination) runs on the same kind of session and follows

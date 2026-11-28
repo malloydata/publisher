@@ -17,6 +17,7 @@ import os from "os";
 import path from "path";
 import { fileURLToPath } from "url";
 import { getFreePort } from "../../harness/spawn_server";
+import { testFileURL } from "../../../src/test_helpers/test_file_url";
 
 /**
  * Published versions across a real restart: a server process publishes,
@@ -168,7 +169,12 @@ describe("published versions across a restart", () => {
    let server: Server;
    let serverRoot: string;
    let srcRoot: string;
-   const manifestUri = "gs://versions-restart-unreachable/manifest.json";
+   // A local file that does not exist, so a fetch of it answers "not found"
+   // on every machine (a bucket answers by network and credentials).
+   const manifestUri = testFileURL(
+      "versions-restart-unreachable",
+      "manifest.json",
+   );
    const runs: Record<string, string> = {};
 
    const pkgApi = (name: string) =>

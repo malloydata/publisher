@@ -21,6 +21,7 @@ import {
 import type { ServedCopyProblem } from "./served_copy_serve";
 import { SERVED_COPY_WARNING_CODE } from "./served_copy_serve";
 import { servedCopyAlias } from "./served_copy_config";
+import { testSourceID } from "../../../test_helpers/test_file_url";
 
 // A compile refusing a join in an imported file, as Malloy words it: the
 // warning names the file and the join, never the server's path, the
@@ -68,6 +69,16 @@ const PROBLEMS = {
       sourceName: "s",
       leaks: ["`s` carries [pii] but exposes `j.email`."],
       coverage: ["`j.email` is not classified."],
+   },
+   sql_embed_cross_connection: {
+      reason: "sql_embed_cross_connection",
+      sourceName: "s",
+      detail: "`u` on `duckdb`",
+   },
+   sql_embed_bare: {
+      reason: "sql_embed_bare",
+      sourceName: "s",
+      detail: "`u` on `duckdb`",
    },
 } satisfies { [R in Reason]: ServedCopyProblem & { reason: R } };
 
@@ -184,6 +195,22 @@ const WARNINGS: Record<
          message: "`j.email` is not classified.",
       },
    ],
+   sql_embed_cross_connection: [
+      {
+         code: "served-copy-not-served",
+         subject: "s",
+         message:
+            "This source is read through a `.sql()` source's `%{}` (`u` on `duckdb`), whose SQL runs on its own connection, while its table is read on another (a storage destination, or a managed catalog read through one), which a `%{}` cannot reach. The served copy leaves this source as written, so its queries are answered live, and the model's other stored sources still serve. To serve it, persist the `.sql()` source itself with the same `storage=` as the sources its `%{}` reads: the copy then reads the `.sql()` source's own table, and theirs serve too. Or drop `storage=` from the sources it reads, so they are built in their own database, where its `%{}` reads their tables. On a DuckLake or managed connection, which builds no author SQL and places every table itself, build what it reads into a warehouse table and read that with `.table()`.",
+      },
+   ],
+   sql_embed_bare: [
+      {
+         code: "served-copy-not-served",
+         subject: "s",
+         message:
+            "This source is embedded whole by a `.sql()` source's `%{}` (`u` on `duckdb`), which Malloy allows only of a source it can compile to SQL, and its stored table is not one. The served copy leaves this source as written, so its queries are answered live, and the model's other stored sources still serve. To serve it, embed it as a query, `%{ <source> -> { select: * } }` (whose columns are the source's fields, not its SQL's): in the source's own database the copy then reads its table, and in a storage destination the fix for `sql_embed_cross_connection` applies.",
+      },
+   ],
 };
 
 function warningsFor(problems: ServedCopyProblem[]) {
@@ -198,7 +225,7 @@ function warningsFor(problems: ServedCopyProblem[]) {
 }
 
 describe("the served copy's refusal codes", () => {
-   it("has thirteen reasons", () => {
+   it("has fifteen reasons", () => {
       expect(Object.keys(PROBLEMS)).toEqual([
          "compile_failed",
          "cross_connection_unbuilt",
@@ -213,6 +240,8 @@ describe("the served copy's refusal codes", () => {
          "inline_join_kept",
          "reroot_not_compiled",
          "classification_not_kept",
+         "sql_embed_cross_connection",
+         "sql_embed_bare",
       ]);
    });
 
@@ -330,5 +359,64 @@ describe("the served copy's refusal codes", () => {
             "fix what keeps the inlined join from being answered from its stored columns (the warning on this join says what), materialize the joined source into the same destination, or build this source in its own database (drop `storage=`).",
          ),
       ]);
+   });
+});
+
+const S_ID = testSourceID("s", "pkg", "m.malloy");
+
+/**
+ * The package's warnings for `problems`, over a plan whose one stored source
+ * (`s`, a `#(materialize)` one) has `storage=` written, or was placed in its
+ * destination by the host with none written.
+ */
+function warningsWithPlan(problems: ServedCopyProblem[], written: boolean) {
+   const materialization = new PackageMaterialization({
+      models: () =>
+         new Map([["m.malloy", { servedCopyProblems: () => problems }]]),
+      packageName: () => "pkg",
+   } as unknown as PackageMaterializationOwner);
+   Object.defineProperty(materialization.plan, "buildPlan", {
+      get: () => ({ graphs: [], sources: {} }),
+   });
+   Object.defineProperty(materialization.plan, "materializePlans", {
+      get: () => ({
+         [S_ID]: {
+            sourceName: "s",
+            sourceID: S_ID,
+            persist: written ? { storage: "lake" } : {},
+         },
+      }),
+   });
+   return materialization.servedCopyWarnings().map((w) => w.message);
+}
+
+describe("a cross-connection join's advice on a destination the host placed", () => {
+   const stored = {
+      ...PROBLEMS.cross_connection_join,
+      storedSourceID: S_ID,
+   } satisfies ServedCopyProblem;
+
+   it("advises dropping storage= only where the author wrote it", () => {
+      expect(warningsWithPlan([stored], true)).toEqual(
+         WARNINGS.cross_connection_join.map((w) => w.message),
+      );
+      expect(warningsWithPlan([stored], false)).toEqual([
+         "This source is stored in a destination its join `j` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, inline the join (inline=) or materialize the joined source into the same destination.",
+      ]);
+   });
+
+   it("drops it from the whole-source and unstored-declarer wordings too", () => {
+      const messages = warningsWithPlan(
+         [
+            { ...PROBLEMS.cross_connection_join, leftOutWhole: true },
+            { ...PROBLEMS.cross_connection_join, declarerNotStored: true },
+         ],
+         false,
+      );
+      expect(messages).toEqual([
+         "This source's join `j` reads a source the served copy moves to its storage destination, so the join crosses connections there, and it cannot be left out alone (what reads it cannot be left out with it). The served copy leaves this source out, so its queries are answered live, and the model's other stored sources still serve. To serve it, store this source in the same destination.",
+         "This source's join `j` reads a source the served copy reads from its storage destination, which this source's own connection cannot reach. Queries that use the join are answered live; the others are answered as before. To serve them too, store this source in the same destination.",
+      ]);
+      for (const m of messages) expect(m).not.toContain("storage=");
    });
 });

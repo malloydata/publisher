@@ -4685,8 +4685,12 @@ components:
                   When true, the package did load earlier and is still serving
                   that last successful compile; the message is why its most
                   recent reload (a watch-mode save, reload_package, or
-                  reload=true) failed. The served model is older than the files
-                  on disk. Absent on ordinary load failures. This array is the
+                  reload=true) failed, so the served model is older than the
+                  files on disk, or why a model file whose text did not change
+                  stopped compiling when the package bound new tables (most
+                  often a table it reads was dropped), so that file serves the
+                  model it last compiled (the `model-recompile-failed`
+                  warning). Absent on ordinary load failures. This array is the
                   only place staleness is reported, because the package's entry
                   under environments, and its own package resource, both read
                   SERVING; join on the package name here to tell a current
@@ -4695,8 +4699,8 @@ components:
                 type: string
                 format: date-time
                 description:
-                  When the failed reload happened. Only present alongside
-                  stale = true.
+                  When the failed reload (or the recompile that kept a model)
+                  happened. Only present alongside stale = true.
         frozenConfig:
           type: boolean
           description:
@@ -5058,15 +5062,22 @@ components:
             table unread (answered live, read again), never `incompatible`.
             Both are non-terminal and never a plan-time refusal: a rebuild
             fixes them, and a source with either counts as stale, so the next
-            build rebuilds it in full. Each names the generation it judged in
+            build rebuilds it in full. `upstream_unread` (bound, but withdrawn
+            after a recompile, reload or publish failed, and the read of a
+            warehouse table it was built from failed, then or at any read
+            since, so whether that table changed is not known: answered live
+            until a read of it succeeds and finds it unchanged, at the
+            package's next manifest bind or rebind, or a reload plans it
+            again; it judges nothing about the table and never counts it
+            stale). Each names the generation it judged in
             `table`, so a consumer drops a verdict about a table it has since
             replaced. An open set.
         table:
           type: object
           required: [physicalTableName]
           description: >-
-            With `contract_missing` or `incompatible`: the table generation
-            the verdict judged, its `physicalTableName` and the `builtAt` its
+            With `contract_missing`, `incompatible` or `upstream_unread`: the
+            table generation the verdict judged, its `physicalTableName` and the `builtAt` its
             entry carried (absent when the entry carried none).
           properties:
             physicalTableName:
@@ -5199,7 +5210,12 @@ components:
             whole copy, the codes `publisher_served_copy_bind_total` counts,
             most actionable first (for example `cross_connection_join` before
             `fields_not_carried`): `cross_connection_join`,
-            `cross_connection_unbuilt`, `inline_join_kept`,
+            `cross_connection_unbuilt`, `sql_embed_cross_connection` (a
+            `.sql()` source reads it through `%{}` on another connection than
+            its table is read on: a storage destination, or a managed
+            catalog read through one), `sql_embed_bare` (a `.sql()`
+            source embeds it bare, `%{ x }`, which its stored table cannot be
+            embedded as), `inline_join_kept`,
             `read_terms_not_kept`, `fields_not_carried`, `column_types`,
             `classification_not_kept`, `pair_join_not_found`,
             `pair_not_compiled`, `definition_not_parsed`, `compile_failed`,
@@ -5901,7 +5917,15 @@ components:
                 description: >-
                   A stable identifier for the finding's family, for a client that
                   acts on it rather than only showing it; absent for a family that
-                  has none yet. `deprecated-malloynb-notebook`: a `.malloynb`
+                  has none yet. `render-tag`: a render annotation the
+                  renderer cannot apply as written, malformed for its field
+                  (`error`) or inert where it sits (`warn`); one per finding,
+                  `model` its file and `subject` the query or view it sits on.
+                  `render-tag-check-failed`: a model whose render-tag check did
+                  not finish (it could not be read, `error`, or the validator
+                  failed, `warn`), so its render-tag findings are unknown
+                  rather than clean; reported by a package-scope compile,
+                  one per model. `deprecated-malloynb-notebook`: a `.malloynb`
                   notebook, the deprecated cell format (one per file, `model`
                   naming it). `malloynb-cell-refused`: a `.malloynb` code cell
                   whose `run:` statement the query route refuses for every
@@ -6063,8 +6087,9 @@ components:
                   extension; `warn`).
                   `rollup-join-one-key-repeated`: a rollup's last build found
                   a `join_one` key repeated in the data, so queries that read
-                  that join beside other aggregates are answered live
-                  (`subject` the rollup's base; `warn`). Its former name,
+                  that join beside other aggregates, or, for a `join_one` the
+                  rollup's grain reads, queries that read nothing through it,
+                  are answered live (`subject` the rollup's base; `warn`). Its former name,
                   `preaggregate-join-one-key-repeated`, is retained, no longer
                   produced.
                   `served-copy-not-served`: the served copy (the author's own
@@ -6076,8 +6101,26 @@ components:
                   `pair_join_not_found`, `pair_not_compiled`,
                   `fields_not_carried`, `read_terms_not_kept`,
                   `cross_connection_join`, `inline_join_kept`,
-                  `reroot_not_compiled`, `classification_not_kept`; an open
-                  set) (`subject` the source; `warn`).
+                  `reroot_not_compiled`, `classification_not_kept`,
+                  `sql_embed_cross_connection`, `sql_embed_bare`; an
+                  open set) (`subject` the
+                  source; `warn`).
+                  `model-recompile-failed`: a model file that compiled before
+                  did not compile when the package bound new tables, although
+                  neither its text nor that of any file it imports changed
+                  since (most often because a table it reads directly was
+                  dropped), so the file keeps serving the model it last
+                  compiled rather than answering every query on its sources
+                  with the compile error, and the package reads `stale: true`
+                  in `/status` `loadErrors`. A file an author edited that
+                  fails to compile is never kept: it answers with its compile
+                  error. The message carries the compile error and names the
+                  file's sources, and which of them stopped serving their
+                  stored tables because an upstream table they were built
+                  from changed (those answer live, and read `incompatible`,
+                  `upstream_altered`) (`model` the file; `reason`
+                  `compile_failed`; `warn`). Cleared by the next bind or
+                  reload that compiles the file.
                   `row-level-gate-unexpressible`: a row-level gate an entry
                   point inherits, whose field it no longer carries, so that
                   entry point denies every request; `row-level-gate-reads-no-given`:
@@ -6119,8 +6162,9 @@ components:
                   `rollup-join-one-key-repeated`: a bound rollup whose last
                   build found the key of a `join_one` it reads repeated, so a
                   query reading that join beside other aggregates is answered
-                  live; it clears once a build finds the key unique (one per
-                  rollup; `warn`). `preaggregate-join-one-key-repeated` is
+                  live, or, for a `join_one` its grain reads, a query reading
+                  nothing through it; it clears once a build finds the key
+                  unique (one per rollup and key; `warn`). `preaggregate-join-one-key-repeated` is
                   retained, no longer produced: it is
                   `rollup-join-one-key-repeated` now.
                   `join-bypass`: an author join from a published source to one
@@ -6233,7 +6277,8 @@ components:
                   The bounded cause of a finding, so a client branches on it
                   rather than on the message (whose wording may change): the
                   refusal record's `reason` on a `*-not-built` warning; the served copy's reason on
-                  `served-copy-not-served`; the unread reason on
+                  `served-copy-not-served`; `compile_failed` on
+                  `model-recompile-failed`; the unread reason on
                   `database-table-unread` and `storage-table-unread`; the kept table's reason on
                   `table-kept`; the serve verdict's reason on a
                   `materialization-*` verdict warning; `storage_mode` on
@@ -7853,7 +7898,22 @@ components:
           description: The field's annotations, trimmed, empty ones left out.
         doc:
           type: string
-          description: The field's `#(doc)` text, when it has any.
+          description: >-
+            The field's `#(doc)` text, when it has any. A dimension defined as
+            exactly a one-hop join path (`region is account.region`) with no
+            `#(doc)` of its own reports the joined field's, and names that
+            path in `docInheritedFrom`.
+        docInheritedFrom:
+          type: string
+          description: >-
+            Present when `doc` is not the field's own: the one-hop join path
+            whose `#(doc)` it reports, because the field is a dimension
+            defined as exactly that path (or as exactly another such
+            undocumented dimension of the source, `a_chain is a_res`) and has
+            none of its own. Written in plain names, `join.field`, never
+            backquoted, even for a join named by a reserved word
+            (`source.region`). A `#(doc)` written on the dimension wins, and an
+            expression over the path inherits nothing.
         table:
           $ref: "#/components/schemas/EntityTable"
         join:
@@ -7886,8 +7946,8 @@ components:
         sourceName:
           type: string
           description: >-
-            The source the join reads, absent for a join read straight from a
-            table.
+            The source the join reads, absent for a table read or a record
+            column.
         sourcePath:
           type: string
           description: Package-relative path of the file declaring that source.
@@ -7895,7 +7955,17 @@ components:
           type: boolean
           description: >-
             Whether the joined source exists only inside this join (an inline
-            `extend` or a table read), so its fields are listed through it.
+            `extend`, a table read, or a record column), so its fields are
+            listed through it.
+        relationship:
+          type: string
+          enum: [one, many, cross]
+          description: >-
+            How many rows of the joined source each row of the parent meets,
+            from the compiled join: `one` for `join_one:` and a record column,
+            `many` for `join_many:` and a repeated-record or array column,
+            `cross` for `join_cross:`. Grouping by a field reached through a
+            `many` or `cross` join gives one group per joined row.
 
     IndexFingerprint:
       type: object
@@ -10416,7 +10486,8 @@ components:
             reload over every .malloy and .malloynb file, without swapping the
             result into the served package; with a source, importers compile
             against the replacement. It also reports the render-tag findings
-            (code "render-tag"), the dashboard, given and drill findings
+            (code "render-tag", or "render-tag-check-failed" for a model whose
+            check did not finish), the dashboard, given and drill findings
             (code "dashboard-lint") and each .malloynb code cell the query
             route would refuse (code "malloynb-cell-refused", at most 10 per
             notebook and 50 per package, with the rest named in
@@ -11161,6 +11232,7 @@ components:
               unreadable_grain,
               upstream_unread,
               upstream_table_unusable,
+              container_not_found,
             ]
           description: >-
             The bounded refusal reason; `message` says the specifics.
@@ -11235,6 +11307,17 @@ components:
             or not planned, so it has none. `message` names the upstream and
             why. Terminal until the model changes; the declaration is
             answered live).
+            `container_not_found` (a database table whose `name=` places it
+            in a container its warehouse does not hold: a BigQuery dataset
+            that does not exist in the project the `name=` names, else the
+            connection's billing project, or one in another location than the connection
+            declares; a Postgres, Snowflake or DuckDB schema that does not
+            exist. Read once per connection and container when the package
+            is planned; `message` names the container, and the location for
+            a mismatch, and says to create it or change `name=`. A read that
+            fails refuses nothing, and a build checks again before it writes
+            anything. Planned again once a reload, or a plan refresh, finds
+            the container; `storage=` declarations are never checked).
 
 
             A persisted view or named query: `materialization_off` (persisted

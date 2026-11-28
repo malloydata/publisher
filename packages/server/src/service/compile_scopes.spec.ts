@@ -568,6 +568,24 @@ query: x is sales -> by_n
       await expectSameAsReload(result.problems);
    });
 
+   it("reload: each render-tag finding is a package warning with code render-tag", async () => {
+      await writeDashboard(
+         `source: s is duckdb.sql("select 1 as x") extend {\n` +
+            `  measure: c is count()\n` +
+            `  # big_value { value=missing }\n` +
+            `  view: v is { aggregate: c }\n` +
+            `}\n`,
+      );
+      const reloaded = await env.getPackage(parsePackageName("pkg"), true);
+      const findings = (reloaded.getPackageMetadata().warnings ?? []).filter(
+         (w) => w.model === "dashboards/x.malloy",
+      );
+      expect(findings.length).toBeGreaterThan(0);
+      expect(findings.map((w) => w.code)).toEqual(
+         findings.map(() => "render-tag"),
+      );
+   });
+
    it("package: a file that does not compile is reported, not logged as a reload", async () => {
       await writeDashboard(
          `## artifact { title="X" tiles=["a -> v"] }\n` +

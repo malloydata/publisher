@@ -1,7 +1,7 @@
 // Copyright (c) Credible Data Inc.
 // SPDX-License-Identifier: MIT
 
-import { readUpstreamSchemas } from "./materialization";
+import { readTargetContainers, readUpstreamSchemas } from "./materialization";
 import type {
    GivenValue,
    LogMessage,
@@ -66,7 +66,7 @@ import {
    type MalloyGiven,
 } from "./given";
 import { VersionRef } from "./identity";
-import { Model } from "./model";
+import { Model, RENDER_TAG_CODE } from "./model";
 import { ModelPolicy } from "./model_policy";
 import { notebookLintProblems, reportedByDashboardLint } from "./notebook_lint";
 import {
@@ -1326,7 +1326,10 @@ async function compilePackageDryRun(
       }
    }
    for (const warning of renderTagWarnings) {
-      collect([warningAsProblem(warning, "render-tag")], warning.model);
+      collect(
+         [warningAsProblem(warning, warning.code ?? RENDER_TAG_CODE)],
+         warning.model,
+      );
    }
    for (const warning of reportWarnings) {
       collect(
@@ -1400,6 +1403,7 @@ async function loadPackageInWorker(ctx: CompileContext) {
    try {
       return await getPackageLoadPool().loadPackage({
          upstreamSchemas: readUpstreamSchemas,
+         targetContainers: readTargetContainers,
          packagePath: ctx.packagePath,
          packageName: ctx.packageName,
          environmentName: ctx.environmentName,

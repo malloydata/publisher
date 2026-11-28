@@ -69,6 +69,9 @@ function toApiField(entity: Entity): ApiEntityField {
    };
    if (entity.field_data_type != null) field.dataType = entity.field_data_type;
    if (entity.description !== undefined) field.doc = entity.description;
+   if (entity.doc_inherited_from !== undefined) {
+      field.docInheritedFrom = entity.doc_inherited_from;
+   }
    const join = entity.join_source_metadata;
    if (join) {
       field.join = {
@@ -79,6 +82,7 @@ function toApiField(entity: Entity): ApiEntityField {
          ...(join.original_source_path != null && {
             sourcePath: join.original_source_path,
          }),
+         ...(join.relationship && { relationship: join.relationship }),
       };
    }
    if (entity.dim_index_fingerprint) {

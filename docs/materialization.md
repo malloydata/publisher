@@ -35,6 +35,8 @@ A misspelled `#@ persist` fails the publish and the load: `#@persist` (no space)
 
 `name=` may also name the container the table goes in — `name="analytics.order_summary"` writes `order_summary` into the `analytics` schema/dataset rather than the connection's default one. The container must already exist; Publisher does not create it. On BigQuery a dataset is required, since a table cannot live outside one.
 
+A database table's container is checked when the package is planned, once per connection and container: a BigQuery dataset in the project the `name=` names (`name="proj.analytics.t"`), else the connection's billing project, where the build's unqualified `CREATE TABLE` lands (not its default project, when the two differ), and in the connection's location when it declares one; a Postgres, Snowflake or DuckDB schema. A table whose container does not exist, or whose BigQuery dataset is in another location than the connection's, is refused, with reason `container_not_found` in `refusedSources` and a `*-not-built` warning naming the container (and both locations, for a mismatch), and answers live: create the container, or change `name=`. It is planned once a reload, or a connection change's plan refresh, finds the container. A read that fails (a permission, the network, its 15-second timeout) refuses nothing; the build checks again before it writes anything, and stops there with a `container_not_found` error, not retryable, rather than failing on the warehouse's own "not found". Other dialects are not checked. A `storage=` table is not checked this way: its destination's `destinationSchema` is checked when it builds.
+
 The name is a plain identifier path: dot-separated segments of letters, digits, `_` and `-`. Publisher quotes each segment for the target warehouse itself, so case is preserved (`name="OrdersDaily"` creates `OrdersDaily`) and a reserved word works (`name="order"`). Don't quote inside the value: a name holding quotes, spaces, backticks or semicolons, such as `name="\"Orders Daily\""`, fails the publish and the load (`persist-invalid`, or `materialize-invalid` on `#(materialize)`), because the name is written into the build's DDL.
 
 Each source needs a table of its own. When two different sources' `name=` puts them on one table in one destination (two models each persisting a source at `name="summary"`, say), each build overwrites the other's, so the author's collision fails the publish and the load, code `materialization-table-collision`, naming the sources, until each has a `name=` of its own. That holds on every route: `#@ persist`, `#(materialize)`, persisted views and persisted queries. A source with no `name=` cannot collide this way: it takes a readable name that hashes its model and its name ([Whose table it is](#whose-table-it-is)), so two models each persisting a source named `summary` build two tables. In a published version of a `scope: "version"` package a `name=` only starts the readable name, so it cannot collide either; in an unversioned package a `name=` is written as given whatever the scope, so two equal ones collide. Two names are compared by their table segment: they collide when the containers of the shorter end the longer's, since a name written with fewer containers lands in the connection's default schema or dataset, which the load cannot see (`name="main.t"` and `name="t"` are one table on DuckDB, `proj.ds.t` and `ds.t` on BigQuery). So `name="t"` beside `name="other.t"` fails the load even when the default schema is not `other`: a deliberate false positive, since a missed collision would serve one source the other's rows. Write both names with their container to keep them apart. A collision between a `#@ persist` and a `#(materialize)` names both, and under `PERSIST_COLLISION_ENFORCE=false` neither is built. A deployment that must load one anyway can set `PERSIST_COLLISION_ENFORCE=false`, which relaxes both the publish and the load check: the colliding sources are refused alone (`persist-not-built` or `materialize-not-built`, severity `warn`), neither is built or served from the shared table, both are answered live with serve verdicts `live`, reason `refused`, and the rest of the package loads. The same source reached from two models shares its table legitimately, since its content address is the same: only different sources on one table collide. A clash of names Publisher generates itself (a persisted view's or query's generated build source, a rollup's generated name across models, or a readable-name clash found at run time) is not the author's mistake, and stays a refusal of the source alone.
@@ -818,8 +820,20 @@ A reload or publish that refetches the schemas and then fails to compile (a colu
 reads was dropped, say) keeps the previous model serving, reported `stale`. It still reads the
 upstream tables again, and each source whose build names a column that changed or is gone stops
 serving its stored tables: its queries answer as live does, which for a dropped column is
-live's error. Sources whose columns did not change keep serving. The stale message names the
-changed tables and the sources that answer live.
+live's error. Sources whose columns did not change keep serving. An upstream table that read
+fails on is not taken as unchanged: each source that reads it stops serving its stored tables too,
+with the serve verdict `upstream_unread`, so a table built from an upstream nobody could read never
+answers from its last build. It serves again once a read of that upstream succeeds and finds it
+unchanged. There is no server timer or backoff: the read happens only when the host's calls drive
+one, at the package's next manifest bind (a `storage=`-only package's included) or rebind (a run's
+commit, or a poll of an unchanged manifest, which does not skip while one is withdrawn), or when a
+reload or publish plans the package afresh. The withdrawal is held across plan refreshes (a
+connection edit's), the one a failed reload or publish leaves included, until every file compiles
+again and the read succeeds; a file that compiles again while the read still fails stays withdrawn.
+A failure that cannot tell which tables
+withdraws every stored table of the file that did not recompile. The stale message, and the
+`model-recompile-failed` warning when a rebind keeps a file, name the changed tables, the tables
+that could not be read, and the sources that answer live.
 
 The same holds when the table did not move but its source did, and the address did not move with
 it (the type was read before the retype, with no reload since, or the source has no `reads`): a
@@ -1204,6 +1218,7 @@ A `live` verdict's `reason`:
 | `connection_cannot_hold_table` | Materialized in its own warehouse, on a connection whose type creates no tables.                                                                                                                                                                                                                                                                                                                                                                                              | Add `storage=` naming a configured destination, or drop the annotation.                                                                       |
 | `contract_missing`             | Its table is bound, but its manifest entry carries no column contract: it was built by an earlier release, its contract capture failed, or a host sent none. The bind cannot tell whether the table still holds what it was built to hold, so it is never served from. Non-terminal: a rebuild fixes it. The warning is `materialization-contract-missing`.                                                                                                                   | Rebuild the table. A host stores each entry's `contract` and sends it back.                                                                   |
 | `incompatible`                 | Its table is bound, but no longer holds what its contract records: a column gone, retyped or recollated, the destination's `default_collation` changed under a string column that declares none, the source now declaring another type (`declared_moved`), or an upstream it was built from changed under it (`upstream_altered`). `incompatibility` says which and names the columns. Non-terminal: a rebuild fixes it. The warning is `materialization-table-incompatible`. | Rebuild the table; a standalone run rebuilds it in full on its own.                                                                           |
+| `upstream_unread`              | Its table is bound, but it was withdrawn after a recompile, reload or publish failed, and the read of an upstream table it was built from failed (then, or at any read since), so whether that table changed is not known. Judges nothing about the table, and never counts it stale.                                                                                                                                                                                         | Restore the warehouse read: the next manifest bind or rebind reads it again and, unchanged, serves the table; or reload.                      |
 | `types_unrecorded`             | Retained, no longer produced: a table with no recorded types is `contract_missing`.                                                                                                                                                                                                                                                                                                                                                                                           | —                                                                                                                                             |
 | `stale`                        | Its table is past its freshness window, and its fallback does not serve stale.                                                                                                                                                                                                                                                                                                                                                                                                | Run a build, widen the freshness window, or set its fallback to `stale_ok`.                                                                   |
 | `materialization_off`          | A `#(materialize)` source, which only the served copy reads, and the served copy is off.                                                                                                                                                                                                                                                                                                                                                                                      | Set `PUBLISHER_MATERIALIZE=true` (and, for `storage=`, `PERSIST_STORAGE_MODE=on`).                                                            |
@@ -1223,7 +1238,16 @@ imports it) but does not read its table, with `reasons`:
   counts: for example `cross_connection_join` (a join the copy left out across connections, and the
   source with it) before `fields_not_carried`, or `cross_connection_unbuilt` (a join across
   connections that cannot be left out, so the model's whole copy is off until both sides are built
-  into one destination);
+  into one destination), `sql_embed_cross_connection` (a `.sql()` source reads it through
+  `%{ x -> { … } }`, whose SQL runs on the `.sql()` source's own connection and cannot reach a table
+  in a storage destination, or in a managed catalog read through one), or `sql_embed_bare`
+  (a `.sql()` source embeds it bare, `%{ x }`, which Malloy allows only of a source it can compile
+  to SQL, and a stored table read through `virtual()` is not one, on either tier). Either leaves
+  the source alone as written; the model's other stored sources, in every file its copy compiles
+  (an imported file compiles whole, whatever the import names), still serve. In the source's own
+  database a `%{ x -> { … } }` reads its table. Elsewhere, persist the `.sql()` source itself with
+  the same `storage=` as what it reads, or drop `storage=` from what it reads; on a DuckLake or
+  managed connection, build what it reads into a warehouse table read with `.table()`;
 - `not_rerooted` alone when no warning names one.
 
 When a model's whole copy is off, every stored source it holds lists it, not only the one whose join
@@ -1823,33 +1847,34 @@ Publisher decides what it may build, refresh and serve on a warehouse by one tab
 
 <!-- dialect-evidence:begin (generated by dialect_evidence.spec.ts) -->
 
-| Capability                      | `duckdb`       | `postgres`   | `standardsql` | `snowflake` | `databricks` | `trino` | `presto` | `mysql` | `sqlserver` |
-| ------------------------------- | -------------- | ------------ | ------------- | ----------- | ------------ | ------- | -------- | ------- | ----------- |
-| `binary64Types`                 | **2 types**    | **1 type**   | none          | 6 types?    | none         | none    | none     | none    | none        |
-| `castsToIntegerType`            | **yes**        | **yes**      | yes?          | yes?        | yes?         | **yes** | yes?     | **no**  | yes?        |
-| `catalogHidesTables`            | no             | no           | no            | yes?        | no           | no      | no       | **yes** | no          |
-| `decodedTablePath`              | **yes**        | **yes**      | yes?          | yes?        | no           | no      | no       | no      | no          |
-| `dependencyGuard`               | no             | **yes**      | no            | no          | no           | no      | no       | no      | no          |
-| `driverKeepsBigIntegers`        | **yes**        | no           | no            | no          | no           | no      | no       | no      | no          |
-| `foldsTableNameCase`            | **yes**        | no           | no            | no          | yes?         | **yes** | yes?     | no      | yes?        |
-| `incrementalSourceRange`        | no             | **yes**      | yes?          | yes?        | no           | no      | no       | no      | no          |
-| `incrementalTargetDml`          | **yes**        | **yes**      | yes?          | yes?        | no           | no      | no       | no      | no          |
-| `leafBudget`                    | **120**        | **50**       | 120?          | 120?        | 120?         | 50      | 50       | 50      | 115?        |
-| `liveRoundsBigIntegersMeasured` | no             | **yes**      | no            | no          | no           | no      | no       | no      | no          |
-| `liveWritesFloat4Shortest`      | no             | **yes**      | no            | no          | no           | no      | no       | no      | no          |
-| `merge`                         | **yes**        | **yes**      | yes?          | yes?        | no           | no      | no       | no      | no          |
-| `mergeGatedByServerVersion`     | no             | **yes**      | no            | no          | no           | no      | no       | no      | no          |
-| `needsQualifiedTable`           | no             | no           | yes?          | no          | no           | no      | no       | no      | no          |
-| `nestedColumns`                 | **yes**        | no           | no            | no          | no           | no      | no       | no      | no          |
-| `onlyBigIntegerType`            | none           | none         | `INT64`?      | none        | none         | none    | none     | none    | none        |
-| `pairDelta`                     | **yes**        | no           | no            | no          | no           | no      | no       | no      | no          |
-| `passthroughNumericAsDouble`    | no             | **yes**      | no            | no          | no           | no      | no       | no      | no          |
-| `relationProbe`                 | **yes**        | **yes**      | yes?          | yes?        | yes?         | **yes** | no       | no      | yes?        |
-| `stringCollation`               | **`instance`** | **`column`** | `dataset`?    | none        | none         | none    | none     | none    | none        |
-| `tableOwnership`                | **yes**        | **yes**      | yes?          | yes?        | yes?         | **yes** | yes?     | **yes** | yes?        |
-| `transactionalSwap`             | **yes**        | **yes**      | no            | no          | no           | no      | no       | no      | no          |
-| `ungroupableTypes`              | none           | **11 types** | 4 types?      | none        | none         | none    | none     | none    | none        |
-| `utcSessions`                   | **yes**        | no           | no            | no          | no           | no      | no       | no      | no          |
+| Capability                      | `duckdb`             | `postgres`         | `standardsql` | `snowflake` | `databricks` | `trino` | `presto` | `mysql` | `sqlserver` |
+| ------------------------------- | -------------------- | ------------------ | ------------- | ----------- | ------------ | ------- | -------- | ------- | ----------- |
+| `binary64Types`                 | **2 types**          | **1 type**         | none          | 6 types?    | none         | none    | none     | none    | none        |
+| `castsToIntegerType`            | **yes**              | **yes**            | yes?          | yes?        | yes?         | **yes** | yes?     | **no**  | yes?        |
+| `catalogHidesTables`            | no                   | no                 | no            | yes?        | no           | no      | no       | **yes** | no          |
+| `containerCatalog`              | **`duckdb_schemas`** | **`pg_namespace`** | `dataset`?    | `schemata`? | none         | none    | none     | none    | none        |
+| `decodedTablePath`              | **yes**              | **yes**            | yes?          | yes?        | no           | no      | no       | no      | no          |
+| `dependencyGuard`               | no                   | **yes**            | no            | no          | no           | no      | no       | no      | no          |
+| `driverKeepsBigIntegers`        | **yes**              | no                 | no            | no          | no           | no      | no       | no      | no          |
+| `foldsTableNameCase`            | **yes**              | no                 | no            | no          | yes?         | **yes** | yes?     | no      | yes?        |
+| `incrementalSourceRange`        | no                   | **yes**            | yes?          | yes?        | no           | no      | no       | no      | no          |
+| `incrementalTargetDml`          | **yes**              | **yes**            | yes?          | yes?        | no           | no      | no       | no      | no          |
+| `leafBudget`                    | **120**              | **50**             | 120?          | 120?        | 120?         | 50      | 50       | 50      | 115?        |
+| `liveRoundsBigIntegersMeasured` | no                   | **yes**            | no            | no          | no           | no      | no       | no      | no          |
+| `liveWritesFloat4Shortest`      | no                   | **yes**            | no            | no          | no           | no      | no       | no      | no          |
+| `merge`                         | **yes**              | **yes**            | yes?          | yes?        | no           | no      | no       | no      | no          |
+| `mergeGatedByServerVersion`     | no                   | **yes**            | no            | no          | no           | no      | no       | no      | no          |
+| `needsQualifiedTable`           | no                   | no                 | yes?          | no          | no           | no      | no       | no      | no          |
+| `nestedColumns`                 | **yes**              | no                 | no            | no          | no           | no      | no       | no      | no          |
+| `onlyBigIntegerType`            | none                 | none               | `INT64`?      | none        | none         | none    | none     | none    | none        |
+| `pairDelta`                     | **yes**              | no                 | no            | no          | no           | no      | no       | no      | no          |
+| `passthroughNumericAsDouble`    | no                   | **yes**            | no            | no          | no           | no      | no       | no      | no          |
+| `relationProbe`                 | **yes**              | **yes**            | yes?          | yes?        | yes?         | **yes** | no       | no      | yes?        |
+| `stringCollation`               | **`instance`**       | **`column`**       | `dataset`?    | none        | none         | none    | none     | none    | none        |
+| `tableOwnership`                | **yes**              | **yes**            | yes?          | yes?        | yes?         | **yes** | yes?     | **yes** | yes?        |
+| `transactionalSwap`             | **yes**              | **yes**            | no            | no          | no           | no      | no       | no      | no          |
+| `ungroupableTypes`              | none                 | **11 types**       | 4 types?      | none        | none         | none    | none     | none    | none        |
+| `utcSessions`                   | **yes**              | no                 | no            | no          | no           | no      | no       | no      | no          |
 
 <!-- dialect-evidence:end -->
 

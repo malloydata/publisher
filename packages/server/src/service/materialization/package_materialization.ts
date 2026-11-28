@@ -1644,15 +1644,21 @@ export class PackageMaterialization {
       }
       // A table withdrawn because an upstream it was built from changed
       // since (a load or publish that could not recompile): incompatible,
-      // its upstream altered.
+      // its upstream altered. One withdrawn because that upstream could not
+      // be read is not known to have changed: `upstream_unread`.
+      const unread = this.plan.withdrawnUnread;
       for (const id of this.plan.withdrawn) {
          const t = tableOf(id);
          if (!t.physicalTableName) continue;
          verdicts.set(id, {
-            reason: "incompatible",
             physicalTableName: t.physicalTableName,
             ...(t.builtAt ? { builtAt: t.builtAt } : {}),
-            incompatibility: { code: "upstream_altered", columns: [] },
+            ...(unread.has(id)
+               ? { reason: "upstream_unread" as const }
+               : {
+                    reason: "incompatible" as const,
+                    incompatibility: { code: "upstream_altered", columns: [] },
+                 }),
          });
       }
       for (const i of this.observedOutcome.incompatible) {
@@ -2413,8 +2419,37 @@ export class PackageMaterialization {
 
    servedCopyWarnings(): ApiPackageWarning[] {
       const materialized = this.plan.materializePlans;
-      return warnings.servedCopyWarnings(this.owner.models(), (sourceID) =>
-         Object.hasOwn(materialized, sourceID),
+      const buildPlan = this.plan.buildPlan;
+      const planned = buildPlan?.sources ?? {};
+      // Whether the author wrote `storage=` on a source, by sourceID:
+      // undefined for one this package plans no table of.
+      const writes = (sourceID: string): boolean | undefined =>
+         Object.hasOwn(materialized, sourceID)
+            ? materialized[sourceID].persist.storage !== undefined
+            : Object.hasOwn(planned, sourceID)
+              ? planned[sourceID].annotationFields?.storage !== undefined
+              : undefined;
+      // Any source the package stores: a `#(materialize)` one, or a
+      // `#@ persist` one written by its author (not a rollup or a generated
+      // build source, whose `storage=` the planner wrote). With no plan yet,
+      // nothing says the destination was placed, so it is taken as written.
+      const anyWrites = () =>
+         !buildPlan ||
+         Object.values(materialized).some(
+            (m) => m.persist.storage !== undefined,
+         ) ||
+         Object.values(planned).some(
+            (s) =>
+               (s.origin ?? "persist") === "persist" &&
+               s.annotationFields?.storage !== undefined,
+         );
+      return warnings.servedCopyWarnings(
+         this.owner.models(),
+         (sourceID) => Object.hasOwn(materialized, sourceID),
+         (problem) =>
+            (problem.storedSourceID !== undefined
+               ? writes(problem.storedSourceID)
+               : undefined) ?? anyWrites(),
       );
    }
 

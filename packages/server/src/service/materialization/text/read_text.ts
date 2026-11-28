@@ -28,6 +28,7 @@ import {
    type TextEdit,
 } from "./declaration_text";
 import { offsetOf } from "./malloy_lexer";
+import { grainColumnOf, grainPathOf } from "../domain/rollup_grain";
 import {
    annotationValue,
    doubleQuotedString,
@@ -227,8 +228,15 @@ function persistLine(plan: RollupVariantPlan): string {
 
 /** One rollup's build source. */
 function emitRollupBuildSource(plan: RollupVariantPlan): string {
+   // A path grain (`account.region`) is grouped under its stored column's
+   // name, `account__region`, read through the join.
    const grain = plan.grainDimensions
-      .map((g) => `    ${identifier(g)}`)
+      .map((g) => {
+         const path = grainPathOf(g);
+         return path
+            ? `    ${identifier(grainColumnOf(g))} is ${identifier(path.join)}.${identifier(path.field)}`
+            : `    ${identifier(g)}`;
+      })
       .join("\n");
    const partials = plan.rollupMeasures
       .flatMap((m) => m.partials)

@@ -77,6 +77,13 @@ export interface ServedCopyProblem {
     * is, in a destination the source's own connection cannot reach.
     */
    declarerNotStored?: true;
+   /**
+    * For `cross_connection_join`: the sourceID of the source declaring the
+    * join, when it is stored, so the warning can tell a `storage=` its author
+    * wrote from a destination the host placed it in. Not {@link sourceID}:
+    * the source still serves, so nothing keys on it as left out.
+    */
+   storedSourceID?: string;
 }
 
 /** A decline the served copy records per source at its compile. */
@@ -132,6 +139,15 @@ export interface Compiled {
    unsafeIDs?: ReadonlySet<string>;
    /** Bindings actually re-rooted, with their destination under its alias. */
    rerooted: Binding[];
+   /**
+    * For a copy that reads a managed connection's tables through a storage
+    * destination (same_catalog_reads.ts): whether each is still a base table
+    * made only of files the connection's storage scope reaches, read before
+    * every query the copy answers, since a writer on the catalog may swap one
+    * for a view, or register another schema's file into one, under the
+    * compiled copy. False, or a throw, answers the query live.
+    */
+   sameCatalogRecheck?: () => Promise<boolean>;
    /**
     * The author `sourceID`s the copy re-rooted on their tables (a
     * `#(materialize)` binding's author source, not its generated one).

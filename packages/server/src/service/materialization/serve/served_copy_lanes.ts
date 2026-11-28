@@ -72,6 +72,7 @@ export function compileInputOf(b: Binding): string {
          holdsOnlyUngatedRows: _ungated,
          retypedColumns: _retyped,
          rollupKey: _rollupKey,
+         grainJoinKeys: _grainJoinKeys,
          ...read
       } = b;
       input = JSON.stringify(read);

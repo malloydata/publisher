@@ -251,6 +251,13 @@ import {
    upstreamTableKey,
 } from "../domain/upstream_schemas";
 import {
+   containerOfTableName,
+   missingContainerReason,
+   type TargetContainer,
+   targetContainerKey,
+   type TargetContainerReadings,
+} from "../domain/target_containers";
+import {
    materializePlansOf,
    type CompiledBuildPlan as PlannedBuild,
    type SourceBuild,
@@ -1532,7 +1539,8 @@ function inDestinationStringReads(
 /**
  * A chained `storage=` `#@ persist` source's compared strings: one that is
  * a query over upstreams stored in its own destination, which its build
- * stacks on there. Undefined for any other source.
+ * stacks on there. Undefined for any other source, and for one that shares
+ * the build of a stored upstream ({@link sharesStoredBuild}).
  */
 async function chainedStringReads(
    source: PersistSource,
@@ -1540,24 +1548,21 @@ async function chainedStringReads(
    materializer: ModelMaterializer,
    ports: StringReadsPorts | undefined,
    judged: Record<string, string>,
+   /** The model's planned `#@ persist` sources, by sourceID. */
+   planned: ReadonlyMap<string, PersistSource>,
 ): Promise<StringReads | undefined> {
    const destination = declaredStorage(source)?.trim();
    if (!destination) return undefined;
    const map = SourceMap.of(modelDef);
-   const def = map.node(source.sourceID)?.def as
-      | { type?: unknown; extends?: unknown }
-      | undefined;
-   // An `extend` of a stored source runs that source's query: its table,
-   // or a projection of it, not a build over it that compares anything.
-   if (def?.type !== "query_source" || typeof def.extends === "string") {
-      return undefined;
-   }
+   const def = map.node(source.sourceID)?.def as { type?: unknown } | undefined;
+   if (def?.type !== "query_source") return undefined;
    const stored = reachedUpstreams(def, modelDef, map)
       .filter(
          (u) => u.storage === destination && u.sourceID !== source.sourceID,
       )
       .map((u) => u.sourceID);
    if (stored.length === 0) return undefined;
+   if (sharesStoredBuild(source, stored, planned)) return undefined;
    const reads = await planStringReads(
       ports,
       materializer,
@@ -1585,6 +1590,33 @@ async function chainedStringReads(
            unstored: true,
         }
       : reads;
+}
+
+/**
+ * Whether `source` runs the same build as one of its `stored` upstreams (an
+ * `extend` of a stored source that adds no query of its own): the run then
+ * copies that upstream's table as a projection, which compares nothing
+ * (`sameBuildUpstream` in run/storage_build_strategy.ts, by the same
+ * compiler key). An `extend` of an unstored query over a stored upstream
+ * builds over that table, and compares what its query compares.
+ */
+function sharesStoredBuild(
+   source: PersistSource,
+   stored: readonly string[],
+   planned: ReadonlyMap<string, PersistSource>,
+): boolean {
+   const keyOf = (s: PersistSource | undefined) => {
+      if (!s) return undefined;
+      try {
+         return compilerBuildId(s);
+      } catch {
+         return undefined;
+      }
+   };
+   const own = keyOf(source);
+   return (
+      own !== undefined && stored.some((id) => keyOf(planned.get(id)) === own)
+   );
 }
 
 /**
@@ -2368,6 +2400,7 @@ async function planV1PersistSources(
    let classificationCtx:
       | { modelDef: ModelDef; deps: GateClassificationDeps }
       | undefined;
+   const plannedByID = new Map(planned.map((s) => [s.sourceID, s]));
    for (const source of planned) {
       const sourceID = source.sourceID;
       // Unknown and retired keys, on the lines that parsed (a line that did
@@ -2429,6 +2462,7 @@ async function planV1PersistSources(
                  materializer,
                  args.stringReads,
                  parts.stringCapabilityReads,
+                 plannedByID,
               )
             : parts.tables[sourceID]?.stringReads;
       // What its build reads: its query, never a join only its read
@@ -2761,6 +2795,11 @@ export function finishBuildPlan(
       connectionDigests: Record<string, string>;
       /** See {@link CompiledBuildPlan.upstreamSchemas}; absent, none read. */
       upstreamSchemas?: UpstreamSchemaReadings;
+      /**
+       * Whether each database table's container exists
+       * ({@link refuseMissingContainers}); absent, none is checked.
+       */
+      targetContainers?: TargetContainerReadings;
       connections: Map<string, MalloyConnection>;
       /** The package names its tables per version (`scope: "version"`). */
       versionScoped: boolean;
@@ -2796,7 +2835,10 @@ export function finishBuildPlan(
       addresses: planAddresses({ ...plan, tableFolds }),
    };
    const refused = refuseCollidingMaterialize(refuseRewrittenNames(full));
-   const known = refuseUpstreamUnread(refused);
+   const known = refuseMissingContainers(
+      refuseUpstreamUnread(refused),
+      ctx.targetContainers,
+   );
    return refuseOverMissingUpstreams(
       refuseUncomparableStrings(
          refuseAcrossPlacements(
@@ -3085,7 +3127,10 @@ export async function finishPackagePlan(
    parts: BuildPlanParts,
    ctx: Omit<
       Parameters<typeof finishBuildPlan>[1],
-      "connectionDigests" | "connections" | "upstreamSchemas"
+      | "connectionDigests"
+      | "connections"
+      | "upstreamSchemas"
+      | "targetContainers"
    > & {
       getMalloyConnection(name: string): Promise<MalloyConnection>;
       /**
@@ -3094,9 +3139,20 @@ export async function finishPackagePlan(
        * Absent, none is read and every address is its SQL's alone: a spec's.
        */
       readUpstreamSchemas?: UpstreamSchemaReader;
+      /**
+       * Read whether the containers the plan's database tables are placed in
+       * exist, each once. Absent, none is read and none is refused for it: a
+       * spec's.
+       */
+      readTargetContainers?: TargetContainerPlanReader;
    },
 ): Promise<{ compiled: FinishedBuildPlan; digestSkipped: string[] }> {
-   const { getMalloyConnection, readUpstreamSchemas, ...finish } = ctx;
+   const {
+      getMalloyConnection,
+      readUpstreamSchemas,
+      readTargetContainers,
+      ...finish
+   } = ctx;
    const connections = await resolvePackageConnections(
       { getMalloyConnection },
       parts.builds.map((b) => b.connectionName),
@@ -3110,11 +3166,17 @@ export async function finishPackagePlan(
    const upstreamSchemas = readUpstreamSchemas
       ? await readUpstreamSchemas(planUpstreamTables(parts.tables))
       : undefined;
+   const containers = planTargetContainers(parts.tables);
+   const targetContainers =
+      readTargetContainers && containers.length > 0
+         ? await readTargetContainers(containers)
+         : undefined;
    return {
       compiled: finishBuildPlan(parts, {
          ...finish,
          connectionDigests,
          ...(upstreamSchemas ? { upstreamSchemas } : {}),
+         ...(targetContainers ? { targetContainers } : {}),
          connections,
       }),
       digestSkipped,
@@ -3128,6 +3190,47 @@ export async function finishPackagePlan(
 export type UpstreamSchemaReader = (
    tables: UpstreamTable[],
 ) => Promise<UpstreamSchemaReadings>;
+
+/**
+ * Reads whether each of `containers` exists, each answered by
+ * `targetContainerKey`: a reading for every container asked, never a throw.
+ */
+export type TargetContainerPlanReader = (
+   containers: TargetContainer[],
+) => Promise<TargetContainerReadings>;
+
+/**
+ * The container a planned database table's `name=` places it in: every
+ * segment of it before the table's own (the name a run writes, as
+ * `selfAssignTableName` reads it). None for a `storage=` table, whose
+ * destination is checked where it is configured, nor for a bare name, which
+ * lands in the connection's default schema or dataset.
+ */
+function targetContainerOf(source: PersistSource): TargetContainer | undefined {
+   if (declaredStorage(source) !== undefined) return undefined;
+   const name = deriveAnnotationFields(source).name;
+   const container = name ? containerOfTableName(name) : undefined;
+   return container
+      ? { connectionName: source.connectionName, container }
+      : undefined;
+}
+
+/**
+ * Every container the plan's database tables are placed in, distinct, in a
+ * stable order: what a plan reads once per connection and container.
+ */
+function planTargetContainers(
+   tables: Readonly<Record<string, { source: PersistSource }>>,
+): TargetContainer[] {
+   const out = new Map<string, TargetContainer>();
+   for (const { source } of Object.values(tables)) {
+      const target = targetContainerOf(source);
+      if (target) out.set(targetContainerKey(target), target);
+   }
+   return [...out.entries()]
+      .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+      .map(([, t]) => t);
+}
 
 /**
  * Every table the plan's sources read (their `reads`), distinct, in a stable
@@ -3426,6 +3529,46 @@ function refuseUpstreamUnread<T extends Omit<FinishedBuildPlan, "connections">>(
                "read from the warehouse's catalog, so its table's address is " +
                "not known; it is planned once a reload, or a plan refresh, " +
                "reads them",
+         ),
+      );
+   }
+   return withoutSources(compiled, findings, dropped);
+}
+
+/**
+ * The compiled plan less every database table whose container its warehouse
+ * does not hold (`notFound`), or holds in another location than the
+ * connection declares (`otherLocation`), each refused alone as
+ * `container_not_found` under its mechanism's `*-not-built` warning naming
+ * the container and the fix. No build creates a container, so its build
+ * would fail on the warehouse's own "not found". A container whose read
+ * failed, or was not read, refuses nothing: the build checks again before
+ * it writes anything (`DatabaseTier`). Nor does a source that shares its
+ * table with another, whose collision is judged first.
+ */
+function refuseMissingContainers<
+   T extends Omit<FinishedBuildPlan, "connections">,
+>(compiled: T, readings: TargetContainerReadings | undefined): T {
+   if (!readings) return compiled;
+   // A source whose table another source's also is keeps its collision,
+   // which fails the load (an invalid annotation outranks an unbuildable
+   // one): refusing it here would hide its partner's collision.
+   const shared = sharedTables(compiled);
+   const findings: PackageAnnotationFinding[] = [];
+   const dropped = new Set<string>();
+   for (const [sourceID, { source }] of Object.entries(compiled.tables)) {
+      if (shared.has(sourceID)) continue;
+      const target = targetContainerOf(source);
+      if (!target) continue;
+      const reading = readings[targetContainerKey(target)];
+      if (!reading || "found" in reading || "unread" in reading) continue;
+      dropped.add(sourceID);
+      findings.push(
+         notBuiltFinding(
+            compiled,
+            sourceID,
+            "container_not_found",
+            missingContainerReason(target, source.dialectName, reading),
          ),
       );
    }
