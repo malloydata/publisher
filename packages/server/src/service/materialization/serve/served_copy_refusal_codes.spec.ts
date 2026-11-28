@@ -369,23 +369,44 @@ const S_ID = testSourceID("s", "pkg", "m.malloy");
  * (`s`, a `#(materialize)` one) has `storage=` written, or was placed in its
  * destination by the host with none written.
  */
-function warningsWithPlan(problems: ServedCopyProblem[], written: boolean) {
+function warningsWithPlan(
+   problems: ServedCopyProblem[],
+   written: boolean,
+   kind: "materialize" | "persist" = "materialize",
+) {
    const materialization = new PackageMaterialization({
       models: () =>
          new Map([["m.malloy", { servedCopyProblems: () => problems }]]),
       packageName: () => "pkg",
    } as unknown as PackageMaterializationOwner);
+   const storage = written ? { storage: "lake" } : {};
    Object.defineProperty(materialization.plan, "buildPlan", {
-      get: () => ({ graphs: [], sources: {} }),
+      get: () => ({
+         graphs: [],
+         sources:
+            kind === "persist"
+               ? {
+                    [S_ID]: {
+                       sourceName: "s",
+                       sourceID: S_ID,
+                       origin: "persist",
+                       annotationFields: storage,
+                    },
+                 }
+               : {},
+      }),
    });
    Object.defineProperty(materialization.plan, "materializePlans", {
-      get: () => ({
-         [S_ID]: {
-            sourceName: "s",
-            sourceID: S_ID,
-            persist: written ? { storage: "lake" } : {},
-         },
-      }),
+      get: () =>
+         kind === "materialize"
+            ? {
+                 [S_ID]: {
+                    sourceName: "s",
+                    sourceID: S_ID,
+                    persist: storage,
+                 },
+              }
+            : {},
    });
    return materialization.servedCopyWarnings().map((w) => w.message);
 }
@@ -418,5 +439,23 @@ describe("a cross-connection join's advice on a destination the host placed", ()
          "This source's join `j` reads a source the served copy reads from its storage destination, which this source's own connection cannot reach. Queries that use the join are answered live; the others are answered as before. To serve them too, store this source in the same destination.",
       ]);
       for (const m of messages) expect(m).not.toContain("storage=");
+   });
+});
+
+describe("a cross-connection join's advice on a stored source's kind", () => {
+   const stored = {
+      ...PROBLEMS.cross_connection_join,
+      storedSourceID: S_ID,
+   } satisfies ServedCopyProblem;
+
+   it("advises inline= on a #(materialize) source", () => {
+      const [message] = warningsWithPlan([stored], true, "materialize");
+      expect(message).toContain("inline the join (inline=)");
+   });
+
+   it("does not advise inline= on a #@ persist source, which cannot take it", () => {
+      expect(warningsWithPlan([stored], true, "persist")).toEqual([
+         "This source is stored in a destination its join `j` cannot reach: the joined source reads another connection. Queries that use the join are answered live; the others read the stored table. To serve them too, materialize the joined source into the same destination, or build this source in its own database (drop `storage=`).",
+      ]);
    });
 });

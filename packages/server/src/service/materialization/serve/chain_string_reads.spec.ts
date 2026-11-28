@@ -17,7 +17,7 @@ import { SingleConnectionRuntime } from "@malloydata/malloy";
 import { afterAll, describe, expect, it } from "bun:test";
 import type { ColumnContract } from "../domain/column_contract";
 import { stringReadsRefusal } from "../domain/string_reads";
-import { chainBuildStringReads } from "./chain_string_reads";
+import { chainBuildStringReads, UNNAMED_BASE } from "./chain_string_reads";
 
 /** An upstream's contract, `v` compared as `compare`. */
 const contract = (compare: "exact" | "equality" | "none"): ColumnContract => ({
@@ -58,6 +58,9 @@ source: bytes is ${rows("")} -> { select: id, v } extend {
   measure: lo is min(v)
 }
 source: bytes_group is bytes -> { group_by: v; aggregate: n is count() }
+source: bytes_inline is bytes extend { dimension: w is v } -> { group_by: w }
+source: bytes_named_base is bytes extend { dimension: w is v }
+source: bytes_over_named is bytes_named_base -> { group_by: w }
 `;
 
 describe("chainBuildStringReads over a DuckDB source", () => {
@@ -140,6 +143,21 @@ describe("chainBuildStringReads over a DuckDB source", () => {
             measures: ["lo"],
          }),
       ).toBeUndefined();
+   });
+
+   it("advises naming the base of a query over an inline extend", async () => {
+      const stored = [...(await storedIDs())];
+      expect(
+         await chainBuildStringReads(load, {
+            downstream: "bytes_inline",
+            stored,
+         }),
+      ).toEqual({ refused: UNNAMED_BASE });
+      expect(UNNAMED_BASE).toContain(
+         "declare that base as a source of its own",
+      );
+      // The same query over that base, declared with a name, is read.
+      expect(await refusal("bytes_over_named")).toBeUndefined();
    });
 
    it("refuses a downstream it cannot find", async () => {
