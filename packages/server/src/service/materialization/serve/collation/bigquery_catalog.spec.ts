@@ -154,6 +154,7 @@ function stubBigQuery(seed: number, pageCap?: number): Connection {
 const MODEL = `
 source: plain is bq.table('proj.d00.t')
 source: ci is bq.table('proj.zz.ci_t')
+source: copy is bq.table('proj.d01.copy_t')
 `;
 
 /** The refusal a BigQuery query under a collation, or unread, answers. */
@@ -178,6 +179,8 @@ const RUNS = 20;
 async function answers(
    query: string,
    pageCap?: number,
+   /** The bind's dataset bound; 0 reads the project-wide views first. */
+   datasetReadLimit?: number,
 ): Promise<(string | undefined)[]> {
    const out: (string | undefined)[] = [];
    for (let seed = 0; seed < RUNS; seed++) {
@@ -191,6 +194,7 @@ async function answers(
             modelDef: (await materializer.getModel())._modelDef,
             load: (q) => materializer.loadQuery(q),
             connection: async () => connection,
+            ...(datasetReadLimit !== undefined ? { datasetReadLimit } : {}),
          }),
       );
       out.push(
@@ -217,11 +221,24 @@ describe("a BigQuery catalog read, as BigQuery pages and reports it", () => {
    });
 
    it("answers live when a page ends before every row the read reports", async () => {
-      // Eleven collated datasets, five rows a page: the read is cut.
+      // Eleven collated datasets, five rows a page: the project-wide read
+      // is cut.
+      expect(await answers("run: ci -> { group_by: region }", 5, 0)).toEqual(
+         Array(RUNS).fill(LIVE),
+      );
+      expect(await answers("run: plain -> { group_by: region }", 5, 0)).toEqual(
+         Array(RUNS).fill(LIVE),
+      );
+      // Each dataset's own read, within the bound: `d00`'s one table fits
+      // five rows, `zz`'s collated table is seen.
       expect(await answers("run: ci -> { group_by: region }", 5)).toEqual(
          Array(RUNS).fill(LIVE),
       );
       expect(await answers("run: plain -> { group_by: region }", 5)).toEqual(
+         Array(RUNS).fill(undefined),
+      );
+      // One row a page: `d01`'s read lists two tables, and is cut.
+      expect(await answers("run: copy -> { group_by: region }", 1)).toEqual(
          Array(RUNS).fill(LIVE),
       );
    });

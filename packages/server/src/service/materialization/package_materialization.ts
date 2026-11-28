@@ -37,6 +37,7 @@ import {
 import { splitManifestEntries } from "./run/manifest_loader";
 import { packageRelativeSourceID } from "./text/read_text";
 import {
+   type CapabilityUnread,
    refreshStringCapabilities,
    stringCapabilitiesOf,
 } from "./serve/source_capability";
@@ -1043,7 +1044,7 @@ export class PackageMaterialization {
          ) {
             const reads: Promise<void>[] = [];
             for (const model of this.owner.models().values()) {
-               model.setStringCapabilityReader(refreshStringCapabilities);
+               model.setStringCapabilityReader(readStringCapabilitiesLogged);
                model.setScopeFactsRecorder(recordScopeFacts);
                reads.push(model.refreshStringCapabilities());
             }
@@ -2184,7 +2185,7 @@ export class PackageMaterialization {
    }
 
    private setServedCopyContextOn(model: Model): void {
-      model.setStringCapabilityReader(refreshStringCapabilities);
+      model.setStringCapabilityReader(readStringCapabilitiesLogged);
       model.setScopeFactsRecorder(recordScopeFacts);
       model.setServedCopyContext(
          this.owner.packagePath(),
@@ -2650,3 +2651,38 @@ function withoutPassedKeysAt<E extends { contract?: unknown }>(
    }
    return out ?? entries;
 }
+
+/**
+ * The one warning a bind logs for each BigQuery catalog read that could not
+ * prove how a model's strings compare: a query comparing them over a stored
+ * table then declines it and answers live (`served_copy`, "a query that
+ * reads a string under a collation"). Names where the read looked
+ * (connection, project, location, dataset, table) and a bounded reason,
+ * never a driver's text.
+ */
+function logStringCapabilityUnread(unread: CapabilityUnread): void {
+   logger.warn(
+      "BigQuery catalog read did not prove how a model's strings compare; a query comparing them over a stored table answers live",
+      {
+         connectionName: unread.connectionName,
+         reason: unread.reason,
+         ...(unread.project !== undefined ? { project: unread.project } : {}),
+         location: unread.location ?? "per-dataset",
+         ...(unread.dataset !== undefined ? { dataset: unread.dataset } : {}),
+         ...(unread.table !== undefined ? { table: unread.table } : {}),
+         ...(unread.tableType !== undefined
+            ? { tableType: unread.tableType }
+            : {}),
+      },
+   );
+}
+
+/** {@link refreshStringCapabilities}, logging each unproved BigQuery read. */
+const readStringCapabilitiesLogged: typeof refreshStringCapabilities = (
+   runtime,
+   args,
+) =>
+   refreshStringCapabilities(runtime, {
+      ...args,
+      onUnread: logStringCapabilityUnread,
+   });

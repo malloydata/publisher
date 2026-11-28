@@ -13,18 +13,13 @@ import { sourceReads } from "../../../governance/ir/source_reads";
 import { type CatalogIO, catalogIO } from "./catalog_io";
 import {
    BigQueryCatalog,
+   MAX_DATASET_READS,
    type PlacedTable,
    placeTable,
    sqlProjects,
    TABLE_TYPES,
+   withJobContext,
 } from "./bigquery";
-
-/**
- * Most distinct datasets a build reads each dataset's own catalog of. A
- * build reading more is judged by the project-wide region reads instead,
- * two queries per project and region however many datasets it reads.
- */
-const MAX_BUILD_DATASET_READS = 20;
 
 /**
  * Whether a `storage=` build's warehouse SQL on BigQuery reads only strings
@@ -32,7 +27,7 @@ const MAX_BUILD_DATASET_READS = 20;
  * definition reads, judged from the catalog ({@link bigqueryCollatedPaths}),
  * complete or not at all. Each dataset those tables are in is read in its
  * own `INFORMATION_SCHEMA`, which a dataset's READER may read, up to
- * {@link MAX_BUILD_DATASET_READS} of them; a source whose tables are not
+ * {@link MAX_DATASET_READS} of them; a source whose tables are not
  * known up front (author SQL, which may read any dataset), or one reading
  * more datasets, is read project-wide in each region, which needs the
  * project's `bigquery.tables.list`. False whenever a
@@ -48,7 +43,7 @@ export async function bigqueryBuildCompareBinary(args: {
    sql: string;
    /** Told why, when a read failed or saw too little (the caller logs it). */
    onUnread?: (unread: BigQueryBuildUnread) => void;
-   /** {@link MAX_BUILD_DATASET_READS}, which a spec lowers. */
+   /** {@link MAX_DATASET_READS}, which a spec lowers. */
    datasetReadLimit?: number;
 }): Promise<boolean> {
    const io = catalogIO(args.connection);
@@ -60,38 +55,16 @@ export async function bigqueryBuildCompareBinary(args: {
          connectionName: args.source.connectionName,
          sql: args.sql,
          tables: sourceReads(args.source),
-         datasetReadLimit: args.datasetReadLimit ?? MAX_BUILD_DATASET_READS,
+         datasetReadLimit: args.datasetReadLimit ?? MAX_DATASET_READS,
       });
    } catch {
       read = { known: false, unread: { reason: "read_failed" } };
    }
    if (!read.known) {
-      args.onUnread?.(withJob(read.unread, io));
+      args.onUnread?.(withJobContext(read.unread, io));
       return false;
    }
    return read.collated.size === 0;
-}
-
-/** `unread` with the connection's project and location where it names none. */
-function withJob(
-   unread: BigQueryBuildUnread,
-   io: CatalogIO,
-): BigQueryBuildUnread {
-   let job: { projects: string[]; location: string | undefined } = {
-      projects: [],
-      location: undefined,
-   };
-   try {
-      job = io.jobContext();
-   } catch {
-      // Nothing more to name.
-   }
-   const project = unread.project ?? job.projects[0];
-   return {
-      ...unread,
-      ...(project !== undefined ? { project } : {}),
-      ...(job.location !== undefined ? { location: job.location } : {}),
-   };
 }
 
 /**

@@ -8,11 +8,14 @@
  * the column, or resolved into it from a table's or a dataset's default)
  * compares case-insensitively live and byte-exact in a `storage=` copy.
  *
- * The project is read first, in the connection's location: one with no
- * collated column answers for every table in it, an `.sql()` source's too.
- * Only a dataset it lists is read table by table. A COLLATE in the query's
- * SQL, a failed or denied read, and author SQL that may read a collated
- * project each answer live. Untested against a real BigQuery.
+ * A model whose tables are all known (`.table()` sources) in a few datasets
+ * reads each dataset's own catalog, as a dataset's READER may. An `.sql()`
+ * source, and a view, are proved by the project-wide read in the
+ * connection's location: no collated column anywhere in the project. Past
+ * the dataset bound, the project is read first and only a dataset it lists
+ * is read table by table. A COLLATE in the query's SQL, a failed or denied
+ * read, and author SQL that may read a collated project each answer live.
+ * Untested against a real BigQuery.
  */
 
 import { BigQueryConnection } from "@malloydata/db-bigquery";
@@ -29,6 +32,8 @@ import { lookupSourceRefusal, lookupStoredRefusal } from "../admission_lookup";
 import { makeSnapshot } from "../../domain/binding";
 import { parseContract } from "../../domain/column_contract";
 import { captureDatabaseContract } from "../../run/column_contract_capture";
+import { admitRead, type ReadFacts } from "../../domain/admission";
+import type { TableRead } from "../../domain/gate_policy";
 import {
    readStringCapabilities,
    recordStringCapabilities,
@@ -52,11 +57,17 @@ interface Catalog {
    types?: Record<string, string>;
    /** Each dataset's collated columns, by table, then path; or a failure. */
    datasets?: Record<string, Record<string, Record<string, string>> | "fail">;
+   /** Every table's schema; absent, `(id, region)`. */
+   fields?: { name: string; type: string }[];
 }
 
 /** Every table the model names, by project, then dataset. */
 const TABLES: Record<string, Record<string, string[]>> = {
-   proj: { ds: ["plain_t", "ci_t", "copy_t"], ds2: ["other_t"] },
+   proj: {
+      ds: ["plain_t", "ci_t", "copy_t"],
+      ds2: ["other_t"],
+      ecomm_e2e: ["users"],
+   },
    "other-project": { ds: ["t"] },
 };
 
@@ -89,7 +100,7 @@ function stubBigQuery(catalog: Catalog): {
          ];
       },
    };
-   const fields = [
+   const fields = catalog.fields ?? [
       { name: "id", type: "number" },
       { name: "region", type: "string" },
    ];
@@ -226,6 +237,8 @@ async function refusal(
    catalog: Catalog,
    query: string,
    reads: GateReads | undefined = STRING_READS,
+   /** The bind's dataset bound; 0 reads every table project-wide first. */
+   datasetReadLimit?: number,
 ): Promise<{ why: string | undefined; sent: string[]; regions: string[] }> {
    // Looked up over what a bind records of the catalog.
    const { connection, sent, regions } = stubBigQuery(catalog);
@@ -237,6 +250,7 @@ async function refusal(
          modelDef: (await materializer.getModel())._modelDef,
          load: (q) => materializer.loadQuery(q),
          connection: async () => connection,
+         ...(datasetReadLimit !== undefined ? { datasetReadLimit } : {}),
       }),
    );
    const why = await lookupSourceRefusal({
@@ -247,17 +261,35 @@ async function refusal(
 }
 
 describe("a BigQuery source's string comparison, with a location", () => {
-   it("is binary when the project holds no collated column and the read sees the table", async () => {
+   it("is binary when its dataset's own read sees the table with no collated column", async () => {
       const { why, sent } = await refusal(
          { location: "US" },
          "run: plain -> { group_by: region; order_by: region }",
       );
       expect(why).toBeUndefined();
       expect(sent.join("\n")).toContain(
+         "`proj`.`ds`.INFORMATION_SCHEMA.TABLES",
+      );
+      // The tables' types come from their datasets' own reads; the project
+      // is read only for the model's `.sql()` sources.
+      expect(sent.join("\n")).not.toContain(
          "`proj`.`region-us`.INFORMATION_SCHEMA.TABLES",
       );
       expect(sent.join("\n")).toContain(
          "`proj`.`region-us`.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS",
+      );
+   });
+
+   it("past the dataset bound, is binary when the project holds no collated column and its read sees the table", async () => {
+      const { why, sent } = await refusal(
+         { location: "US" },
+         "run: plain -> { group_by: region; order_by: region }",
+         STRING_READS,
+         0,
+      );
+      expect(why).toBeUndefined();
+      expect(sent.join("\n")).toContain(
+         "`proj`.`region-us`.INFORMATION_SCHEMA.TABLES",
       );
    });
 
@@ -316,7 +348,7 @@ describe("a BigQuery source's string comparison, with a location", () => {
       expect(plain.why).toBeUndefined();
    });
 
-   it("does not read a dataset the project does not list", async () => {
+   it("past the dataset bound, does not read a dataset the project does not list", async () => {
       const { why } = await refusal(
          {
             location: "US",
@@ -324,14 +356,26 @@ describe("a BigQuery source's string comparison, with a location", () => {
             datasets: { "proj.ds": CI_DS },
          },
          "run: ci -> { group_by: region }",
+         STRING_READS,
+         0,
       );
       expect(why).toBeUndefined();
    });
 
-   it("answers live when the project read fails", async () => {
+   it("serves a .table() source when the project read fails, from its dataset's own read", async () => {
       const { why } = await refusal(
          { location: "US", projects: { proj: "fail" } },
          "run: plain -> { group_by: region }",
+      );
+      expect(why).toBeUndefined();
+   });
+
+   it("past the dataset bound, answers live when the project read fails", async () => {
+      const { why } = await refusal(
+         { location: "US", projects: { proj: "fail" } },
+         "run: plain -> { group_by: region }",
+         STRING_READS,
+         0,
       );
       expect(why).toBe(LIVE);
    });
@@ -360,10 +404,20 @@ describe("a BigQuery source's string comparison, with a location", () => {
 });
 
 describe("a BigQuery source's coverage, by table", () => {
-   it("answers live when the project-wide read does not see the table", async () => {
+   it("answers live when the dataset's own read does not see the table", async () => {
+      const { why } = await refusal(
+         { location: "US", unseenInDataset: ["ds.plain_t"] },
+         "run: plain -> { group_by: region }",
+      );
+      expect(why).toBe(LIVE);
+   });
+
+   it("past the dataset bound, answers live when the project-wide read does not see the table", async () => {
       const { why } = await refusal(
          { location: "US", unseen: ["ds.plain_t"] },
          "run: plain -> { group_by: region }",
+         STRING_READS,
+         0,
       );
       expect(why).toBe(LIVE);
    });
@@ -977,3 +1031,179 @@ describe("a BigQuery build's contract capture", () => {
       ).toEqual({ id: null, region: "binary", ci: "bigquery:und:ci" });
    });
 });
+
+/**
+ * Credible's e2e S27-02 (0.18.6): a `.table()` source in one dataset, its
+ * account granted only that dataset (READER, jobUser: no project-level
+ * `bigquery.tables.list`, so every region-qualified `INFORMATION_SCHEMA`
+ * read is denied), and a `storage=` chain over it. Both stored tables built;
+ * a query over the chain was declined at read admission, the source side
+ * unread, and answered live. Judged here as the served copy's answer is: the
+ * real admission rule over the lookups, over what a bind records.
+ */
+describe("a dataset-scoped BigQuery account's storage= chain, served", () => {
+   const MODEL_S27 = `##! experimental { persistence }
+source: users is bq.table('ecomm_e2e.users')
+#@ persist storage="credible"
+source: users_s is users -> { select: id, state, gender, age }
+#@ persist storage="credible"
+source: by_state is users_s -> { group_by: state, gender; aggregate: n is count() } extend { measure: total is n.sum() }
+`;
+   const FIELDS = [
+      { name: "id", type: "number" },
+      { name: "state", type: "string" },
+      { name: "gender", type: "string" },
+      { name: "age", type: "number" },
+   ];
+   /** Every region-qualified read denied, as to a dataset's READER. */
+   const DATASET_SCOPED: Catalog = {
+      location: "US",
+      projects: { proj: "fail" },
+   };
+   const QUERY = "run: by_state -> { group_by: state; aggregate: total }";
+   /** The served copy's answer: one `storage=` table read. */
+   const STORED: TableRead[] = [{ tier: "storage" }];
+
+   async function admitted(catalog: Catalog, query = QUERY) {
+      const { connection, sent } = stubBigQuery({ fields: FIELDS, ...catalog });
+      const runtime = new SingleConnectionRuntime({ connection });
+      const materializer = runtime.loadModel(MODEL_S27);
+      const told: Record<string, unknown>[] = [];
+      recordStringCapabilities(
+         runtime,
+         await readStringCapabilities({
+            modelDef: (await materializer.getModel())._modelDef,
+            load: (q) => materializer.loadQuery(q),
+            connection: async () => connection,
+            onUnread: (unread) => told.push({ ...unread }),
+         }),
+      );
+      const authorRunnable = materializer.loadQuery(query);
+      const reads = await resultReadsOfQuery(authorRunnable, new Set(), {
+         fromStage: 0,
+      });
+      let facts: ReadFacts = {
+         pastEntryPointGate: false,
+         compositeRowFilter: false,
+         reads: { scoped: false, gated: false },
+         columnsListed: true,
+         resultOrder: { applies: true, reads: "read", tables: STORED },
+         probes: {},
+      };
+      // As read admission asks: each probe the rule needs, then again.
+      for (;;) {
+         const verdict = admitRead("served", STORED, facts, {
+            materialize: true,
+            gatedSources: true,
+         } as never);
+         if (verdict.admit !== "needs_probe") {
+            for (const t of told) {
+               expect(JSON.stringify(t)).not.toContain("Access Denied");
+            }
+            return { verdict, sent, told };
+         }
+         const { comparison, side } = verdict.probe;
+         const compared =
+            comparison === "result_ordered" ? reads?.ordered : reads?.grouped;
+         const refusal =
+            side === "source"
+               ? await lookupSourceRefusal({ authorRunnable, reads: compared })
+               : await lookupStoredRefusal({
+                    tables: [],
+                    authorRunnable,
+                    reads: compared,
+                 });
+         facts = {
+            ...facts,
+            probes: {
+               ...facts.probes,
+               [comparison]: {
+                  ...facts.probes?.[comparison],
+                  [side]: { refusal },
+               },
+            },
+         };
+      }
+   }
+
+   it("serves the chain from storage, reading only the dataset's own catalog", async () => {
+      const { verdict, sent, told } = await admitted(DATASET_SCOPED);
+      expect(verdict).toEqual({ admit: true, pastEntryPointGate: false });
+      expect(sent).toHaveLength(1);
+      expect(sent[0]).toContain("FROM `ecomm_e2e`.INFORMATION_SCHEMA.TABLES");
+      expect(sent.join("\n")).not.toContain("region-");
+      expect(told).toEqual([]);
+   });
+
+   it("still answers live when the source's column is collated", async () => {
+      const { verdict, told } = await admitted({
+         ...DATASET_SCOPED,
+         datasets: { ecomm_e2e: { users: { state: "und:ci" } } },
+      });
+      expect(verdict).toEqual({
+         admit: false,
+         reason: "result_order_comparison",
+         detail: `the result groups or compares a string a stored table does not compare as its source does: ${LIVE}`,
+      });
+      // A collation read is no failure: nothing to tell.
+      expect(told).toEqual([]);
+   });
+
+   it("answers live when the dataset's own read is denied too, and tells why and where", async () => {
+      const { verdict, told } = await admitted({
+         ...DATASET_SCOPED,
+         datasets: { ecomm_e2e: "fail" },
+      });
+      expect(verdict).toEqual({
+         admit: false,
+         reason: "result_order_comparison",
+         detail: `the result groups or compares a string a stored table does not compare as its source does: ${LIVE}`,
+      });
+      expect(told).toEqual([
+         {
+            connectionName: "bq",
+            reason: "dataset_unread",
+            project: "proj",
+            location: "us",
+            dataset: "ecomm_e2e",
+         },
+      ]);
+   });
+
+   it("reads project-wide past the dataset bound, and tells the denied read", async () => {
+      const { connection } = stubBigQuery({
+         fields: FIELDS,
+         ...DATASET_SCOPED,
+      });
+      const runtime = new SingleConnectionRuntime({ connection });
+      const materializer = runtime.loadModel(MODEL_S27);
+      const past: Record<string, unknown>[] = [];
+      const capabilities = await readStringCapabilities({
+         modelDef: (await materializer.getModel())._modelDef,
+         load: (q) => materializer.loadQuery(q),
+         connection: async () => connection,
+         onUnread: (unread) => past.push({ ...unread }),
+         datasetReadLimit: 0,
+      });
+      recordStringCapabilities(runtime, capabilities);
+      expect(
+         await lookupSourceRefusal({
+            authorRunnable: materializer.loadQuery(
+               "run: users -> { group_by: state }",
+            ),
+            reads: STRING_READS_ON("state"),
+         }),
+      ).toBe(LIVE);
+      expect(past.map((t) => t.reason)).toContain("project_unread");
+   });
+});
+
+/** {@link STRING_READS} over one other string column. */
+function STRING_READS_ON(column: string): GateReads {
+   return {
+      ...STRING_READS,
+      names: new Set([column]),
+      columns: [[column]],
+      entryPaths: [[column]],
+   };
+}

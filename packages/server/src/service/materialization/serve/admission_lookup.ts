@@ -127,7 +127,10 @@ function connectionOf(entry: Entry): ConnectionCapability | undefined {
  * What a BigQuery query's strings compare under, from the catalog its
  * connection's bind recorded, by `admission_lookup.ts`'s `bigquerySource`
  * rules: unknown for a `COLLATE` in its text, a table the record did not
- * read, a view or author SQL over a project holding a collated column.
+ * read, a view or author SQL over a project holding a collated column (or
+ * one not read). A table is judged by its own dataset's read when the bind
+ * read every dataset that way (`per_dataset`), else by the project-wide
+ * reads first.
  */
 function bigqueryLookup(entry: Entry):
    | { known: false }
@@ -165,6 +168,16 @@ function bigqueryLookup(entry: Entry):
    const types = catalog.types;
    if (types === undefined) return unknown;
    const collated = new Map<string, Set<string>>();
+   const addCollated = (table: ReadonlyMap<string, string>) => {
+      for (const [path, c] of table) {
+         let set = collated.get(path);
+         if (!set) {
+            set = new Set();
+            collated.set(path, set);
+         }
+         set.add(c);
+      }
+   };
    for (const t of tables) {
       if (
          entry.connectionName !== undefined &&
@@ -174,6 +187,17 @@ function bigqueryLookup(entry: Entry):
       }
       const p = placeTable(t.table, catalog.projects);
       if (p === undefined) return unknown;
+      if (types === "per_dataset") {
+         // The table's own dataset read: its type and collated columns.
+         const table = catalog.datasets.get(p.dataset)?.get(p.name);
+         if (table === undefined) return unknown;
+         if (!TABLE_TYPES.has(table.type)) {
+            if (!clean(p.projects)) return unknown;
+            continue;
+         }
+         addCollated(table.collated);
+         continue;
+      }
       if (types !== "no_region") {
          const type = p.projects
             .map((project) =>
@@ -195,14 +219,7 @@ function bigqueryLookup(entry: Entry):
       }
       const table = catalog.datasets.get(p.dataset)?.get(p.name);
       if (table === undefined || !TABLE_TYPES.has(table.type)) return unknown;
-      for (const [path, c] of table.collated) {
-         let set = collated.get(path);
-         if (!set) {
-            set = new Set();
-            collated.set(path, set);
-         }
-         set.add(c);
-      }
+      addCollated(table.collated);
    }
    return { known: true, collated, catalog };
 }

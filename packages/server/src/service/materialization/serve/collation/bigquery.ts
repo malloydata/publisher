@@ -14,7 +14,10 @@
  */
 
 import { quoteIdentifier } from "../../../quoting";
-import { bigqueryCollatedSql } from "../../domain/collation";
+import {
+   type BigQueryBuildUnread,
+   bigqueryCollatedSql,
+} from "../../domain/collation";
 import type { CatalogIO } from "./catalog_io";
 
 /**
@@ -158,6 +161,39 @@ async function bigqueryDatasetTables(
       out.set(table, { type, collated: collated.get(table) ?? new Map() });
    }
    return out;
+}
+
+/**
+ * Most distinct datasets whose own `INFORMATION_SCHEMA` is read, one query
+ * each, when every table read is known up front (a build's, or a model's
+ * `.table()` sources at bind). Past it, the project-wide region reads judge
+ * instead: two queries per project and region however many datasets.
+ */
+export const MAX_DATASET_READS = 20;
+
+/**
+ * `unread` with the connection's project and location where it names none:
+ * what a failed catalog read reports, never a driver's text.
+ */
+export function withJobContext(
+   unread: BigQueryBuildUnread,
+   io: CatalogIO,
+): BigQueryBuildUnread {
+   let job: { projects: string[]; location: string | undefined } = {
+      projects: [],
+      location: undefined,
+   };
+   try {
+      job = io.jobContext();
+   } catch {
+      // Nothing more to name.
+   }
+   const project = unread.project ?? job.projects[0];
+   return {
+      ...unread,
+      ...(project !== undefined ? { project } : {}),
+      ...(job.location !== undefined ? { location: job.location } : {}),
+   };
 }
 
 /**
