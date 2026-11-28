@@ -1,0 +1,3 @@
+# Bytes a test hashes or compares against a committed copy: a Windows checkout's default core.autocrlf makes them CRLF, so `auto` keeps text LF and leaves binaries alone.
+/skills/** text=auto eol=lf
+/packages/server/src/service/skills/__fixtures__/** text=auto eol=lf
