@@ -69,7 +69,7 @@ describe("a BigQuery storage= build's unproved catalog read, logged", () => {
       });
    }
 
-   it("names the location per-dataset when the connection declares none, and leaves out what the read never reached", () => {
+   it("leaves out the location when the connection declares none, and what the read never reached", () => {
       const calls = logged();
       logBigQueryBuildUnread(SOURCE as never, {
          reason: "project_unread",
@@ -80,7 +80,6 @@ describe("a BigQuery storage= build's unproved catalog read, logged", () => {
          connectionName: "bq_connection",
          reason: "project_unread",
          project: "dev-project",
-         location: "per-dataset",
       });
    });
 

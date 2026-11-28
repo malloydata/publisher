@@ -14,7 +14,10 @@
  */
 
 import { quoteIdentifier } from "../../../quoting";
-import { bigqueryCollatedSql } from "../../domain/collation";
+import {
+   type BigQueryBuildUnread,
+   bigqueryCollatedSql,
+} from "../../domain/collation";
 import type { CatalogIO } from "./catalog_io";
 
 /**
@@ -161,6 +164,67 @@ async function bigqueryDatasetTables(
 }
 
 /**
+ * Most distinct datasets whose own `INFORMATION_SCHEMA` is read, one query
+ * each, in place of the project-wide region reads (two queries per project
+ * and region however many datasets) when those are refused the caller and
+ * every table read is known up front (a build's, or a model's `.table()`
+ * sources at bind). Past it, a refused project-wide read answers live.
+ */
+export const MAX_DATASET_READS = 20;
+
+/**
+ * `unread` with the connection's project and location where it names none:
+ * what a failed catalog read reports, never a driver's text.
+ */
+export function withJobContext(
+   unread: BigQueryBuildUnread,
+   io: CatalogIO,
+): BigQueryBuildUnread {
+   let job: { projects: string[]; location: string | undefined } = {
+      projects: [],
+      location: undefined,
+   };
+   try {
+      job = io.jobContext();
+   } catch {
+      // Nothing more to name.
+   }
+   const project = unread.project ?? job.projects[0];
+   return {
+      ...unread,
+      ...(project !== undefined ? { project } : {}),
+      ...(job.location !== undefined ? { location: job.location } : {}),
+   };
+}
+
+/**
+ * Whether `err`, a catalog read's failure, is BigQuery refusing the caller
+ * the read (an HTTP 403, an `accessDenied` reason, "Access Denied", a
+ * missing permission), as a dataset-scoped account is refused the
+ * project-wide region views: only then is each dataset's own catalog worth
+ * reading instead. Any other failure (a timeout, a bad request) is not.
+ */
+function isAccessDenied(err: unknown): boolean {
+   const e = err as {
+      code?: unknown;
+      reason?: unknown;
+      errors?: { reason?: unknown }[];
+      message?: unknown;
+   } | null;
+   if (e === null || typeof e !== "object") return false;
+   if (e.code === 403 || e.code === "403") return true;
+   const reasons = [e.reason, ...(e.errors ?? []).map((x) => x?.reason)];
+   if (reasons.some((r) => r === "accessDenied")) return true;
+   const message = typeof e.message === "string" ? e.message.toLowerCase() : "";
+   return (
+      message.includes("access denied") ||
+      message.includes("permission denied") ||
+      /does not have (the )?(permission|\S+ permission)/.test(message) ||
+      /permission [\w.]+ denied/.test(message)
+   );
+}
+
+/**
  * The table types whose columns hold their own collation in the catalog.
  * A view's (or a materialized view's, an external table's) columns are not
  * documented to carry the collation of what it reads.
@@ -224,6 +288,13 @@ export function placeTable(
  */
 export class BigQueryCatalog {
    readonly job: ReturnType<CatalogIO["jobContext"]>;
+   /** Whether a project-wide region read was refused the caller ({@link isAccessDenied}). */
+   private refused = false;
+
+   /** Whether a project-wide region read so far was refused the caller. */
+   get projectReadDenied(): boolean {
+      return this.refused;
+   }
 
    constructor(
       /** The reads of one runtime and bind, which the caller keeps. */
@@ -271,7 +342,8 @@ export class BigQueryCatalog {
                [this.connectionName, "project", project, region],
                () => bigqueryCollatedDatasets(this.io, project, region),
             );
-         } catch {
+         } catch (err) {
+            if (isAccessDenied(err)) this.refused = true;
             return undefined;
          }
          if (r === undefined) return undefined;
@@ -317,7 +389,8 @@ export class BigQueryCatalog {
                   ],
                   () => bigqueryTableTypes(this.io, project, region, wanted),
                );
-            } catch {
+            } catch (err) {
+               if (isAccessDenied(err)) this.refused = true;
                return undefined;
             }
             for (const [k, v] of types) out.set(`${project}.${k}`, v);
