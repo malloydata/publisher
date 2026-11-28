@@ -231,8 +231,8 @@ describe("refusing to write", () => {
 });
 
 describe("the real manifests it is pointed at", () => {
-  it("sets the version in copies of all three real manifests", () => {
-    // The workflow passes these three paths literally, so a rename or a reformat
+  it("sets the version in copies of all four real manifests", () => {
+    // The workflow passes these four paths literally, so a rename or a reformat
     // that moved the "version" field out of the script's reach would otherwise
     // be discovered by a release.
     //
@@ -242,7 +242,7 @@ describe("the real manifests it is pointed at", () => {
     // one — the exact drift it claims to catch. Copies, because the originals
     // must not be touched by a test.
     const repoRoot = path.join(import.meta.dir, "..");
-    const originals = ["sdk", "app", "server"].map((pkg) =>
+    const originals = ["sdk", "app", "server", "cli"].map((pkg) =>
       path.join(repoRoot, "packages", pkg, "package.json"),
     );
 

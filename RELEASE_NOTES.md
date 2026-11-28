@@ -5,7 +5,7 @@ SPDX-License-Identifier: MIT
 
 # Release Notes
 
-Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, and `@malloy-publisher/server` (versioned in lockstep).
+Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, `@malloy-publisher/server`, and `@malloy-publisher/cli` (versioned in lockstep).
 
 ## How this file is used
 
@@ -118,6 +118,16 @@ with `workflows/default/skill_sets/house/storefront-conventions/SKILL.md`, `work
 **Skills and server are two installs, and either can be the newer.** A skill from this release that reads a file with `get_skill(skill, path)` against an older server gets `SKILL.md` back, because the older server ignores `path`; each bundled skill that does this tells the agent to check that the reply's `skill.path` is the path it asked for, and to treat anything else as a file not read. An older skill against this server passes a `<skill>/<stem>` name and gets a message that no guide has that name and that a file is read with `skill_name` plus `path`: nothing is read, and the reply says why. Upgrade a host's skills and its server together.
 
 **Who is affected:** a client that calls `get_skill` or the skill routes, reads `availableSkills` from every reply, or calls a per-reference prompt. **What to do:** pass the file's path instead of a `<skill>/<stem>` name, read `content` as the file itself, and update installed skills.
+
+## [Unreleased] — clearer advice on two stored-source warnings
+
+**[fix] A `#@ persist` source is no longer told to inline a join it cannot inline.** When a stored source's join reads another connection, its `served-copy-not-served` warning (`cross_connection_join`) told every source to "inline the join (inline=)", but only a `#(materialize)` source takes `inline=`. The warning now gives that advice to `#(materialize)` sources only; a `#@ persist` source is told to materialize the joined source into the same destination, or to build itself in its own database. **Who is affected:** authors reading this warning on a `#@ persist` source. **What to do:** nothing.
+
+**[fix] A `storage=` downstream over an inline `extend` is told to name its base.** A `#@ persist` source written as `source: x is up extend { … } -> { … }` over a stored `up` is refused (`upstream_table_unusable`) because its query's base has no name to read its strings on. The message said only that "the base its strings are read on is not named". It now says the base is an inline `extend` or an unnamed query, and to declare that base as a source of its own and build this one over it by name. **Who is affected:** authors chaining `storage=` sources this way. **What to do:** declare the base as a named source (`source: up_with_users is up extend { … }`) and persist the query over it.
+
+## [Unreleased] — the `malloy-pub` CLI publishes to npm as `@malloy-publisher/cli`
+
+**[new] The Publisher CLI, `malloy-pub`, is now on npm as `@malloy-publisher/cli`, released in lockstep with the server.** Until now it was buildable only from a clone, under a package name (`@malloydata/publisher-cli`) that was never published, so the commands the materialization docs and skills show (`malloy-pub materialize`, `malloy-pub schedule set`, `malloy-pub list materialization` and the rest) had no install path outside the repo. Run it with `npx @malloy-publisher/cli@latest <command>`, or install the binary with `npm i -g @malloy-publisher/cli`. It needs Node.js 20 or newer and no Bun. Each release publishes it at the same version as `@malloy-publisher/server`, with its API client generated from that release's `api-doc.yaml`, so match the two when you pin; `malloy-pub --version` now reports that version rather than a fixed `0.0.50`. The commands themselves are unchanged. Nothing on npm ever carried the old name, so there is nothing to migrate from.
 
 ## [0.18.6] — a file kept from before a failed recompile no longer serves stale tables when its upstream read fails
 

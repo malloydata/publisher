@@ -113,7 +113,7 @@ jobs:
         run: |
           set -euo pipefail
 
-          PKGS="packages/sdk/package.json packages/app/package.json packages/server/package.json"
+          PKGS="packages/sdk/package.json packages/app/package.json packages/server/package.json packages/cli/package.json"
 
           # Rewriting the top-level "version" field in each workspace
           # package.json lives in scripts/set-version.mjs rather than a shell
@@ -274,12 +274,12 @@ jobs:
 
           # A release whose version main already declares has nothing to bump.
           # It is reachable when neither `release/v<v>` nor `v<v>` exists: a
-          # hand-edit of those three files, or a release branch AND its tag both
+          # hand-edit of those four files, or a release branch AND its tag both
           # deleted. `version_taken` above catches every other route here. It
           # would fail closed regardless, so this buys a readable message.
           # shellcheck disable=SC2086
           if git diff --quiet -- $PKGS; then
-            echo "::error title=Version::main already declares ${NEW_VERSION}, so there is nothing to commit for this release. Either it has already shipped (check npm and the tags) or those three version files were edited by hand. Pick the next free version instead."
+            echo "::error title=Version::main already declares ${NEW_VERSION}, so there is nothing to commit for this release. Either it has already shipped (check npm and the tags) or those four version files were edited by hand. Pick the next free version instead."
             exit 1
           fi
 
@@ -311,7 +311,7 @@ jobs:
           # shellcheck disable=SC2086
           git add $PKGS RELEASE_NOTES.md
           git commit -s -m "chore(release): ${NEW_VERSION}" \
-            -m "Stamps ${STAMPED} release-note section(s) and sets sdk, app and server to ${NEW_VERSION}."
+            -m "Stamps ${STAMPED} release-note section(s) and sets sdk, app, server and cli to ${NEW_VERSION}."
 
           git push origin "$BRANCH_NAME"
 
@@ -372,7 +372,7 @@ jobs:
   # entry, and no npm setting has to change for this job to work.
   #
   # Deliberately NOT in gh-release's needs. These packages are independent of
-  # the sdk/app/server artifacts, and prepare walks the patch version forward on
+  # the sdk/app/server/cli artifacts, and prepare walks the patch version forward on
   # a re-run rather than resuming, so gating the tag on them would turn a failed
   # package publish into a partial release that cannot be re-run at the same
   # version. A failure here still reddens the run.
@@ -430,7 +430,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           # main, never needs.prepare.outputs.branch_name. prepare bumps only
-          # sdk/app/server, so the release branch's copies of these two
+          # sdk/app/server/cli, so the release branch's copies of these two
           # packages are identical to main, and both children guard on
           # github.ref == 'refs/heads/main'. Dispatched on a release branch their
           # publish jobs SKIP, and a skipped job reports success, so the release
