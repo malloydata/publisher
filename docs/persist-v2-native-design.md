@@ -1,12 +1,12 @@
 # Planning `#@ persist` natively in the v2 planner
 
-Status: **design for sign-off, no implementation.** Requested by Kyle Nesbit, 2026-11-28.
+Status: **decided, not yet implemented.** Requested by Kyle Nesbit, 2026-11-28. Kyle took
+decisions D1–D10 the same day; they are recorded in [Decisions (Kyle, 2026-11-28)](#decisions-kyle-2026-11-28).
 Read against `origin/main` at `7d5c46ff1`. Every `file:line` below is under
 `packages/server/src/service/materialization/` unless it names another root.
 
-Items marked **Sign-off** are new contract values or behaviour changes. They need an explicit
-yes before anything is built. The decisions that need Kyle are gathered at the end, in
-[Decisions for Kyle](#decisions-for-kyle).
+Items marked **Signed off** are new contract values or behaviour changes that Kyle approved with the
+decisions. Section 7 lists all of them.
 
 ## Summary
 
@@ -17,8 +17,8 @@ core's persistence walk (`getBuildTargets`) run over each author file. Where a f
 `#(rollup)`, and `#@ persist` on a view or a named query. Serving moved onto v2 in 0.13 (the
 served copy and the rollup leg). Planning did not move.
 
-This design moves `#@ persist` planning into a v2 **persist leg** so the v1 code can be deleted.
-The persist leg follows one ownership rule for every leg:
+This design moves `#@ persist` planning into a v2 **persist leg** and deletes the v1 code. The
+persist leg follows one ownership rule for every leg:
 
 - **One leg owns each `sourceID`.** An own `#@ persist` on a query-shaped source belongs to the
   persist leg. An own `#(materialize)` belongs to the materialize leg. Both on one source stays
@@ -29,9 +29,13 @@ The persist leg follows one ownership rule for every leg:
 - **An own `#@ persist` on a table-shaped source stays `persist-not-materializable`.** It is
   malformed and fails the package load, word for word as today.
 
-The persist leg still asks Malloy for each selected source's `BuildTarget`, as every v2 leg does.
-That keeps every content address and physical table name unchanged. What goes is everything core's
-walk decides today:
+The persist leg plans each source through its own **generated companion**, as the view, query and
+rollup legs do. The companion is compiled over the author's files with source-level `#@` lines
+blanked, and it declares one build source per persisted source, presented as the author's source.
+The leg still asks Malloy for each build source's `BuildTarget` (D1), so content addresses and
+physical table names stay as they are. Two parity gates prove that before the flip: every address is
+unchanged, and every chained build still reads its persisted upstream's table. What goes is
+everything core's walk decides today:
 
 - which sources persist;
 - that an extension claims its base's table;
@@ -40,13 +44,23 @@ walk decides today:
 
 The flag stops mattering to authors. Planning failures are isolated per file.
 
-Rollout follows the 0.13 pattern:
+There is **no runtime switch** (D3). The v1-to-v2 comparison runs only in CI and in the service's
+conformance job:
 
-1. A registry setting (`persist.planner`: `v1`, `shadow`, `v2`).
-2. A shadow diff on the dev and staging fleets and in the service's conformance job.
-3. A release that carries both planners.
-4. The flip.
-5. Deleting the v1 walk, `v1_build_companion.ts` and the `#@ preaggregate` readers.
+- the required `--plan-diff` on the service PR that bumps `publisher_version`;
+- a `publisher_ref` dispatch input for shadowing candidates;
+- the daily job on Publisher `main` as the early warning.
+
+The flip is a code change in one breaking minor. That release also carries:
+
+- lifting the `storage=` persist-over-`#(materialize)` refusal (D6);
+- retiring `#@ preaggregate` (D8);
+- removing `materialize.enabled`'s off position (D9);
+- one shape predicate everywhere (D10);
+- deleting the v1 walk.
+
+The one temporary piece is a bind rule for manifests named after inherited-only extensions (D4). It
+ships in that release and is deleted once every cell has replanned.
 
 ## 1. Where `#@ persist` is planned today
 
@@ -174,7 +188,7 @@ The function reads only the source's **own** notes, through `declaredNotes` (gov
 | `#(materialize)`                               | any          | materialize leg (unchanged)                                                                                          |
 | both                                           | any          | malformed `materialize-invalid` ("declare one or the other", `plan/materialize_plan.ts:1482-1486`, unchanged)        |
 | neither, and the chain reaches a stored source | any          | no table. The source is a chain over that table, served by the served copy re-rooting the stored source in its chain |
-| own and inherited cannot be told apart         | any          | refused alone, answered live (see decision [D5](#decisions-for-kyle))                                                |
+| own and inherited cannot be told apart         | any          | refused alone, answered live (see decision [D5](#decisions-kyle-2026-11-28))                                         |
 
 The last row is the only "genuinely ambiguous" case. It happens when an annotation can be read but
 its notes cannot be attributed to the source's own statement. That is the identity rule in
@@ -186,8 +200,7 @@ open as "declares", in `plan/addressing.ts:560-573`.
 **Where it lives.** It gets its own planner, `plan/persist_plan.ts`, and a compiler,
 `plan/persist_compile.ts`. That is the same split as `materialize_plan.ts` and
 `materialize_compile.ts`, and as `persisted_view.ts` and `persisted_view_compile.ts`. It is called
-from `collectGeneratedTables` beside the other legs. It is **not** gated on `materialize.enabled`,
-because the v1 walk is not gated today; see decision [D9](#decisions-for-kyle). The `TableKind`
+from `collectGeneratedTables` beside the other legs. It is not gated on `materialize.enabled`, because that switch's off position is removed first, in the same release (D9). The `TableKind`
 stays `persist`. Run, bind, telemetry and the wire read the kind off the table
 (`plan/README.md`, "Nothing downstream derives a kind"), so none of them changes.
 
@@ -206,53 +219,62 @@ only in the file that declares it (`plan/persisted_view.ts:33-35`):
 
    Each of these is malformed and fails publish and load, as now.
 
-3. **Compile.** Compile the leg's **build copy** of the file, then ask Malloy for `BuildTarget`s.
-   The build copy is the author's text with the flag as its first line, served over the file's own
-   URL, which is what `v1BuildCompanionText` does today. It moves to `text/` beside the other
-   generated files, as the persist leg's own generated file. It is used for every file that declares
-   a persist-leg source, flagged or not, so one path serves both. The leg keeps only the targets for
-   the sources it selected in step 1. Every other `#@ persist` source that core walks in the copy
-   is dropped without a word, because it is not this leg's. That includes inherited-only extensions,
-   and sources declared in other files, which their own file plans. The flagless/flagged split, and
-   `v1PlanModel`, go away.
-4. **Facts per table.** These are the same calls the walk makes, on the same `PersistSource`:
-   `plannedFacts`, the declaring model path, `chainedStringReads`, the
-   `persistOverMaterializedReason` check, and `classifyPersistSourceGate`.
-5. **Edges.** The leg takes the planned sources' `dependsOn` from the targets (`sourceBuildsOf`,
-   `plan/addressing.ts:47-125`), restricted to planned sources. When a persist source reads a
-   `#(materialize)` table, it also takes the `withDownstreamEdges` reach (`:306`). Core cannot see
-   that edge; see decision [D6](#decisions-for-kyle).
-6. **Isolation.** If the build copy fails to compile or plan, the file's persist-leg sources become
+3. **Compile: the persist companion (D2).** The leg generates one companion model per declaring
+   file, `<file>.persist.malloy`. Like the persisted-view companion, it is never on disk and never
+   in the package's model list (`plan/persisted_view.ts:17-24`).
+   - It reads the author's files with every source-level `#@` line blanked, positions kept.
+   - For each selected source `s` it imports `s` under an alias. It then declares
+     `source: s__persist is <alias>` under the author's own `#@ persist` line, copied verbatim, and
+     opens with `##! experimental.persistence`.
+   - Each build source is presented as the author's source with `presentAs`
+     (`plan/addressing.ts:249`), as the materialize leg presents `<src>__mat`. The plan, the wire,
+     manifests and warnings therefore never show the generated name.
+   - The leg asks Malloy for the build sources' `BuildTarget`s. A target's `sql` compiles the
+     source's `query`, or for a `.sql()` source its SQL (core.js `_compileSQL`). An alias adds
+     nothing to either, so the `sql` is expected to equal the author's source's `sql` byte for
+     byte. The **address-parity gate** (4.1) proves it before the flip, rather than taking it on
+     trust.
+   - Because source-level lines are blanked, core sees exactly the leg's selection and no
+     inherited-only extension. The flagless/flagged split, `v1PlanModel` and the build copy all go.
+4. **Build SQL over persisted upstreams (the chained case).** Blanking also hides an upstream's
+   `#@ persist` from the first compile, so core's `buildSQL(manifest)` would not substitute its
+   table. A persist source that reads stored upstreams therefore takes the second compile #1998
+   built for views and queries (`plan/over_stored_proof.ts:1-26`):
+   - over a `#@ persist` upstream, the second compile keeps that upstream's own `#@ persist` line,
+     so `buildSQL(manifest)` reads its table and the downstream's address stays equal (checked);
+   - over a `#(materialize)` upstream, the upstream is re-rooted on its generated build source
+     (`plan/stored_base_copy.ts`). This is what lifts the D6 refusal and serves D10's `.sql()`
+     upstreams.
+
+   The plan records the proof, so a run only reads the decision, and a source the proof fails is
+   refused at plan (`generated_build_failed`), never built from raw. The **chained-build parity
+   gate** (4.1) shows that every chained persist build in the corpus reads the same upstream tables
+   and writes the same rows as under v1.
+
+5. **Facts per table.** These are the same calls the walk makes, on the same kind of
+   `PersistSource`: `plannedFacts`, the declaring model path, `chainedStringReads` and
+   `classifyPersistSourceGate`. The `persistOverMaterializedReason` refusal
+   (`plan/downstream_upstreams.ts:186-200`) is deleted (D6).
+6. **Edges.** The leg gives each planned source the planned tables its definition reaches, through
+   `withDownstreamEdges` (`plan/addressing.ts:306`, extended to the `persist` kind). These are
+   `#@ persist` and `#(materialize)` upstreams alike. The edges among persist sources must equal
+   core's `dependsOn` from the v1 walk (`sourceBuildsOf`, `:47-125`). The plan-diff compares them.
+7. **Isolation.** If the companion fails to compile or plan, the file's persist-leg sources become
    `omittedSources`, or the file goes in `omittedFiles` when the failure comes before selection.
-   The failure is coded `persist_companion_failed` (**Sign-off:** a new `OmittedSource.reason`
+   The failure is coded `persist_companion_failed` (**Signed off:** a new `OmittedSource.reason`
    value). `v1_build_companion_failed` becomes "retained, no longer produced". The leg catches its
    own throws, as `compileMaterialize` does (`plan/materialize_compile.ts:198-245`), so no persist
-   error can fail the package plan. The rest of `collectModelBuildPlan` should get the same per-leg
-   containment. That is a separate item ([5](#5-rollout)).
+   error can fail the package plan. Phase 0 gives the rest of `collectModelBuildPlan` the same
+   per-leg containment.
 
-**Why a build copy, not a blanked per-source companion.** The view and rollup companions blank
-source-level `#@` lines and declare a generated build source per declaration. The persist leg could
-do the same, presenting each generated source as the author's with `presentAs`
-(`plan/addressing.ts:249`). That is more uniform. But it changes the compile that the target's
-`sql` and `buildId` come from. A persisted upstream's table would also no longer be substituted by
-core's `buildSQL(manifest)`. Today v1 chained database builds and v2's over-stored proofs both rely
-on that substitution (`run/source_build.ts:441-498`, `run/build_upstreams.ts:405`,
-`plan/over_stored_proof.ts:76`).
-
-The build copy keeps the same compile as today, so it cannot move an address. It keeps
-`v1_build_companion_corpus.spec.ts` true by construction. The blanked companion is a later
-convergence step once the shadow diff is clean; see decision [D2](#decisions-for-kyle).
-
-**What is still asked of Malloy core.** Only `Runtime.getBuildTargets` over a generated, flagged
-file, for each selected source's `BuildTarget` (`sql`, `buildSQL`, `buildId`). Every v2 leg already
-uses this primitive (`plan/materialize_compile.ts:890`, `:995`; `plan/rollup_compile.ts:710`;
+**What is still asked of Malloy core (D1).** Only `Runtime.getBuildTargets` over a generated,
+flagged file, for each build source's `BuildTarget` (`sql`, `buildSQL`, `buildId`). Every v2 leg
+already uses this primitive (`plan/materialize_compile.ts:890`, `:995`; `plan/rollup_compile.ts:710`;
 `plan/persisted_view_compile.ts:1020`). Every address is a digest of `BuildTarget.sql`
 (`plan/addressing.ts:376-411`). Publisher calls neither core's deprecated `Model.getBuildPlan` nor
 `PersistSource.getSQL`. `Package.getBuildPlan` (`package.ts:1956`) is Publisher's own wire plan.
-
 After the move, **the author's file never needs the flag**, and nothing core's walk decides about
-the author's model reaches the plan. Whether to replace `BuildTarget` itself is decision
-[D1](#decisions-for-kyle). Keeping it is recommended, because replacing it moves every address.
+the author's model reaches the plan.
 
 ### 3.3 Extensions of a persisted query source
 
@@ -290,7 +312,7 @@ instead of a full `MaterializePlan`. A `StoredParent` holds:
 - a pair layout, which is always absent for a persist parent.
 
 Both legs produce a `StoredParent`, and the existing tier, incremental and term rules then apply
-unchanged. The build copy re-roots `deals_including_deleted` on its table (`materialize_build_copy.ts`).
+unchanged. The materialize build copy re-roots `deals_including_deleted` on its table (`materialize_build_copy.ts`).
 `deals`'s `where:` is applied in its own build. **This is the only new planning mechanism in the
 design. Everything else is selection.** It also removes the v1 trap: `deals` no longer inherits
 its base's `name=` or claims its table. With `#(materialize)` it gets its own readable table or its
@@ -305,7 +327,7 @@ its own refinements applied at read. An extension with its **own** `#@ persist` 
 ### 3.4 `persist-not-materializable`, pinned
 
 A parity spec, `plan/persist_not_materializable_parity.spec.ts`, is written **against v1 first**.
-It passes on `main` before any planner code changes, then runs under both planner settings. It
+It passes on `main` before any planner code changes, and must pass unchanged on the flip. It
 asserts the finding's code, tier `malformed`, the exact message text, the load failure, and the
 build refusal (`run/materialization_service.ts:1360-1363`). It covers each case below:
 
@@ -319,21 +341,25 @@ build refusal (`run/materialization_service.ts:1360-1363`). It covers each case 
 | own `#@ persist` on `t -> { … } extend { dimension: … }`                                | persists                                                                                                                                      |
 | own `#@ persist` on `conn.sql("…")` (hammer cases 62, 63)                               | persists: it stores the SQL's result                                                                                                          |
 | own `#@ persist` on a query-shaped source with an unbound parameter                     | refused, as today: `free_parameter` for `storage=` (`plan/materialization_eligibility.ts:145-160`), `unkeyable` omission on the database tier |
-| inherited-only `#@ persist` on a table-shaped extend of a table-shaped persisted source | **v1:** a second finding on the extend. **v2:** the finding is on the declaring source only, and the load still fails (expected diff E5)      |
+| inherited-only `#@ persist` on a table-shaped extend of a table-shaped persisted source | **v1:** a second finding on the extend. **v2:** the finding is on the declaring source only, and the load still fails (expected class E5)     |
 | `#(materialize)` on an unbound parameterized source                                     | refused (`free_parameter`), unchanged                                                                                                         |
 
-### 3.5 Deleted with the v1 planner
+### 3.5 Deleted in the flip release
 
 These are deleted:
 
 - `v1PlanModel`, `reportPersistLineFindings`, `planV1PersistSources`, `detectDroppedPersistSources`,
   `declaredPersistSourceIDs` and `sourceIDsWithNoteAt` (`plan/build_plan.ts`);
-- `plan/v1_build_companion.ts`, with its text function moved, as described in 3.2;
+- `plan/v1_build_companion.ts`. Its corpus spec becomes the address-parity spec;
+- `persistOverMaterializedReason` (D6);
 - the internal `droppedPersistSources` field (`domain/compiled_build_plan.ts:94`,
   `domain/package_plan.ts`) and its golden key;
-- the `inherited_persist` refusal, apart from decision [D5](#decisions-for-kyle);
+- the `inherited_persist` refusal, apart from decision [D5](#decisions-kyle-2026-11-28);
 - the five copies of the ownership rule;
-- the `persist.planner` setting itself, in step 5.
+- the `#@ preaggregate` and `#(preaggregate)` readers (D8);
+- the off position of `materialize.enabled` (D9).
+
+The D4 bind rule is added in that release and deleted in a later one.
 
 ## 4. Parity inventory
 
@@ -341,43 +367,43 @@ Every row is something the v1 walk does today, with its v2 home. "Unchanged" mea
 calls the same function on the same `PersistSource`, so behaviour cannot drift. The rows that are
 not "unchanged" are marked.
 
-| What                                                                                                      | Where today                                                                                                                                                                                                                                | v2 home                                                                                                                                                                                                                                                                                                                                                                                                 |
-| --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `name=`, `storage=`, database tier                                                                        | `placementOf` (`plan/declaration.ts:150`), `deriveAnnotationFields` and `declaredStorage` (`plan/persist_source_fields.ts:51`, `:61`), `persist.storageMode` (`settings/registry/storage.ts:119`)                                          | Unchanged: read off the planned `PersistSource`                                                                                                                                                                                                                                                                                                                                                         |
-| `name=` validity                                                                                          | `persistNameProblems` (`plan/persist_annotation_validation.ts:103`), `tableNameProblem` (`:69`)                                                                                                                                            | Unchanged (step 2 of 3.2)                                                                                                                                                                                                                                                                                                                                                                               |
-| Incremental: `refresh=`, watermark, `merge_key`, rolling terms                                            | `resolveIncrementalDeclaration` (`plan/incremental_declaration.ts:163`), `incrementalPolicyRejections` and `incrementalUnbuildableReason` (`plan/incremental_policy.ts:161`, `:178`), ledger keyed by address (`run/incremental_build.ts`) | Unchanged. The `persist-incremental-shared-address` advisory (`plan/incremental_policy.ts:516`) no longer fires where an inherited-only extension was the other sharer (expected diff E3)                                                                                                                                                                                                               |
-| Partitions                                                                                                | Retired: `partition=` is `persist-retired-key` (#1758/#1759, `docs/publisher-v1.md:1050`)                                                                                                                                                  | Unchanged, nothing to port                                                                                                                                                                                                                                                                                                                                                                              |
-| Freshness                                                                                                 | `resolveFreshness` (`plan/plan_layers.ts:115`), read from the source tag, model tags and the package                                                                                                                                       | Unchanged                                                                                                                                                                                                                                                                                                                                                                                               |
-| Schedule, refresh cadence                                                                                 | Package level only (`materialization.schedule`, `run/materialization_scheduler.ts`). Per-source `schedule=` and `sharing=` are retired (`docs/publisher-v1.md:1048`)                                                                       | Unchanged, nothing per source                                                                                                                                                                                                                                                                                                                                                                           |
-| Query metadata                                                                                            | `resolveQueryMetadata` (`plan/plan_layers.ts:166`), kept out of the address                                                                                                                                                                | Unchanged                                                                                                                                                                                                                                                                                                                                                                                               |
-| Givens                                                                                                    | `buildSubstitutesAGiven` (`plan/materialization_eligibility.ts:413`), `inherited_where_with_given` (`:321`), `admitGivenPositions` (`plan/persist_dynamic_terms.ts:418`)                                                                   | Unchanged: eligibility is per `PersistSource` and does not depend on kind                                                                                                                                                                                                                                                                                                                               |
-| Current time                                                                                              | `storedAsOfBuild` (`plan/persist_dynamic_terms.ts:229`), read for `kind: "persist"` (`:233`)                                                                                                                                               | Unchanged                                                                                                                                                                                                                                                                                                                                                                                               |
-| Gates                                                                                                     | `classifyPersistSourceGate` (`plan/build_plan.ts:656`), gate-policy row `persist` (`domain/gate_policy.ts:133`, `:187`), `materialize.gatedSources`                                                                                        | Unchanged for planned sources. **Changed:** an inherited-only extension is no longer classified at plan; its gate is grafted and proven at read by the served copy, through its base's table. A base is no longer refused because such an extension's gate was refused (`refuseDatabaseTablesSharedWithARefusal`, `plan/build_plan.ts:2681`; expected diff E6, **Sign-off**, [D7](#decisions-for-kyle)) |
-| Content address                                                                                           | `computeSourceEntityId` (`plan/addressing.ts:376`): connection digest over `BuildTarget.sql`, plus the folds                                                                                                                               | Unchanged by construction, because it is the same compile. See [4.1](#41-addresses-and-table-names-do-not-move)                                                                                                                                                                                                                                                                                         |
-| Compiler key                                                                                              | `compilerBuildId` (`plan/addressing.ts:479`)                                                                                                                                                                                               | Unchanged                                                                                                                                                                                                                                                                                                                                                                                               |
-| Folds (distinct `name=`, projection, twins)                                                               | `foldDistinctTableNames` (`plan/addressing.ts:697`), decided over the whole plan                                                                                                                                                           | Unchanged for every retained source (argued in 4.1)                                                                                                                                                                                                                                                                                                                                                     |
-| Upstream schema fold                                                                                      | `upstreamFoldOf` (`plan/addressing.ts:426`)                                                                                                                                                                                                | Unchanged                                                                                                                                                                                                                                                                                                                                                                                               |
-| Physical table names                                                                                      | `readableTableName` (`domain/table_name.ts:269`), `namingSources` (`run/run_instructions.ts:327`), sticky by address (`tableNameDecision`, `:603-670`)                                                                                     | Unchanged for retained sources. A shared address that an inherited-only extension named keeps its recorded name through the sticky rule. Hosted names are not sticky; reuse is by address, and only the next generation may be renamed (4.1)                                                                                                                                                            |
-| Table ownership (author `name=`)                                                                          | `hasAuthorTableName` (`run/table_ownership.ts:174-187`), table claims, reclaimer                                                                                                                                                           | Unchanged: they read the kind and the annotation                                                                                                                                                                                                                                                                                                                                                        |
-| GC: standalone                                                                                            | Reclaimer, the rename rule (`docs/materialization.md`, "The rename rule")                                                                                                                                                                  | Unchanged. An inherited-only extension had no table of its own: it shared its base's address, so nothing is orphaned                                                                                                                                                                                                                                                                                    |
-| GC: hosted                                                                                                | The control plane's `AnchorRetirementPolicy` (service repo, `controlplane/.../services/AnchorRetirementPolicy.java`) retires an anchor that is absent from a complete plan                                                                 | **Changed on the wire:** the inherited-only extension's anchor leaves the plan and retires as `absent_from_complete_plan`. It drops no physical table that its base's anchor still holds at the same address: confirmed by the service review (`MaterializationGarbageCollector.isCollectible` refcounts the serving table and the address; gate G3)                                                    |
-| Run telemetry                                                                                             | `buildKindOf` (`run/run_telemetry.ts:89`) reads `table.kind`                                                                                                                                                                               | Unchanged: the kind stays `persist`                                                                                                                                                                                                                                                                                                                                                                     |
-| Refusal and finding codes                                                                                 | `persist-invalid`, `persist-not-built`, `persist-unparseable`, `persist-unknown-key`, `persist-retired-key` (`annotation_reader.ts:444-767`), `persist-not-materializable`, `persist-incremental-*`, `persist-reads-current-time`          | Unchanged codes. `persist-unparseable` comes from the leg's own `readNotes` rather than from core's `tagParseLog`; the shadow diff compares the finding sets                                                                                                                                                                                                                                            |
-| Wire: `PersistSourcePlan` (`origin`, `name`, `sourceID`, `sql`, `sourceEntityId`, `refresh`, `freshness`) | `deriveBuildPlan` and `wireSourceOf` (`plan/build_plan.ts:2511`, `:2612`); `origin: originOfTable` (`:2625`, `domain/table_plans.ts:824`); `sql: addressSQL` (`:2634`)                                                                     | Unchanged: `origin` stays `persist` (`api-doc.yaml:11499-11501`), and the control plane's `Materialization.origin` default `persist` stays true (`MaterializationDao.java:163-171`)                                                                                                                                                                                                                     |
-| Wire: `buildPlan.graphs` and `dependsOn`                                                                  | `sourceBuildsOf` (`plan/addressing.ts:106`)                                                                                                                                                                                                | Unchanged among retained sources. Inherited-only extensions leave the graph                                                                                                                                                                                                                                                                                                                             |
-| Wire: `refusedSources`                                                                                    | Per-table verdicts                                                                                                                                                                                                                         | Unchanged reasons. **Changed:** no entry for an inherited-only extension. `inherited_persist` stops being produced (`api-doc.yaml:11220`); the control plane does not branch on it (service review)                                                                                                                                                                                                     |
-| Wire: `omittedSources` and `omittedFiles`                                                                 | `v1_build_companion_failed`, `unkeyable` (`plan/build_plan.ts:2577-2588`)                                                                                                                                                                  | **New value** `persist_companion_failed`. `unkeyable` is unchanged                                                                                                                                                                                                                                                                                                                                      |
+| What                                                                                                      | Where today                                                                                                                                                                                                                                | v2 home                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `name=`, `storage=`, database tier                                                                        | `placementOf` (`plan/declaration.ts:150`), `deriveAnnotationFields` and `declaredStorage` (`plan/persist_source_fields.ts:51`, `:61`), `persist.storageMode` (`settings/registry/storage.ts:119`)                                          | Unchanged: read off the planned `PersistSource`                                                                                                                                                                                                                                                                                                                                                                                         |
+| `name=` validity                                                                                          | `persistNameProblems` (`plan/persist_annotation_validation.ts:103`), `tableNameProblem` (`:69`)                                                                                                                                            | Unchanged (step 2 of 3.2)                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Incremental: `refresh=`, watermark, `merge_key`, rolling terms                                            | `resolveIncrementalDeclaration` (`plan/incremental_declaration.ts:163`), `incrementalPolicyRejections` and `incrementalUnbuildableReason` (`plan/incremental_policy.ts:161`, `:178`), ledger keyed by address (`run/incremental_build.ts`) | Unchanged. The `persist-incremental-shared-address` advisory (`plan/incremental_policy.ts:516`) no longer fires where an inherited-only extension was the other sharer (expected diff E3)                                                                                                                                                                                                                                               |
+| Partitions                                                                                                | Retired: `partition=` is `persist-retired-key` (#1758/#1759, `docs/publisher-v1.md:1050`)                                                                                                                                                  | Unchanged, nothing to port                                                                                                                                                                                                                                                                                                                                                                                                              |
+| Freshness                                                                                                 | `resolveFreshness` (`plan/plan_layers.ts:115`), read from the source tag, model tags and the package                                                                                                                                       | Unchanged                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Schedule, refresh cadence                                                                                 | Package level only (`materialization.schedule`, `run/materialization_scheduler.ts`). Per-source `schedule=` and `sharing=` are retired (`docs/publisher-v1.md:1048`)                                                                       | Unchanged, nothing per source                                                                                                                                                                                                                                                                                                                                                                                                           |
+| Query metadata                                                                                            | `resolveQueryMetadata` (`plan/plan_layers.ts:166`), kept out of the address                                                                                                                                                                | Unchanged                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Givens                                                                                                    | `buildSubstitutesAGiven` (`plan/materialization_eligibility.ts:413`), `inherited_where_with_given` (`:321`), `admitGivenPositions` (`plan/persist_dynamic_terms.ts:418`)                                                                   | Unchanged: eligibility is per `PersistSource` and does not depend on kind                                                                                                                                                                                                                                                                                                                                                               |
+| Current time                                                                                              | `storedAsOfBuild` (`plan/persist_dynamic_terms.ts:229`), read for `kind: "persist"` (`:233`)                                                                                                                                               | Unchanged                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Gates                                                                                                     | `classifyPersistSourceGate` (`plan/build_plan.ts:656`), gate-policy row `persist` (`domain/gate_policy.ts:133`, `:187`), `materialize.gatedSources`                                                                                        | Unchanged for planned sources. **Changed:** an inherited-only extension is no longer classified at plan; its gate is grafted and proven at read by the served copy, through its base's table. A base is no longer refused because such an extension's gate was refused (`refuseDatabaseTablesSharedWithARefusal`, `plan/build_plan.ts:2681`; expected class E6, **Signed off**, D7). A security review of that read path gates the flip |
+| Content address                                                                                           | `computeSourceEntityId` (`plan/addressing.ts:376`): connection digest over `BuildTarget.sql`, plus the folds                                                                                                                               | Unchanged, proven by the address-parity gate over the persist companion. See [4.1](#41-addresses-and-table-names-do-not-move)                                                                                                                                                                                                                                                                                                           |
+| Compiler key                                                                                              | `compilerBuildId` (`plan/addressing.ts:479`)                                                                                                                                                                                               | Unchanged: the target's `buildId`, covered by the address-parity gate                                                                                                                                                                                                                                                                                                                                                                   |
+| Folds (distinct `name=`, projection, twins)                                                               | `foldDistinctTableNames` (`plan/addressing.ts:697`), decided over the whole plan                                                                                                                                                           | Unchanged for every retained source (argued in 4.1)                                                                                                                                                                                                                                                                                                                                                                                     |
+| Upstream schema fold                                                                                      | `upstreamFoldOf` (`plan/addressing.ts:426`)                                                                                                                                                                                                | Unchanged                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| Physical table names                                                                                      | `readableTableName` (`domain/table_name.ts:269`), `namingSources` (`run/run_instructions.ts:327`), sticky by address (`tableNameDecision`, `:603-670`)                                                                                     | Unchanged for retained sources. A shared address that an inherited-only extension named keeps its recorded name through the sticky rule. Hosted names are not sticky; reuse is by address, and only the next generation may be renamed (4.1)                                                                                                                                                                                            |
+| Table ownership (author `name=`)                                                                          | `hasAuthorTableName` (`run/table_ownership.ts:174-187`), table claims, reclaimer                                                                                                                                                           | Unchanged: they read the kind and the annotation                                                                                                                                                                                                                                                                                                                                                                                        |
+| GC: standalone                                                                                            | Reclaimer, the rename rule (`docs/materialization.md`, "The rename rule")                                                                                                                                                                  | Unchanged. An inherited-only extension had no table of its own: it shared its base's address, so nothing is orphaned                                                                                                                                                                                                                                                                                                                    |
+| GC: hosted                                                                                                | The control plane's `AnchorRetirementPolicy` (service repo, `controlplane/.../services/AnchorRetirementPolicy.java`) retires an anchor that is absent from a complete plan                                                                 | **Changed on the wire:** the inherited-only extension's anchor leaves the plan and retires as `absent_from_complete_plan`. It drops no physical table that its base's anchor still holds at the same address: confirmed by the service review (`MaterializationGarbageCollector.isCollectible` refcounts the serving table and the address; gate G3)                                                                                    |
+| Run telemetry                                                                                             | `buildKindOf` (`run/run_telemetry.ts:89`) reads `table.kind`                                                                                                                                                                               | Unchanged: the kind stays `persist`                                                                                                                                                                                                                                                                                                                                                                                                     |
+| Refusal and finding codes                                                                                 | `persist-invalid`, `persist-not-built`, `persist-unparseable`, `persist-unknown-key`, `persist-retired-key` (`annotation_reader.ts:444-767`), `persist-not-materializable`, `persist-incremental-*`, `persist-reads-current-time`          | Unchanged codes. `persist-unparseable` comes from the leg's own `readNotes` rather than from core's `tagParseLog`; the plan-diff compares the finding sets                                                                                                                                                                                                                                                                              |
+| Wire: `PersistSourcePlan` (`origin`, `name`, `sourceID`, `sql`, `sourceEntityId`, `refresh`, `freshness`) | `deriveBuildPlan` and `wireSourceOf` (`plan/build_plan.ts:2511`, `:2612`); `origin: originOfTable` (`:2625`, `domain/table_plans.ts:824`); `sql: addressSQL` (`:2634`)                                                                     | Unchanged: `origin` stays `persist` (`api-doc.yaml:11499-11501`), and the control plane's `Materialization.origin` default `persist` stays true (`MaterializationDao.java:163-171`)                                                                                                                                                                                                                                                     |
+| Wire: `buildPlan.graphs` and `dependsOn`                                                                  | `sourceBuildsOf` (`plan/addressing.ts:106`)                                                                                                                                                                                                | Unchanged among retained sources. Inherited-only extensions leave the graph. New edges to `#(materialize)` upstreams (D6) and persisted `.sql()` upstreams (D10)                                                                                                                                                                                                                                                                        |
+| Wire: `refusedSources`                                                                                    | Per-table verdicts                                                                                                                                                                                                                         | Unchanged reasons. **Changed:** no entry for an inherited-only extension. `inherited_persist` stops being produced (`api-doc.yaml:11220`); the control plane does not branch on it (service review)                                                                                                                                                                                                                                     |
+| Wire: `omittedSources` and `omittedFiles`                                                                 | `v1_build_companion_failed`, `unkeyable` (`plan/build_plan.ts:2577-2588`)                                                                                                                                                                  | **New value** `persist_companion_failed` (**Signed off**). `unkeyable` is unchanged                                                                                                                                                                                                                                                                                                                                                     |
 
 ### 4.1 Addresses and table names do not move
 
 This needs to be shown, not assumed, because a moved address rebuilds a table across the whole
 fleet and re-seeds every incremental source on it.
 
-1. **`BuildTarget.sql` is byte-identical.** The persist leg compiles the same build copy that
-   `v1PlanModel` compiles for an unflagged file. For a flagged file it compiles that same copy,
-   which `v1_build_companion_corpus.spec.ts` already proves equal to the author's own file for every
-   corpus model (address, compiler key and wire SQL). Selecting from the targets cannot change a
-   target.
+1. **`BuildTarget.sql` is byte-identical, by gate.** Under D2 the target comes from the persist
+   companion rather than the author's file, so equality is proven, not inherited. The
+   **address-parity gate** (item 6) checks every corpus source's address, compiler key and wire SQL
+   against v1's. It is the successor of `v1_build_companion_corpus.spec.ts`, which proved the
+   same thing for the build copy. Selecting from the targets cannot change a target.
 2. **Folds do not change for any retained source.** `foldDistinctTableNames` groups sources by
    unfolded address and folds only when the group's members have different keys: name, stored
    projection or tier (`plan/addressing.ts:763-826`). An inherited-only extension takes its name
@@ -411,57 +437,50 @@ fleet and re-seeds every incremental source on it.
      (`serve/bind.ts:124-136`, from #1713).
    - So, in both modes: once an inherited-only extension that names a shared entry leaves the plan,
      the base's table is declined and serves live until a replan rewrites the manifest.
-   - The fix is decision [D4](#decisions-for-kyle). The recommended option is a one-release bind
-     rule: accept an entry whose named source is absent from the plan when a persist-leg source
-     holds the entry's address. It needs no control-plane change and covers standalone and hosted
-     manifests alike.
-6. **Pins.**
-   - `plan/persist_v2_address_parity.spec.ts`, over `test_helpers/persist_corpus.ts` (fixture
-     models and every hammer model). For each `sourceID` in both plans it asserts that the address,
-     compiler key, wire `sql`, fold and auto-run table name are equal. For each `sourceID` only in
-     v1's plan, it asserts that the source is an inherited-only extension whose address equals a
-     retained source's address.
-   - The plan goldens (`tests/goldens/materialization/corpus/hammer/*/*.plan.json`, 148 cases) are
-     regenerated under v2. They must differ only by the expected-diff classes in [5](#5-rollout).
+   - The fix is decision [D4](#decisions-kyle-2026-11-28), signed off: a temporary bind rule that accepts an
+     entry whose named source is absent from the plan when a persist-leg source holds the entry's
+     address. It needs no control-plane change, and it covers standalone and hosted manifests alike.
+     It ships in the flip release and is deleted once every cell has replanned.
+6. **Pins. These are flip gates.**
+   - **Address parity:** `plan/persist_v2_address_parity.spec.ts`, over
+     `test_helpers/persist_corpus.ts` (fixture models and every hammer model). For every source the
+     v1 goldens record, it compares the persist companion's address, compiler key, wire `sql`, fold
+     and auto-run table name with the address recorded in
+     `tests/goldens/materialization/corpus/hammer/*/*.build.sql`. Those files record each
+     `sourceEntityId` under a fixed connection digest, so they hold v1's addresses after the v1 code
+     is gone. A source v1 recorded and v2 does not plan must be an inherited-only extension whose
+     address equals a retained source's address.
+   - **Chained-build parity:** every chained persist case in the corpus is built under the base
+     release and under the flip branch, on DuckDB and Postgres. That covers hammer 11, 54, 71–74,
+     85, 91, 95, 96, 101, 106, 107 and 114, and the service fixture `persist-dag`. Each persisted
+     source with a stored upstream must be `reused`, name the same upstream tables in `builtFrom`,
+     and write the same rows.
+   - **Goldens:** the plan goldens (148 hammer cases) are regenerated on the flip branch. They must
+     differ only by the expected classes in [5](#5-rollout).
 
 ## 5. Rollout
 
-### The switch
+### No runtime switch (D3)
 
-**Sign-off:** a registry setting, added per `CLAUDE.md`:
+There is no `persist.planner` setting, no shadow mode on the fleets, no release that carries both
+planners, and no per-cell ConfigMap step. The flip is a code change in one breaking minor. The
+v1-to-v2 comparison runs where the two releases already meet: in Publisher CI, against the goldens
+and the parity gates, and in the service's conformance job, between the pinned release and the
+candidate.
 
-- **Key** `persist.planner`, `oneOf(["v1", "shadow", "v2"])`. Under the naming rule this gives
-  `PUBLISHER_PERSIST_PLANNER`, `--persist-planner`, and the file key `persist.planner`.
-- **Kind.** Not a launch setting and not a secret. Read with `settings.get("persist.planner")`, at
-  startup, on both the load worker and the main-thread run plan (`run/run_plan.ts`). Both must use
-  the same value.
-- **Registry chores.** Add `--persist-planner` to `SERVER_VALUE_FLAGS` in
-  `packages/create-malloy-package/src/scaffold.ts:1598`. Run `bun run generate-settings-reference`.
-  Write a `RELEASE_NOTES.md` section.
-- **Fleet-uniform per environment**, like `persist.addressIncludesDestination`
-  (`settings/registry/storage.ts:128`). Two workers on different planners give one package version
-  two plans. The control plane would then see the inherited-only anchors appear and disappear.
-  The notes say so.
-- **Hosted cells: the service owns the flip.** In a hosted cell, `persist.planner` is set per cell
-  through the publisher config ConfigMap. Moving a cell to `shadow` and then to `v2` is a per-cell
-  rollout step that the service team owns. Flipping a cell to `persist.planner=v2` requires a green
-  bump-PR plan-diff for the Publisher release that cell runs. On a cell, a release's default takes effect only where
-  the ConfigMap leaves the key unset.
-- **Modes.**
-  - `v1`: today.
-  - `shadow`: plan, build and serve with v1, and also plan v2 and diff the two.
-  - `v2`: the persist leg and the ownership rule.
-- **Retiring it.** The setting is deleted with the v1 walk. The registry's way to retire a setting
-  is still a follow-up (#1713); this setting is one more user of it.
+### The plan-diff
 
-### What the shadow diff compares
+The service's `v1-cutover-conformance` job runs Publisher's
+`packages/server/scripts/v1-cutover-conformance.ts` over the service fixtures
+(`e2e/conformance/v1-cutover/`: `persist-dag`, `persist-storage`, `preaggregate-v1-colocated`,
+`preaggregate-v1-storage`, `unflagged-persist`). The runner gains a `--plan-diff` mode, which plans
+each fixture with a base and a candidate Publisher.
 
-The comparison is per package version, between the v1 and v2 `PackagePlan`s, keyed by `sourceID`:
+**What it compares,** per package and keyed by `sourceID`:
 
 - the set of planned `sourceID`s and their kind;
 - address, compiler key, fold, wire `sql`;
-- the auto-run table name the run would choose, both with no prior entry and with v1's recorded
-  entry;
+- the auto-run table name, with no prior entry and with the base's recorded entry;
 - placement, freshness, refresh and the incremental declaration;
 - gate classification;
 - `dependsOn` among the sources both plans hold;
@@ -470,102 +489,107 @@ The comparison is per package version, between the v1 and v2 `PackagePlan`s, key
 - the package's malformed findings by code, subject and message. `persist-not-materializable` must
   match byte for byte.
 
-Each difference is classed:
+It prints classed rows per fixture, and the Python wrapper fails on any diff outside the expected
+classes:
 
-| Class                                    | What                                                                                                                                                                  | Verdict            |
-| ---------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------ |
-| E1 `inherited_only_left_plan`            | A v1-only `sourceID` that is an inherited-only extension whose address equals a retained source's address                                                             | expected           |
-| E2 `materialize_on_inherited_planned`    | An `inherited_persist` refusal replaced by a planned `#(materialize)` chain over the base's table                                                                     | expected           |
-| E3 `shared_address_advisory_gone`        | `persist-incremental-shared-address` gone where only an inherited-only extension shared                                                                               | expected           |
-| E4 `omission_code_renamed`               | `v1_build_companion_failed` reported as `persist_companion_failed`                                                                                                    | expected           |
-| E5 `not_materializable_on_declarer_only` | A `persist-not-materializable` finding that v1 also raised on an inherited-only extension; the declaring source's finding is identical, and the load fails either way | expected           |
-| E6 `base_unrefused`                      | A base refused in v1 only through `refuseDatabaseTablesSharedWithARefusal` against an inherited-only extension                                                        | expected, after D7 |
-| everything else                          | any moved address, name or edge; a changed refusal reason; a new or missing finding; a plan that fails in one mode                                                    | **bug**            |
+| Class                                    | What                                                                                                                                                                                                                | Verdict  |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------- |
+| E1 `inherited_only_left_plan`            | A base-only `sourceID` that is an inherited-only extension whose address equals a retained source's address                                                                                                         | expected |
+| E2 `materialize_on_inherited_planned`    | An `inherited_persist` refusal replaced by a planned `#(materialize)` chain over the base's table                                                                                                                   | expected |
+| E3 `shared_address_advisory_gone`        | `persist-incremental-shared-address` gone where only an inherited-only extension shared                                                                                                                             | expected |
+| E4 `omission_code_renamed`               | `v1_build_companion_failed` reported as `persist_companion_failed`                                                                                                                                                  | expected |
+| E5 `not_materializable_on_declarer_only` | A `persist-not-materializable` finding that v1 also raised on an inherited-only extension; the declaring source's finding is identical, and the load fails either way                                               | expected |
+| E6 `base_unrefused`                      | A base refused in v1 only through `refuseDatabaseTablesSharedWithARefusal` against an inherited-only extension (D7)                                                                                                 | expected |
+| E7 `persist_over_materialize_planned`    | A `storage=` `#@ persist` over a `#(materialize)` table in its destination, refused `upstream_table_unusable` by the base, now planned over that table, with its new edge (D6)                                      | expected |
+| E8 `sql_upstream_stored`                 | A view, query, rollup or persist source over a persisted `.sql()` source that now has an edge to its table and builds over it, or is refused at plan as `upstream_table_unusable` or `generated_build_failed` (D10) | expected |
+| E9 `preaggregate_retired`                | A package declaring `#@ preaggregate` or `#(preaggregate)` that fails to load with `rollup-retired-annotation` (D8)                                                                                                 | expected |
+| everything else                          | any moved address, name or edge; a changed refusal reason; a new or missing finding; a plan that fails on one side                                                                                                  | **bug**  |
 
 An E1 whose address does **not** equal a retained source's would mean the extension had a table of
 its own that v2 drops. It is a bug until shown otherwise.
 
-**Where shadow runs.**
+E9 makes the two `preaggregate-v1-*` service fixtures fail by design. In the bump PR they are
+rewritten to `#(rollup)`, and their rollups must keep their names, addresses and tables (see
+[Removing `#@ preaggregate`](#removing--preaggregate)).
 
-- **On the fleets.** Shadow runs on the load worker. With the build copy as the vehicle it reuses
-  the same build-copy compile, so the extra work is the ownership pass plus a materialize re-plan
-  for files that hold an `inherited_persist` refusal. The diff is computed as data beside the v1
-  parts.
-- **On failure.** It never fails or delays the v1 plan. A shadow error is a counted outcome, and
-  shadow is skipped when the plan has been left to the main thread.
-- **Outputs.** It emits `publisher_persist_planner_shadow_total{outcome, class}` and one info log
-  line per bug-class difference, carrying codes, `sourceID`s and the class only. It never carries
-  SQL or a message (`never_log_rule.spec.ts`). Nothing about the data leaves the worker.
-- **In the service.** The service's `v1-cutover-conformance` job runs Publisher's
-  `packages/server/scripts/v1-cutover-conformance.ts` over the service fixtures
-  (`e2e/conformance/v1-cutover/`: `persist-dag`, `persist-storage`, `preaggregate-v1-colocated`,
-  `preaggregate-v1-storage`, `unflagged-persist`). The runner gains a `--plan-diff` mode that prints
-  the classed rows for each fixture. The Python wrapper fails only on a diff outside the expected
-  classes E1–E6. The runner also runs its existing
-  served-versus-live check with `PUBLISHER_PERSIST_PLANNER=v2`. Every `served_equal` must stay
-  `served_equal`, so an inherited-only extension that is now served through its base's table is
-  checked for equal answers, not only equal plans.
-- **Which Publisher the service job runs.** There are two workflows:
-  - `v1-cutover-conformance.yml` runs on service pull requests against the Publisher release the
-    service pins. It reads `publisher_version` from `infrastructure/malloy-versions.json` and checks
-    out tag `v<version>`.
-  - `v1-cutover-conformance-main.yml` runs daily, and on demand, against Publisher `main`.
+The runner's existing served-versus-live check runs on the candidate too. Every `served_equal` must
+stay `served_equal`. An inherited-only extension that is now served through its base's table is
+therefore checked for equal answers, not only equal plans.
 
-  Credible settled how the diff is run (answer to this doc's open question):
-  - **The gate is the bump PR.** The shadow `--plan-diff` runs in the service PR that bumps
-    `publisher_version`. That job already reads the pinned version, so it runs exactly the release
-    under test. The check is required on every PR that touches `infrastructure/malloy-versions.json`.
-  - **Before a release.** The job's `workflow_dispatch` gets an optional `publisher_ref` input,
-    which takes an npm version, an image tag or a git ref and defaults to `publisher_version`. A
-    candidate can then be shadowed before it is released.
-  - **Early warning.** The daily job stays on Publisher `main`.
+**Where it runs** (settled by Credible):
+
+- **The gate is the bump PR.** The plan-diff runs in the service PR that bumps `publisher_version`
+  in `infrastructure/malloy-versions.json`. The base is the version being replaced and the candidate
+  is the new one, so it runs exactly the release under test. It is required on every PR that touches
+  that file.
+- **Before a release.** `v1-cutover-conformance.yml`'s `workflow_dispatch` gets an optional
+  `publisher_ref` input. It takes an npm version, an image tag or a git ref, and defaults to
+  `publisher_version`, so a candidate can be diffed before it is released.
+- **Early warning.** `v1-cutover-conformance-main.yml` stays daily on Publisher `main`.
+
+**Rule:** a cell takes the flip release only after that release's bump-PR plan-diff is green. The
+service owns pinning the release in each cell.
 
 ### Phases
 
-The critical path is marked ★.
+The critical path is marked ★. Everything breaking is in phase 2.
 
-0. **★ Harness, no behaviour change.**
-   - The `persist-not-materializable` parity spec (3.4) and the address parity spec (4.1), written
-     against v1.
-   - The diff classifier.
-   - The runner's `--plan-diff`.
-   - The per-leg containment in `collectModelBuildPlan`, so one leg's throw costs only that leg's
-     file.
-1. **★ The ownership rule and the persist leg, behind `persist.planner` (default `v1`).**
-   - `tableOwnerOf`.
-   - The persist leg.
-   - `StoredParent` in `chainVerdict` and the cross-file walk, active only under `v2`.
-   - The bind rule from decision [D4](#decisions-for-kyle), active under `v2`.
-   - Unit and goldens under both settings.
-2. **★ A release with both planners.** This is a patch release, because the default is unchanged.
-   The dev and staging fleets run `shadow`, and the service job runs `--plan-diff` on its fixtures.
-   Bug-class diffs are driven to zero. Gates before the flip:
-   - **G1:** zero bug-class diffs on dev and staging for one full schedule cycle.
-   - **G2:** the conformance job is green under `v2`.
-   - **G3: confirmed by Credible's service review.** Retiring an inherited-only anchor
+0. **★ Harness and non-breaking groundwork.** This lands on `main` in ordinary releases, with no
+   behaviour change:
+   - the `persist-not-materializable` parity spec (3.4), written against v1;
+   - the address-parity and chained-build parity specs (4.1), written against v1's goldens and
+     builds;
+   - the diff classifier, the runner's `--plan-diff`, and the service's required bump-PR check and
+     `publisher_ref` input;
+   - per-leg containment in `collectModelBuildPlan`, so one leg's throw costs only that leg's file;
+   - moving the three helpers `rollup_plan.ts` takes from the `#@ preaggregate` modules (below);
+   - a counter, by package, on the existing `deprecated-preaggregate-annotation` warning. It feeds
+     D8's fallback.
+1. **★ `StoredParent` and the persist companion generator, unused.** `chainVerdict` and the
+   cross-file walk take `StoredParent` (3.3). With no persist parent planned yet this changes
+   nothing. The companion text generator lands with its unit tests. Both can merge before the
+   breaking minor.
+2. **★ The breaking minor.** It holds, in this order on its branch:
+   1. removing `materialize.enabled`'s off position (D9);
+   2. `tableOwnerOf` with core's shape predicate (D10);
+   3. the persist leg through its companion (D2), replacing the walk;
+   4. the `StoredParent` link that plans a `#(materialize)` on an inherited-only extension;
+   5. `inherited_persist` narrowed (D5);
+   6. lifting the D6 refusal;
+   7. the D4 bind rule;
+   8. retiring `#@ preaggregate` and `#(preaggregate)`, and deleting their readers (D8);
+   9. deleting the v1 walk and everything in 3.5.
+
+   Its gates:
+   - **Address parity:** every persist address, compiler key, wire `sql` and table name is
+     unchanged under the companion (4.1, item 6).
+   - **Chained-build parity:** persisted upstreams still substitute (4.1, item 6).
+   - **D7 security review:** an adversarial review of the read path for a gated inherited-only
+     extension over an ungated base's stored table.
+   - **Goldens:** the regenerated plan goldens differ only by E1–E9.
+   - **Service, already confirmed** (G3, Credible's review): retiring an inherited-only anchor
      (`AnchorRetirementPolicy.REASON_ABSENT`) drops nothing its base holds.
      `MaterializationGarbageCollector.isCollectible` drops a table only when
      `countByServingTableId == 0` and no binding remains at the content address. Retirement teardown
-     also passes the same refcount, so same-name dedup and the package-wide refusal still hold
+     passes the same refcount, so same-name dedup and the package-wide refusal still hold
      (`MaterializationCommandService`, around lines 1738–1830). Hosted names are not sticky, which
      is harmless (4.1, item 4).
-3. **★ The flip: default `v2`.** This goes in the next breaking minor, batched with the other
-   breaking changes rather than cut on its own. The release notes name every **Sign-off** item.
-   Standalone servers take the new default. Hosted cells move one at a time when the service sets
-   `persist.planner` in each cell's publisher config ConfigMap; the service owns that rollout. A
-   cell is flipped only once the plan-diff on the bump PR for the release it runs is green. The
-   D4 bind rule stays in place until every cell is on `v2` and has replanned.
-4. **★ Delete v1.**
-   - The walk, `v1_build_companion.ts`, the backstop, `droppedPersistSources`, the five rule copies
-     and the setting.
-   - Wire values become retained, no longer produced: `inherited_persist` and
-     `v1_build_companion_failed`.
-   - `plan/README.md`'s `persist` row and the design doc's line 132 are rewritten.
+   - **Before cells take it:** a green bump-PR plan-diff for the release.
+
+   The release notes name every **Signed off** item in section 7.
+
+3. **Delete the D4 bind rule** in a later release, once the service confirms that every cell runs
+   the flip release and has replanned.
+4. **Docs.** `plan/README.md`'s `persist` row and `docs/materialization-v2-plan.md:132` are
+   rewritten with the flip. `docs/publisher-v1.md:1049`, which still calls
+   `persist-not-materializable` "never refused", and `:1320`, the 1.0.0 plan for
+   `#@ preaggregate`, are corrected at the same time.
 
 ### Removing `#@ preaggregate`
 
-The removal can go **alongside** phase 1 and must land **before** phase 4. It is independent of the
-persist leg except for three helpers that `rollup_plan.ts` imports from v1 modules:
+The retirement ships in the breaking minor with the flip (D8). It is independent of the persist leg
+except for three helpers that `rollup_plan.ts` imports from v1 modules. Those helpers move in
+phase 0:
 
 - `hasFanoutJoin` (`plan/preaggregation_validation.ts:160`);
 - `basePersistNamespace` (`plan/preaggregation_synthesis.ts:119`);
@@ -574,13 +598,13 @@ persist leg except for three helpers that `rollup_plan.ts` imports from v1 modul
 These move into `rollup_plan.ts` or `domain/` first. `basePersistNamespace` reads the base's
 `#@ persist` `name=` container, so it uses `tableOwnerOf`.
 
-**Sign-off ([D8](#decisions-for-kyle)):** in the breaking minor that carries the flip, a
+**Signed off ([D8](#decisions-kyle-2026-11-28)):** in the breaking minor that carries the flip, a
 `#@ preaggregate` line becomes a retired annotation. It fails publish and load, malformed, with the
 code `rollup-retired-annotation` and a message naming the `#(rollup) grain=[…]` that it reads as.
 This follows the retired-key precedent (`persist-retired-key`) and the rule that an invalid
 annotation fails.
 
-The readers then go. Lines are cited so the deletion can be checked:
+The readers are deleted in the same release, with the v1 walk. Lines are cited so the deletion can be checked:
 
 - the `readsPreaggregateLines` path (`plan/rollup_plan.ts:653`, `:892-920`);
 - `preaggregation_annotation.ts`, `preaggregation_classifier.ts`, `preaggregation_synthesis.ts` and
@@ -599,8 +623,9 @@ who rewrites `#@ preaggregate grain="d"` as `#(rollup) grain=["d"]` therefore ke
 name, address and table. The removal adds a spec that pins this for every preaggregate case in the
 hammer and fixture corpus.
 
-**Fleet evidence before the removal:** the existing deprecation warning gets a counter by package,
-and dev and staging run with it for one release. The service already treats `origin: preaggregate`
+**Fleet evidence before the removal:** the existing deprecation warning gets a counter by package in
+phase 0. If the counter shows hosted use, the breaking minor warns and serves live for one release
+instead, and fails the release after. That is D8's only fallback. The service already treats `origin: preaggregate`
 as "retained, no longer produced" (`api-doc.yaml:11499-11517`). Its `PreaggregateProjection` keeps
 reading old rows.
 
@@ -611,169 +636,120 @@ chain re-rooting. It overlaps this design in four places:
 
 1. **The stored-source predicate.** X1 needs to know which joined sources are stored. Today that
    rule has five copies and disagrees on `.sql()` sources (§1, item 5). `tableOwnerOf` is that
-   predicate. **Land it first (phase 1), and have X1 consume it.** This is the one hard dependency.
-2. **Build edges.** X1 adds join edges. The persist leg keeps core's edges and adds
-   `withDownstreamEdges` reach for v2 upstreams. Both should end up in one edge function in
+   predicate. It lands in the breaking minor, together with D10's shape change. **X1 consumes it and lands after the breaking minor.** This is the one hard dependency.
+2. **Build edges.** X1 adds join edges. The persist leg takes its edges from `withDownstreamEdges` instead of core's walk. Both should end up in one edge function in
    `plan/addressing.ts`. Whichever lands second extends it.
-3. **The re-root text.** `chainVerdict` and the build copy's parent re-root
+3. **The re-root text.** `chainVerdict` and the materialize build copy's parent re-root
    (`materialize_build_copy.ts`, `stored_base_copy.ts`, `pair_reroot.ts`) are touched by both:
    - this design passes them a `StoredParent` for a persist parent;
    - X1 re-roots joins in the same copies.
 
-   If X1 goes first, `StoredParent` lands with it. If this design goes first, X1 builds on it.
-   Either order works, but **not in parallel on one branch**.
+   `StoredParent` lands in phase 1, ahead of the breaking minor, so X1 builds on it either way.
+   They are **not to be changed in parallel on one branch**.
 
 4. **Addresses.** X1 must follow #1998's rule: a build reads upstream tables, but its address is the
-   digest of the un-substituted `BuildTarget.sql`. Otherwise X1 moves addresses. If X1 lands
-   between this design's shadow baseline and the flip, the shadow baseline is re-taken. X1 changes
-   build SQL, not plans, so the plan diff should not move. The served-versus-live run does need to
-   run again.
+   digest of the un-substituted `BuildTarget.sql`. Otherwise X1 moves addresses. Its release goes through the same bump-PR plan-diff. X1 changes build
+   SQL, not plans, so the diff should be clean; the chained-build parity and served-versus-live runs
+   are repeated for it.
 
-The recommended order is:
+The order is:
 
-1. Phase 0 here, then phase 1 here: ownership, the persist leg and `StoredParent`.
-2. X1.
-3. The rest of this design's phases.
+1. Phases 0 and 1 here.
+2. The breaking minor (phase 2).
+3. X1.
 
-X1 does not block the flip, and the flip does not block X1.
+X1 does not block the flip. The flip blocks X1 only through `tableOwnerOf`.
 
-## 7. Contract and behaviour changes for sign-off
+## 7. Contract and behaviour changes (signed off)
+
+All of these ship in the one breaking minor, except where an item says otherwise.
 
 1. An inherited-only `#@ persist` source leaves `buildPlan.sources`, `graphs` and `refusedSources`.
-   It gets no table of its own and is served through its base's table. Hosts retire its anchor,
-   which is the only change the control plane sees, and the service review confirmed the retirement
+   It gets no table of its own and is served through its base's table. Hosts retire its anchor.
+   That is the only change the control plane sees, and the service review confirmed the retirement
    drops nothing its base holds.
 2. A `#(materialize)` on an extension of a persisted query source is planned as a chain over the
    base's stored table. Today it is refused `inherited_persist`. This is the gtme fix.
-3. `inherited_persist` is no longer produced, except as decision D5 keeps it.
+3. `inherited_persist` is produced only where own and inherited notes cannot be told apart. That
+   source is refused alone and answered live (D5).
 4. New `OmittedSource.reason` value `persist_companion_failed`. `v1_build_companion_failed` is
    retained and no longer produced.
 5. `persist-not-materializable` is raised on the declaring source only. An inherited-only extension
    no longer gets a second finding, and the load fails as before.
 6. A base is no longer refused because an inherited-only extension's gate was refused. The
-   extension's gate is enforced at read (D7).
-7. New setting `persist.planner` (`PUBLISHER_PERSIST_PLANNER`, `--persist-planner`): temporary and
-   fleet-uniform. In hosted cells it is set per cell through the publisher config ConfigMap, and
-   the service owns that rollout.
-8. For one release only, the bind accepts a manifest entry whose named source is absent from the
-   plan when a persist-leg source holds the entry's address (D4).
-9. `#@ preaggregate` and `#(preaggregate)` become retired annotations that fail publish and load
-   (`rollup-retired-annotation`, D8).
-10. Only if decided: D6 (a `storage=` `#@ persist` over a `#(materialize)` table in its destination
-    is built), and D10 (a persisted `.sql()` source counts as a stored upstream).
+   extension's gate is enforced at read (D7). A security review gates the flip.
+7. A `storage=` `#@ persist` over a `#(materialize)` table in its destination is built over that
+   table, view-style, instead of refused `upstream_table_unusable` (D6).
+8. A persisted `.sql()` source is a stored upstream. Views, queries, rollups and persist sources
+   over it build over its table or are refused at plan, never built from raw (D10).
+9. For one release window, the bind accepts a manifest entry whose named source is absent from the
+   plan when a persist-leg source holds the entry's address (D4). This is a temporary relaxation of
+   #1713's same-name check, deleted once every cell has replanned.
+10. `#@ preaggregate` and `#(preaggregate)` are retired: `rollup-retired-annotation`, malformed,
+    failing publish and load (D8). Fallback: warn for one release only if the counter shows hosted
+    use.
+11. `materialize.enabled` loses its off position (D9).
 
-## Decisions for Kyle
+## Decisions (Kyle, 2026-11-28)
 
-**D1. Keep Malloy's `BuildTarget` as the per-source SQL and key primitive?**
+Several choices differ from this doc's earlier recommendations. The design above follows the
+choices.
 
-- (a) Keep it. Each address stays a digest of `BuildTarget.sql`, and the persist leg asks core for
-  targets over a generated, flagged file, as every v2 leg does.
-- (b) Generate the persist SQL in Publisher, for example from a `-> { select: * }` compile.
+**D1. Keep Malloy's `BuildTarget` as the per-source SQL and key primitive: (a), keep it.** Only
+core's walk is deleted. Addresses stay digests of `BuildTarget.sql`, and the persist leg asks core
+for targets over a generated, flagged file, as every v2 leg does.
 
-_Recommend (a)._ Option (b) moves every address, so every table rebuilds across the fleet and every
-incremental source re-seeds, and the gain is only a primitive v2 already shares. "Dependency on
-core's build plan" then means the walk, which goes, and not the target, which stays.
+**D2. The compile vehicle: (b), the per-source generated companion, at the flip.** Source-level
+`#@` lines are blanked and each build source is presented as the author's source (3.2). The build
+copy is not used. Two parity runs gate the flip itself: address parity (every persist address
+unchanged under the companion) and chained-build parity (persisted upstreams still substitute).
 
-**D2. The compile vehicle at the flip?**
+**D3. The switch: (b), none.** There is no `persist.planner` setting, no shadow mode, no per-cell
+ConfigMap step and no release that carries both planners. The comparison runs only in CI and in the
+service's conformance job:
 
-- (a) The build copy: the author's file with the flag, as today's companion.
-- (b) A per-source generated companion with source-level `#@` lines blanked, presented as the author's.
+- the required `--plan-diff` on the PR that bumps `publisher_version`;
+- the `publisher_ref` dispatch input for candidates;
+- the daily job on `main` as the early warning.
 
-_Recommend (a) for the flip._ It is the same compile, so it cannot move an address, and core's
-`buildSQL` still substitutes persisted upstreams. Option (b) is a convergence step after the flip,
-gated on the same address spec plus a chained-build parity run.
+The flip is a code change in one release. A cell takes it only after a green bump-PR plan-diff.
 
-**D3. The switch?**
+**D4. Manifest entries named after an inherited-only extension: (b), the temporary bind rule.** The
+bind accepts an entry whose named source is absent from the plan when a persist-leg source holds the
+entry's address. It ships in the flip release and is deleted once every cell has replanned. Kyle
+signed off on this temporary relaxation of the bind's same-name check. The alternatives, (a) with a
+control-plane `inheritsPersist` flag and (c) accepting live serving, are not taken.
 
-- (a) `persist.planner` registry setting with `v1`, `shadow` and `v2`.
-- (b) No runtime switch: shadow only in CI and the conformance job, then flip in code.
+**D5. What remains of `inherited_persist`: (a).** It stays only where own and inherited notes
+cannot be told apart. That source is refused alone and answers live.
 
-_Recommend (a)._ The fleets' real packages are the evidence the fixtures lack. The workflow header
-says customer snapshots "need their own data-handling decision", and shadow mode sends out only
-counts and `sourceID`s.
+**D6. A `storage=` `#@ persist` over a `#(materialize)` table in its destination: (b), lift the
+refusal in the flip.** It builds over the stored table, view-style (3.2, step 4). Those plans are
+expected class E7. There is no "lift after" follow-up.
 
-**D4. Manifest entries named after an inherited-only extension (4.1, item 5)?**
+**D7. The gate coupling: (a), accept the decoupling.** A base is no longer refused through an
+inherited-only extension's gate refusal. An adversarial security review of the read path, a gated
+extension over an ungated base's stored table, is a flip gate.
 
-- (a) In the release with both planners, name a shared address's entry after the source that
-  declares its own `#@ persist`, so manifests are rewritten before the flip. On its own this covers
-  standalone servers only. The control plane composes hosted manifests, and its
-  `ManifestPublisher.foldSharedAddress` names the entry with the smallest source name, which is
-  gtme's inherited-only `deals`. Hosted cells would also need a control-plane change: an
-  `inheritsPersist` boolean on the v1 plan wire, which `foldSharedAddress` prefers against.
-- (b) A one-release bind rule: accept an entry whose named source is absent from the plan when a
-  persist-leg source holds the entry's address.
-- (c) Accept live serving until each base is replanned.
+**D8. `#@ preaggregate`: (a).** `#@ preaggregate` and `#(preaggregate)` are retired as
+`rollup-retired-annotation`, failing publish and load, in the breaking minor with the flip, and
+their readers are deleted with the v1 walk. If the counter shows hosted use, that release falls back
+to a warning for one release.
 
-_Recommend (b)_ (changed after Credible's service review). It covers hosted and standalone
-manifests with no control-plane change. It is narrow: the address equality already proves the same
-SQL on the same connection, and the rule applies only where the named source is absent rather than
-present at another address, so #1713's other-definition guard is otherwise unchanged. It is deleted
-with the v1 walk, once every cell has replanned under `v2`. (a) plus the control-plane change is the
-alternative if Kyle prefers no temporary bind rule. **Sign-off:** a temporary relaxation of the
-bind's same-name check.
+**D9. `materialize.enabled`: (a).** Its off position is removed first, in the same breaking minor.
 
-**D5. What remains of `inherited_persist`?**
-
-- (a) Keep it only for a source whose own and inherited notes cannot be told apart. The source is
-  refused alone and answered live.
-- (b) Fail such a source closed as malformed.
-- (c) Drop the value entirely.
-
-_Recommend (a)._ An unattributable annotation is not shown to be invalid, so by Kyle's rule it is
-refused, not failed. The value then means exactly "ownership could not be read".
-
-**D6. A `storage=` `#@ persist` over a `#(materialize)` table in its destination?**
-
-- (a) Keep it refused at the flip, for parity, and lift it after with a view-style over-stored build.
-- (b) Lift it in the flip.
-
-_Recommend (a)._ The flip stays a pure planner move, so the shadow diff stays quiet.
-
-**D7. The gate coupling (expected diff E6)?** Today a base is refused when an inherited-only
-extension sharing its address is refused at the database gate. After the flip that extension has no
-table. Its queries reach the base's table through the served copy, which grafts and proves the
-extension's own gate at read, or declines.
-
-- (a) Accept, with an adversarial security review of the read path for a gated extension over an
-  ungated base's table before the flip.
-- (b) Keep the coupling by refusing the base's table whenever any extension of it is gated.
-
-_Recommend (a)._ The read path already decides per answer. Option (b) would refuse tables that serve
-ungated callers correctly.
-
-**D8. When and how `#@ preaggregate` goes?**
-
-- (a) Retired, malformed (`rollup-retired-annotation`), failing publish and load, in the breaking
-  minor with the flip. The readers are deleted with the v1 walk.
-- (b) Warn and serve live for one more release, then fail.
-- (c) Keep `docs/publisher-v1.md:1320`'s plan: refused at 1.0.0, readers deleted in 1.1.
-
-_Recommend (a)._ It meets Kyle's "goes" and the invalid-fails rule, and the rewrite keeps every
-rollup table. If the counter finds a hosted package still using it, fall back to (b) for that
-release only.
-
-**D9. `materialize.enabled` and the persist leg?** The v1 walk runs with the switch off. The persist
-leg must too, but it reuses chain machinery that the switch gates today.
-
-- (a) Remove the switch's off position first. It is already slated for removal one release after
-  its default shipped (`settings/registry/storage.ts:137-144`).
-- (b) Make the persist leg ignore the switch while the materialize leg honours it.
-
-_Recommend (a)._ There is one less mode to keep equal.
-
-**D10. One shape predicate everywhere: `query_source` or `sql_select`?** Adopting core's predicate
-in `tableOwnerOf` makes `reachedUpstreams` count a persisted `.sql()` source as a stored upstream. A
-view or rollup over one then builds over its table, or is refused at plan, instead of reading raw.
-
-- (a) Adopt it in the flip.
-- (b) Adopt it after.
-
-_Recommend (a)._ It is the strict-materialization rule (#1998) applied evenly. Include it in the
-shadow classes if it moves any plan.
+**D10. One shape predicate: (a), in the flip.** Core's `query_source` or `sql_select` is used
+everywhere. A persisted `.sql()` source becomes a stored upstream, and the plans that moves are
+expected class E8.
 
 ## Critical path, in one line
 
-Harness (phase 0), then the ownership rule and persist leg with `StoredParent` and the D4 bind rule
-(1), then a both-planners release with clean shadow on dev and staging and the service's gates
-G1 and G2, with G3 already confirmed (2), then the flip in the next breaking minor, cell by cell where the service runs it, alongside the `#@ preaggregate` retirement (3),
-then deleting v1 (4). X1 consumes the ownership rule from phase 1.
+1. **Phase 0:** harness, parity specs against v1, the service's required bump-PR plan-diff and
+   `publisher_ref` input, per-leg containment, the helper moves and the preaggregate counter.
+2. **Phase 1:** `StoredParent` and the companion generator.
+3. **Phase 2, one breaking minor:** D9, D10, the persist leg through its companion, D5, D6, the D4
+   bind rule, the D8 retirement, and deleting v1. Gated on address parity, chained-build parity,
+   the D7 security review and the goldens. Cells take it after a green bump-PR plan-diff.
+4. **Phase 3:** delete the D4 bind rule once every cell has replanned.
+
+X1 follows phase 2.
