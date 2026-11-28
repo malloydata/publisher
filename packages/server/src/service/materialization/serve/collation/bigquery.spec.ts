@@ -8,12 +8,13 @@
  * the column, or resolved into it from a table's or a dataset's default)
  * compares case-insensitively live and byte-exact in a `storage=` copy.
  *
- * A model whose tables are all known (`.table()` sources) in a few datasets
- * reads each dataset's own catalog, as a dataset's READER may. An `.sql()`
- * source, and a view, are proved by the project-wide read in the
- * connection's location: no collated column anywhere in the project. Past
- * the dataset bound, the project is read first and only a dataset it lists
- * is read table by table. A COLLATE in the query's SQL, a failed or denied
+ * The project is read first, in the connection's location: one with no
+ * collated column answers for every table in it, an `.sql()` source's too.
+ * Only a dataset it lists is read table by table. When the project read is
+ * refused (a dataset-scoped account) and the model's tables are all known
+ * (`.table()` sources) in a few datasets, each dataset's own catalog is read
+ * instead, as a dataset's READER may; a view and an `.sql()` source stay
+ * proved project-wide only. A COLLATE in the query's SQL, a failed or denied
  * read, and author SQL that may read a collated project each answer live.
  * Untested against a real BigQuery.
  */
@@ -261,36 +262,20 @@ async function refusal(
 }
 
 describe("a BigQuery source's string comparison, with a location", () => {
-   it("is binary when its dataset's own read sees the table with no collated column", async () => {
+   it("is binary when the project holds no collated column and the read sees the table, reading no dataset's own catalog", async () => {
       const { why, sent } = await refusal(
          { location: "US" },
          "run: plain -> { group_by: region; order_by: region }",
       );
       expect(why).toBeUndefined();
       expect(sent.join("\n")).toContain(
-         "`proj`.`ds`.INFORMATION_SCHEMA.TABLES",
-      );
-      // The tables' types come from their datasets' own reads; the project
-      // is read only for the model's `.sql()` sources.
-      expect(sent.join("\n")).not.toContain(
          "`proj`.`region-us`.INFORMATION_SCHEMA.TABLES",
       );
       expect(sent.join("\n")).toContain(
          "`proj`.`region-us`.INFORMATION_SCHEMA.COLUMN_FIELD_PATHS",
       );
-   });
-
-   it("past the dataset bound, is binary when the project holds no collated column and its read sees the table", async () => {
-      const { why, sent } = await refusal(
-         { location: "US" },
-         "run: plain -> { group_by: region; order_by: region }",
-         STRING_READS,
-         0,
-      );
-      expect(why).toBeUndefined();
-      expect(sent.join("\n")).toContain(
-         "`proj`.`region-us`.INFORMATION_SCHEMA.TABLES",
-      );
+      // Nothing is collated, so no dataset is read table by table.
+      expect(sent.join("\n")).not.toContain("`ds`.INFORMATION_SCHEMA");
    });
 
    it("serves an .sql() source when its project holds no collated column", async () => {
@@ -348,7 +333,7 @@ describe("a BigQuery source's string comparison, with a location", () => {
       expect(plain.why).toBeUndefined();
    });
 
-   it("past the dataset bound, does not read a dataset the project does not list", async () => {
+   it("does not read a dataset the project does not list", async () => {
       const { why } = await refusal(
          {
             location: "US",
@@ -356,13 +341,11 @@ describe("a BigQuery source's string comparison, with a location", () => {
             datasets: { "proj.ds": CI_DS },
          },
          "run: ci -> { group_by: region }",
-         STRING_READS,
-         0,
       );
       expect(why).toBeUndefined();
    });
 
-   it("serves a .table() source when the project read fails, from its dataset's own read", async () => {
+   it("serves a .table() source when the project read is refused, from its dataset's own read", async () => {
       const { why } = await refusal(
          { location: "US", projects: { proj: "fail" } },
          "run: plain -> { group_by: region }",
@@ -370,7 +353,7 @@ describe("a BigQuery source's string comparison, with a location", () => {
       expect(why).toBeUndefined();
    });
 
-   it("past the dataset bound, answers live when the project read fails", async () => {
+   it("past the dataset bound, answers live when the project read is refused", async () => {
       const { why } = await refusal(
          { location: "US", projects: { proj: "fail" } },
          "run: plain -> { group_by: region }",
@@ -404,20 +387,22 @@ describe("a BigQuery source's string comparison, with a location", () => {
 });
 
 describe("a BigQuery source's coverage, by table", () => {
-   it("answers live when the dataset's own read does not see the table", async () => {
+   it("answers live when the project read is refused and the dataset's own read does not see the table", async () => {
       const { why } = await refusal(
-         { location: "US", unseenInDataset: ["ds.plain_t"] },
+         {
+            location: "US",
+            projects: { proj: "fail" },
+            unseenInDataset: ["ds.plain_t"],
+         },
          "run: plain -> { group_by: region }",
       );
       expect(why).toBe(LIVE);
    });
 
-   it("past the dataset bound, answers live when the project-wide read does not see the table", async () => {
+   it("answers live when the project-wide read does not see the table", async () => {
       const { why } = await refusal(
          { location: "US", unseen: ["ds.plain_t"] },
          "run: plain -> { group_by: region }",
-         STRING_READS,
-         0,
       );
       expect(why).toBe(LIVE);
    });
@@ -744,7 +729,11 @@ describe("a BigQuery storage= build's live string comparison, for its contract",
       expect(
          (
             await buildBinary(
-               { location: "US", datasets: { "proj.ds": "fail" } },
+               {
+                  location: "US",
+                  projects: { proj: "fail" },
+                  datasets: { "proj.ds": "fail" },
+               },
                "plain",
             )
          ).binary,
@@ -759,19 +748,64 @@ describe("a BigQuery storage= build's live string comparison, for its contract",
       ).toBe(false);
    });
 
-   it("reads only the datasets a .table() build reads, never the project-wide region views, so a dataset's READER proves it", async () => {
+   it("reads the project-wide region views first, and no dataset's own catalog when they prove it", async () => {
+      const plain = await buildBinary({ location: "US" }, "plain");
+      expect(plain.binary).toBe(true);
+      expect(plain.sent.join("\n")).toContain("`proj`.`region-us`");
+      expect(plain.sent.join("\n")).not.toContain("`ds`.INFORMATION_SCHEMA");
+   });
+
+   it("reads the datasets a .table() build reads when the region views are refused, so a dataset's READER proves it", async () => {
       // The project-wide views are denied, as to a dataset-scoped account.
       const denied = { location: "US", projects: { proj: "fail" as const } };
       const plain = await buildBinary(denied, "plain");
       expect(plain.binary).toBe(true);
-      expect(plain.sent).toHaveLength(1);
-      expect(plain.sent[0]).toContain("`proj`.`ds`.INFORMATION_SCHEMA.TABLES");
-      expect(plain.sent.join("\n")).not.toContain("region-");
+      const datasetReads = (sent: string[]) =>
+         sent.filter((q) => !q.includes("region-"));
+      expect(datasetReads(plain.sent)).toHaveLength(1);
+      expect(datasetReads(plain.sent)[0]).toContain(
+         "`proj`.`ds`.INFORMATION_SCHEMA.TABLES",
+      );
       // A dataset of the job's own project, read in that project.
       const other = await buildBinary(denied, "other");
       expect(other.binary).toBe(true);
-      expect(other.sent).toHaveLength(1);
-      expect(other.sent[0]).toContain("FROM `ds2`.INFORMATION_SCHEMA.TABLES");
+      expect(datasetReads(other.sent)).toHaveLength(1);
+      expect(datasetReads(other.sent)[0]).toContain(
+         "FROM `ds2`.INFORMATION_SCHEMA.TABLES",
+      );
+   });
+
+   it("answers not binary when the region views fail other than by a refusal: no dataset is read", async () => {
+      const { connection, sent } = stubBigQuery({ location: "US" });
+      const stub = connection as unknown as {
+         runSQL: (sql: string) => Promise<unknown>;
+      };
+      const run = stub.runSQL;
+      stub.runSQL = async (sql: string) => {
+         if (sql.includes("region-")) {
+            sent.push(sql);
+            throw new Error("Query timed out");
+         }
+         return run(sql);
+      };
+      const model = new SingleConnectionRuntime({ connection }).loadModel(
+         MODEL,
+      );
+      const { sql } = await model
+         .loadQuery("run: plain -> { select: * }")
+         .getPreparedResult();
+      const def = (
+         (await model.getModel()) as unknown as {
+            _modelDef: { contents: Record<string, unknown> };
+         }
+      )._modelDef.contents.plain;
+      const binary = await bigqueryBuildCompareBinary({
+         connection,
+         source: { connectionName: "bq", _sourceDef: def } as never,
+         sql,
+      });
+      expect(binary).toBe(false);
+      expect(sent.filter((q) => !q.includes("region-"))).toEqual([]);
    });
 
    it("reads an .sql() build's projects region-wide: its tables are not known up front", async () => {
@@ -895,7 +929,11 @@ describe("a BigQuery storage= build's unproved read, told why", () => {
       },
       {
          reason: "dataset_unread",
-         catalog: { location: "US", datasets: { "proj.ds": "fail" } },
+         catalog: {
+            location: "US",
+            projects: { proj: "fail" },
+            datasets: { "proj.ds": "fail" },
+         },
          name: "plain",
          expected: { project: "proj", dataset: "ds", table: "plain_t" },
       },
@@ -1126,12 +1164,22 @@ source: by_state is users_s -> { group_by: state, gender; aggregate: n is count(
       }
    }
 
-   it("serves the chain from storage, reading only the dataset's own catalog", async () => {
+   it("serves the chain from storage, from the dataset's own catalog once the region views are refused", async () => {
       const { verdict, sent, told } = await admitted(DATASET_SCOPED);
       expect(verdict).toEqual({ admit: true, pastEntryPointGate: false });
-      expect(sent).toHaveLength(1);
-      expect(sent[0]).toContain("FROM `ecomm_e2e`.INFORMATION_SCHEMA.TABLES");
-      expect(sent.join("\n")).not.toContain("region-");
+      const datasetReads = sent.filter((q) => !q.includes("region-"));
+      expect(datasetReads).toHaveLength(1);
+      expect(datasetReads[0]).toContain(
+         "FROM `ecomm_e2e`.INFORMATION_SCHEMA.TABLES",
+      );
+      expect(told).toEqual([]);
+   });
+
+   it("serves the chain from the project-wide read when the account may read it, reading no dataset's own catalog", async () => {
+      const { verdict, sent, told } = await admitted({ location: "US" });
+      expect(verdict).toEqual({ admit: true, pastEntryPointGate: false });
+      expect(sent.length).toBeGreaterThan(0);
+      expect(sent.every((q) => q.includes("region-"))).toBe(true);
       expect(told).toEqual([]);
    });
 
