@@ -64,7 +64,7 @@ import {
 import { createEventLoopYielder } from "../../event_loop_yield";
 import type { ModelConnectionInput } from "../../model_runtime";
 import { packageFiles } from "../text/package_files";
-import { SourceMap } from "../text/source_map";
+import { reachableSourceIDs, SourceMap } from "../text/source_map";
 import {
    chainBuildFileSet,
    rollupBuildFileSet,
@@ -3028,7 +3028,15 @@ export class ServedCopyServe {
             optOutIDs.add(node.sourceID);
          }
       }
-      problems.push(...crossConnectionProblems(leftOut, candidates, over));
+      problems.push(
+         ...crossConnectionProblems(
+            leftOut,
+            candidates,
+            over,
+            modelDef,
+            servedDef,
+         ),
+      );
       const unsafeIDs = classificationCeiling(
          this.host.modelPath(),
          modelDef,
@@ -5695,13 +5703,39 @@ function crossConnectionProblems(
    leftOut: readonly LeftOutDefinition[],
    candidates: CopyPassState["candidates"],
    over: readonly Binding[],
+   authorDef: unknown,
+   servedDef: unknown,
 ): ServedCopyProblem[] {
    const problems: ServedCopyProblem[] = [];
    // The sources stored at all: a binding the copy was compiled over.
    const storedNames = new Set(over.map((b) => b.sourceName));
+   const contents = (def: unknown) =>
+      Object.values(
+         (def as { contents?: Record<string, unknown> } | undefined)
+            ?.contents ?? {},
+      );
+   // What a caller can reach in this model: each source it names (the
+   // author's names: a declaration the served compile left out whole is
+   // still one), and what those reach as served (a re-rooted source reads
+   // its table, not its base).
+   const reached = reachableSourceIDs(contents(servedDef), servedDef);
+   for (const def of contents(authorDef)) {
+      const id = (def as { sourceID?: unknown } | undefined)?.sourceID;
+      if (typeof id === "string") reached.add(id);
+   }
    for (const l of leftOut) {
       if (!l.crossConnection) continue;
       const sourceName = l.declaration ?? l.name;
+      // An unstored declarer no name here reaches (an import of an import,
+      // or a base a selective import leaves out, under a source served
+      // from its table): its join is moot in this model, and the model
+      // that names it is warned. As the unreached rule for candidates.
+      if (
+         !storedNames.has(sourceName) &&
+         !reached.has(`${sourceName}@${l.url}`)
+      ) {
+         continue;
+      }
       // The stored side is this source unless the whole source is left
       // out for its join, whose advice is about the joined source.
       const sourceID =
