@@ -11,7 +11,22 @@ Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, `@ma
 
 The `Release (NPM + Docker)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
 
-For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
+For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased] — an entry file that reaches a stored base through an import serves it
+
+**[fix] A stored source is served from its table through an entry file that reaches it only through a file it imports.** Take `#(materialize) activity_events` in `activity.malloy`, `org_activity is activity_events extend { … }` in `eng.malloy`, and an `index.malloy` that imports only `eng.malloy`. That is the usual shape of a published surface. Malloy imports are not transitive, and an extension of a table-backed source records no link to its base, so `index.malloy`'s compile held nothing that pointed back to `activity_events`.
+
+Three things went wrong as a result:
+- its served copy re-rooted nothing, and every query on `org_activity` through `index.malloy` was answered live, with no warning;
+- the package also warned `materialization-unreachable` about `activity_events`, although a published source reads it;
+- where the entry file reached one stored source and not another, its copy could fail to compile with `cross_connection_unbuilt`.
+
+The served copy now finds such a base the way it finds a kept block's base: from the declaring file's text. It re-roots the base in its own file, and proves the result through the sources the entry file names over it. Two limits:
+- **A stored base that filters its own rows** (a `where:` it declares or inherits) is still answered live through such an entry file, as before.
+- **A source the entry file declares itself that joins such an extension** can now be warned `served-copy-not-served` (`cross_connection_join`) when the stored table is in a storage destination its own connection cannot reach. That source answers live, as it always did.
+
+**Who is affected:** packages whose `index.malloy` imports the files that extend a stored source, but not the file that stores it. **What to do:** nothing; the workaround of importing every file into `index.malloy` is no longer needed.
+
+## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
 
 One step is a human's: someone has to open `release/v<version>` as a PR into `main` and merge it. `main` requires a pull request, so the release cannot land it itself, and the job summary prints the link. Until it merges the headings on `main` still read `[Unreleased]` and the next release would ship them twice, so the `Release sync` check (`release-sync.yml`) fails on `main` and on every pull request until it does. Whoever cuts the release owns that PR; the `publisher-release` skill makes it a step.
 
