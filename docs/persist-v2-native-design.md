@@ -357,15 +357,15 @@ not "unchanged" are marked.
 | Compiler key                                                                                              | `compilerBuildId` (`plan/addressing.ts:479`)                                                                                                                                                                                               | Unchanged                                                                                                                                                                                                                                                                                                                                                                                               |
 | Folds (distinct `name=`, projection, twins)                                                               | `foldDistinctTableNames` (`plan/addressing.ts:697`), decided over the whole plan                                                                                                                                                           | Unchanged for every retained source (argued in 4.1)                                                                                                                                                                                                                                                                                                                                                     |
 | Upstream schema fold                                                                                      | `upstreamFoldOf` (`plan/addressing.ts:426`)                                                                                                                                                                                                | Unchanged                                                                                                                                                                                                                                                                                                                                                                                               |
-| Physical table names                                                                                      | `readableTableName` (`domain/table_name.ts:269`), `namingSources` (`run/run_instructions.ts:327`), sticky by address (`tableNameDecision`, `:603-670`)                                                                                     | Unchanged for retained sources. A shared address that an inherited-only extension named keeps its recorded name through the sticky rule. Hosted naming must be verified (4.1)                                                                                                                                                                                                                           |
+| Physical table names                                                                                      | `readableTableName` (`domain/table_name.ts:269`), `namingSources` (`run/run_instructions.ts:327`), sticky by address (`tableNameDecision`, `:603-670`)                                                                                     | Unchanged for retained sources. A shared address that an inherited-only extension named keeps its recorded name through the sticky rule. Hosted names are not sticky; reuse is by address, and only the next generation may be renamed (4.1)                                                                                                                                                            |
 | Table ownership (author `name=`)                                                                          | `hasAuthorTableName` (`run/table_ownership.ts:174-187`), table claims, reclaimer                                                                                                                                                           | Unchanged: they read the kind and the annotation                                                                                                                                                                                                                                                                                                                                                        |
 | GC: standalone                                                                                            | Reclaimer, the rename rule (`docs/materialization.md`, "The rename rule")                                                                                                                                                                  | Unchanged. An inherited-only extension had no table of its own: it shared its base's address, so nothing is orphaned                                                                                                                                                                                                                                                                                    |
-| GC: hosted                                                                                                | The control plane's `AnchorRetirementPolicy` (service repo, `controlplane/.../services/AnchorRetirementPolicy.java`) retires an anchor that is absent from a complete plan                                                                 | **Changed on the wire:** the inherited-only extension's anchor leaves the plan and retires as `absent_from_complete_plan`. It must not drop the physical table that its base's anchor still holds at the same address. Verify before the flip (gate G3)                                                                                                                                                 |
+| GC: hosted                                                                                                | The control plane's `AnchorRetirementPolicy` (service repo, `controlplane/.../services/AnchorRetirementPolicy.java`) retires an anchor that is absent from a complete plan                                                                 | **Changed on the wire:** the inherited-only extension's anchor leaves the plan and retires as `absent_from_complete_plan`. It drops no physical table that its base's anchor still holds at the same address: confirmed by the service review (`MaterializationGarbageCollector.isCollectible` refcounts the serving table and the address; gate G3)                                                    |
 | Run telemetry                                                                                             | `buildKindOf` (`run/run_telemetry.ts:89`) reads `table.kind`                                                                                                                                                                               | Unchanged: the kind stays `persist`                                                                                                                                                                                                                                                                                                                                                                     |
 | Refusal and finding codes                                                                                 | `persist-invalid`, `persist-not-built`, `persist-unparseable`, `persist-unknown-key`, `persist-retired-key` (`annotation_reader.ts:444-767`), `persist-not-materializable`, `persist-incremental-*`, `persist-reads-current-time`          | Unchanged codes. `persist-unparseable` comes from the leg's own `readNotes` rather than from core's `tagParseLog`; the shadow diff compares the finding sets                                                                                                                                                                                                                                            |
 | Wire: `PersistSourcePlan` (`origin`, `name`, `sourceID`, `sql`, `sourceEntityId`, `refresh`, `freshness`) | `deriveBuildPlan` and `wireSourceOf` (`plan/build_plan.ts:2511`, `:2612`); `origin: originOfTable` (`:2625`, `domain/table_plans.ts:824`); `sql: addressSQL` (`:2634`)                                                                     | Unchanged: `origin` stays `persist` (`api-doc.yaml:11499-11501`), and the control plane's `Materialization.origin` default `persist` stays true (`MaterializationDao.java:163-171`)                                                                                                                                                                                                                     |
 | Wire: `buildPlan.graphs` and `dependsOn`                                                                  | `sourceBuildsOf` (`plan/addressing.ts:106`)                                                                                                                                                                                                | Unchanged among retained sources. Inherited-only extensions leave the graph                                                                                                                                                                                                                                                                                                                             |
-| Wire: `refusedSources`                                                                                    | Per-table verdicts                                                                                                                                                                                                                         | Unchanged reasons. **Changed:** no entry for an inherited-only extension. `inherited_persist` stops being produced (`api-doc.yaml:11220`)                                                                                                                                                                                                                                                               |
+| Wire: `refusedSources`                                                                                    | Per-table verdicts                                                                                                                                                                                                                         | Unchanged reasons. **Changed:** no entry for an inherited-only extension. `inherited_persist` stops being produced (`api-doc.yaml:11220`); the control plane does not branch on it (service review)                                                                                                                                                                                                     |
 | Wire: `omittedSources` and `omittedFiles`                                                                 | `v1_build_companion_failed`, `unkeyable` (`plan/build_plan.ts:2577-2588`)                                                                                                                                                                  | **New value** `persist_companion_failed`. `unkeyable` is unchanged                                                                                                                                                                                                                                                                                                                                      |
 
 ### 4.1 Addresses and table names do not move
@@ -394,17 +394,27 @@ fleet and re-seeds every incremental source on it.
      readable name for the same address (`keepsReadableName` through `tableNameDecision`,
      `run/run_instructions.ts:603-670`, "a source that comes to share the address, does not rebuild
      it under another"), so the base keeps that table under its existing name.
-   - Hosted naming comes from the control plane, which "names a shared table the same way"
-     (`run_instructions.ts:322-326`). It must be confirmed sticky the same way (gate G3).
+   - Hosted naming is **not sticky by address, and that is harmless** (Credible's service review of
+     this PR). The control plane's `BuildPlanClassifier.namingSources` recomputes the name from the
+     current plan on every classify, taking the smallest (`authorModelPath`, `sourceLabel`). Reuse
+     is keyed by content address, so a READY generation keeps its physical name. Only the next
+     generation built at that address may take the base-derived readable name. Making hosted names
+     sticky is an optional service change, not a gate.
 5. **Manifest entry names. This is a real risk, and it needs a step.**
-   - A manifest entry is keyed by address and carries one `sourceName` (`run/source_build.ts:898`).
+   - A standalone manifest entry is keyed by address and carries one `sourceName`
+     (`run/source_build.ts:898`).
+   - A hosted manifest is composed by the control plane. `ManifestPublisher.foldSharedAddress` takes
+     a shared address's table identity from the entry with the smallest source name. For gtme,
+     `deals` sorts before `deals_including_deleted`, so the hosted entry names the inherited-only
+     source.
    - The bind declines an entry when no plan source with that `sourceName` sits at its address
      (`serve/bind.ts:124-136`, from #1713).
-   - Suppose a shared address's entry names an inherited-only extension. Once that extension leaves
-     the plan, the base's table is declined and serves live until the base is rebuilt.
-   - The fix is decision [D4](#decisions-for-kyle). The recommended option: in the release with both
-     planners, v1 mode already names such an entry after the source that declares its own
-     `#@ persist`. By flip time, every committed manifest then names a source that v2 keeps.
+   - So, in both modes: once an inherited-only extension that names a shared entry leaves the plan,
+     the base's table is declined and serves live until a replan rewrites the manifest.
+   - The fix is decision [D4](#decisions-for-kyle). The recommended option is a one-release bind
+     rule: accept an entry whose named source is absent from the plan when a persist-leg source
+     holds the entry's address. It needs no control-plane change and covers standalone and hosted
+     manifests alike.
 6. **Pins.**
    - `plan/persist_v2_address_parity.spec.ts`, over `test_helpers/persist_corpus.ts` (fixture
      models and every hammer model). For each `sourceID` in both plans it asserts that the address,
@@ -432,6 +442,10 @@ fleet and re-seeds every incremental source on it.
   (`settings/registry/storage.ts:128`). Two workers on different planners give one package version
   two plans. The control plane would then see the inherited-only anchors appear and disappear.
   The notes say so.
+- **Hosted cells: the service owns the flip.** In a hosted cell, `persist.planner` is set per cell
+  through the publisher config ConfigMap. Moving a cell to `shadow` and then to `v2` is a per-cell
+  rollout step that the service team owns. On a cell, a release's default takes effect only where
+  the ConfigMap leaves the key unset.
 - **Modes.**
   - `v1`: today.
   - `shadow`: plan, build and serve with v1, and also plan v2 and diff the two.
@@ -485,10 +499,24 @@ its own that v2 drops. It is a bug until shown otherwise.
   `packages/server/scripts/v1-cutover-conformance.ts` over the service fixtures
   (`e2e/conformance/v1-cutover/`: `persist-dag`, `persist-storage`, `preaggregate-v1-colocated`,
   `preaggregate-v1-storage`, `unflagged-persist`). The runner gains a `--plan-diff` mode that prints
-  the classed rows. The Python wrapper fails on any bug class. The runner also runs its existing
+  the classed rows for each fixture. The Python wrapper fails only on a diff outside the expected
+  classes E1–E6. The runner also runs its existing
   served-versus-live check with `PUBLISHER_PERSIST_PLANNER=v2`. Every `served_equal` must stay
   `served_equal`, so an inherited-only extension that is now served through its base's table is
   checked for equal answers, not only equal plans.
+- **Which Publisher the service job runs.** There are two workflows:
+  - `v1-cutover-conformance.yml` runs on service pull requests against the Publisher release the
+    service pins. It reads `publisher_version` from `infrastructure/malloy-versions.json` and checks
+    out tag `v<version>`.
+  - `v1-cutover-conformance-main.yml` runs daily, and on demand, against Publisher `main`.
+
+  Neither of them runs on the release under test before that release is pinned. Before the
+  both-planners release is pinned, `--plan-diff` can run only through the daily `main` job, or
+  through a pull request that bumps `publisher_version`.
+
+  **Question for the service:** should the job take a Publisher ref as an input, so the shadow diff
+  runs on a release candidate before the pin? Or is the `publisher_version` bump PR the intended
+  vehicle?
 
 ### Phases
 
@@ -505,17 +533,25 @@ The critical path is marked ★.
    - `tableOwnerOf`.
    - The persist leg.
    - `StoredParent` in `chainVerdict` and the cross-file walk, active only under `v2`.
-   - The manifest-name step from decision [D4](#decisions-for-kyle), active under `v1`.
+   - The bind rule from decision [D4](#decisions-for-kyle), active under `v2`.
    - Unit and goldens under both settings.
 2. **★ A release with both planners.** This is a patch release, because the default is unchanged.
    The dev and staging fleets run `shadow`, and the service job runs `--plan-diff` on its fixtures.
    Bug-class diffs are driven to zero. Gates before the flip:
    - **G1:** zero bug-class diffs on dev and staging for one full schedule cycle.
    - **G2:** the conformance job is green under `v2`.
-   - **G3:** the service confirms two things for a retired inherited-only anchor: it drops no table
-     still held at its address, and hosted naming is sticky by address.
+   - **G3: confirmed by Credible's service review.** Retiring an inherited-only anchor
+     (`AnchorRetirementPolicy.REASON_ABSENT`) drops nothing its base holds.
+     `MaterializationGarbageCollector.isCollectible` drops a table only when
+     `countByServingTableId == 0` and no binding remains at the content address. Retirement teardown
+     also passes the same refcount, so same-name dedup and the package-wide refusal still hold
+     (`MaterializationCommandService`, around lines 1738–1830). Hosted names are not sticky, which
+     is harmless (4.1, item 4).
 3. **★ The flip: default `v2`.** This goes in the next breaking minor, batched with the other
    breaking changes rather than cut on its own. The release notes name every **Sign-off** item.
+   Standalone servers take the new default. Hosted cells move one at a time when the service sets
+   `persist.planner` in each cell's publisher config ConfigMap; the service owns that rollout. The
+   D4 bind rule stays in place until every cell is on `v2` and has replanned.
 4. **★ Delete v1.**
    - The walk, `v1_build_companion.ts`, the backstop, `droppedPersistSources`, the five rule copies
      and the setting.
@@ -601,7 +637,9 @@ X1 does not block the flip, and the flip does not block X1.
 ## 7. Contract and behaviour changes for sign-off
 
 1. An inherited-only `#@ persist` source leaves `buildPlan.sources`, `graphs` and `refusedSources`.
-   It gets no table of its own and is served through its base's table. Hosts retire its anchor.
+   It gets no table of its own and is served through its base's table. Hosts retire its anchor,
+   which is the only change the control plane sees, and the service review confirmed the retirement
+   drops nothing its base holds.
 2. A `#(materialize)` on an extension of a persisted query source is planned as a chain over the
    base's stored table. Today it is refused `inherited_persist`. This is the gtme fix.
 3. `inherited_persist` is no longer produced, except as decision D5 keeps it.
@@ -612,11 +650,14 @@ X1 does not block the flip, and the flip does not block X1.
 6. A base is no longer refused because an inherited-only extension's gate was refused. The
    extension's gate is enforced at read (D7).
 7. New setting `persist.planner` (`PUBLISHER_PERSIST_PLANNER`, `--persist-planner`): temporary and
-   fleet-uniform.
-8. `#@ preaggregate` and `#(preaggregate)` become retired annotations that fail publish and load
+   fleet-uniform. In hosted cells it is set per cell through the publisher config ConfigMap, and
+   the service owns that rollout.
+8. For one release only, the bind accepts a manifest entry whose named source is absent from the
+   plan when a persist-leg source holds the entry's address (D4).
+9. `#@ preaggregate` and `#(preaggregate)` become retired annotations that fail publish and load
    (`rollup-retired-annotation`, D8).
-9. Only if decided: D6 (a `storage=` `#@ persist` over a `#(materialize)` table in its destination
-   is built), and D10 (a persisted `.sql()` source counts as a stored upstream).
+10. Only if decided: D6 (a `storage=` `#@ persist` over a `#(materialize)` table in its destination
+    is built), and D10 (a persisted `.sql()` source counts as a stored upstream).
 
 ## Decisions for Kyle
 
@@ -651,13 +692,22 @@ counts and `sourceID`s.
 **D4. Manifest entries named after an inherited-only extension (4.1, item 5)?**
 
 - (a) In the release with both planners, name a shared address's entry after the source that
-  declares its own `#@ persist`, so manifests are rewritten before the flip.
-- (b) A one-release bind rule: accept an entry whose named source is absent when a persist-leg
-  source holds its address.
-- (c) Accept live serving until each base is rebuilt.
+  declares its own `#@ persist`, so manifests are rewritten before the flip. On its own this covers
+  standalone servers only. The control plane composes hosted manifests, and its
+  `ManifestPublisher.foldSharedAddress` names the entry with the smallest source name, which is
+  gtme's inherited-only `deals`. Hosted cells would also need a control-plane change: an
+  `inheritsPersist` boolean on the v1 plan wire, which `foldSharedAddress` prefers against.
+- (b) A one-release bind rule: accept an entry whose named source is absent from the plan when a
+  persist-leg source holds the entry's address.
+- (c) Accept live serving until each base is replanned.
 
-_Recommend (a)._ It changes only the entry's `sourceName`, never the physical name, which the
-sticky rule keeps. It also leaves the bind's other-definition guard (#1713) as strict as it is.
+_Recommend (b)_ (changed after Credible's service review). It covers hosted and standalone
+manifests with no control-plane change. It is narrow: the address equality already proves the same
+SQL on the same connection, and the rule applies only where the named source is absent rather than
+present at another address, so #1713's other-definition guard is otherwise unchanged. It is deleted
+with the v1 walk, once every cell has replanned under `v2`. (a) plus the control-plane change is the
+alternative if Kyle prefers no temporary bind rule. **Sign-off:** a temporary relaxation of the
+bind's same-name check.
 
 **D5. What remains of `inherited_persist`?**
 
@@ -720,7 +770,7 @@ shadow classes if it moves any plan.
 
 ## Critical path, in one line
 
-Harness (phase 0), then the ownership rule and persist leg with `StoredParent` and the manifest-name
-step (1), then a both-planners release with clean shadow on dev and staging and the service's gates
-G1–G3 (2), then the flip in the next breaking minor alongside the `#@ preaggregate` retirement (3),
+Harness (phase 0), then the ownership rule and persist leg with `StoredParent` and the D4 bind rule
+(1), then a both-planners release with clean shadow on dev and staging and the service's gates
+G1 and G2, with G3 already confirmed (2), then the flip in the next breaking minor, cell by cell where the service runs it, alongside the `#@ preaggregate` retirement (3),
 then deleting v1 (4). X1 consumes the ownership rule from phase 1.
