@@ -4358,7 +4358,10 @@ components:
         credentials are fixed. `PATH_ACCESS_DENIED`: a path the query or the
         model reads itself refused access, so the path, or the caller's grant
         to it, is what to fix. With `reason: ACCESS_DENIED`, a gate refused
-        the caller. The body
+        the caller. With `reason: INHERITED_FILTER_UNVERIFIED`, no gate did: a
+        `where:` the queried source inherits could not be verified to read
+        the fields it was written against, and the message says which kind of
+        check failed. The body
         names what the caller read and never a storage path; the full text is
         logged.
       content:
@@ -10655,6 +10658,17 @@ components:
             answers the same: only the server's metrics and log tell those
             apart. A 403 with any other reason is not a gate's.
 
+            INHERITED_FILTER_UNVERIFIED, on a 403, means a `where:` the queried
+            source inherits from a source it is built from could not be
+            verified to read the fields it was written against there: a field
+            it reads is defined again on the way (`rename:`, `except:`, a new
+            definition), or the check could not follow it. It is the model's
+            own text, not a permission rule, so givens and a rewritten query do
+            not help. The message names the source and the reason class
+            (`redefined_field`, `unrecorded_join`, `unresolved_declaration`,
+            `resolution_bound`), never the filter or the file; the server log
+            names both.
+
             MATERIALIZATION_REFUSED means a valid materialization declaration
             this server will not build, and the body's `refusalReason` is the
             refusal's `RefusedSource.reason`. Reserved: no route answers with
@@ -10784,6 +10798,7 @@ components:
             Known values: TABLE_NOT_FOUND, CONNECTION_FAILED,
             CONNECTION_AUTH_FAILED, CONNECTION_NOT_FOUND, RESULT_TRUNCATED,
             RESULT_SHAPE_MISMATCH, STORAGE_ACCESS_DENIED, PATH_ACCESS_DENIED, ACCESS_DENIED,
+            INHERITED_FILTER_UNVERIFIED,
             MATERIALIZATION_REFUSED, TABLE_OWNED_ELSEWHERE,
             TABLE_OWNERSHIP_UNVERIFIED, TABLE_IN_USE, BUILD_INSTRUCTIONS_INVALID,
             MATERIALIZATION_CONFLICT, MANIFEST_VERSION_MISSING, MANIFEST_VERSION_INVALID,

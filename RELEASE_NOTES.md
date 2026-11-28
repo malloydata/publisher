@@ -11,7 +11,22 @@ Curated release notes for `@malloy-publisher/sdk`, `@malloy-publisher/app`, `@ma
 
 The `Release (NPM + Docker)` workflow (`.github/workflows/release.yml`) creates GitHub releases automatically with a standard header (NPM/Docker links) plus an auto-generated "What's Changed" PR list via `gh release create --generate-notes`. That auto list is sufficient for routine patch releases.
 
-For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
+For releases that warrant narrative — redesigns, breaking changes, migration steps — write a `## [Unreleased] — an entry file that reaches a stored base through an import serves it
+
+**[fix] A stored source is served from its table through an entry file that reaches it only through a file it imports.** Take `#(materialize) activity_events` in `activity.malloy`, `org_activity is activity_events extend { … }` in `eng.malloy`, and an `index.malloy` that imports only `eng.malloy`. That is the usual shape of a published surface. Malloy imports are not transitive, and an extension of a table-backed source records no link to its base, so `index.malloy`'s compile held nothing that pointed back to `activity_events`.
+
+Three things went wrong as a result:
+- its served copy re-rooted nothing, and every query on `org_activity` through `index.malloy` was answered live, with no warning;
+- the package also warned `materialization-unreachable` about `activity_events`, although a published source reads it;
+- where the entry file reached one stored source and not another, its copy could fail to compile with `cross_connection_unbuilt`.
+
+The served copy now finds such a base the way it finds a kept block's base: from the declaring file's text. It re-roots the base in its own file, and proves the result through the sources the entry file names over it. Two limits:
+- **A stored base that filters its own rows** (a `where:` it declares or inherits) is still answered live through such an entry file, as before.
+- **A source the entry file declares itself that joins such an extension** can now be warned `served-copy-not-served` (`cross_connection_join`) when the stored table is in a storage destination its own connection cannot reach. That source answers live, as it always did.
+
+**Who is affected:** packages whose `index.malloy` imports the files that extend a stored source, but not the file that stores it. **What to do:** nothing; the workaround of importing every file into `index.malloy` is no longer needed.
+
+## [Unreleased]` section below, in the PR that changes the behaviour. **The release workflow does almost all of the rest**: `prepare` restamps every `[Unreleased]` heading with the release's version on the `release/v<version>` branch it publishes from, in the same commit as the version bump, and `gh-release` appends those sections to the release page alongside the generated PR list. Nothing to paste, and nothing to remember while writing.
 
 One step is a human's: someone has to open `release/v<version>` as a PR into `main` and merge it. `main` requires a pull request, so the release cannot land it itself, and the job summary prints the link. Until it merges the headings on `main` still read `[Unreleased]` and the next release would ship them twice, so the `Release sync` check (`release-sync.yml`) fails on `main` and on every pull request until it does. Whoever cuts the release owns that PR; the `publisher-release` skill makes it a step.
 
@@ -123,6 +138,21 @@ with `skill_sets/default/storefront-conventions/SKILL.md`, `workflows/weekly-rep
 **Skills and server are two installs, and either can be the newer.** A skill from this release that reads a file with `get_skill(skill, path)` against an older server gets `SKILL.md` back, because the older server ignores `path`; each bundled skill that does this tells the agent to check that the reply's `skill.path` is the path it asked for, and to treat anything else as a file not read. An older skill against this server passes a `<skill>/<stem>` name and gets a message that no guide has that name and that a file is read with `skill_name` plus `path`: nothing is read, and the reply says why. Upgrade a host's skills and its server together.
 
 **Who is affected:** a client that calls `get_skill` or the skill routes, reads `availableSkills` from every reply, or calls a per-reference prompt. **What to do:** pass the file's path instead of a `<skill>/<stem>` name, read `content` as the file itself, and update installed skills.
+
+## [Unreleased] — an inherited `where:` that cannot be verified says so
+
+**[new] A query denied because a `where:` its source inherits could not be verified now answers with its own reason and says why.** Publisher checks, on every query, that a `where:` a source inherits from a source it is built from still reads the fields it was written against. Until now a failed check answered `403`, `reason: ACCESS_DENIED`, `Access denied for source "…"`, exactly like a gate's denial, and logged its reason only at debug level. An author whose model was denied this way could not tell it from a permission rule. The deny itself is unchanged, and it still fails closed with the same status. Two things change:
+
+- **The response:** `reason: INHERITED_FILTER_UNVERIFIED`. The message names the source and a reason class (`redefined_field`, `unrecorded_join`, `unresolved_declaration` or `resolution_bound`), and says it is not a permission rule. It never names the filter or the file.
+- **The server:** logs one info line, `Inherited where: could not be verified; denying`, with the model, source, filter text, declaring source and file. A new counter, `publisher_inherited_filter_unverified_total{reason}`, counts these denials.
+
+**Who is affected:** clients that branch on `reason: ACCESS_DENIED`. This denial no longer carries it, so treat `INHERITED_FILTER_UNVERIFIED` as a model problem, not a permission one; supplying givens does not help. The access record still books it as `denied_filter`, and `publisher_authorize_row_level_total{decision="denied_by_gate"}` still counts it. **What to do:** to find one of these denials, search the server log for the info line above.
+
+## [Unreleased] — an inherited `where:` checked against the right source on a stored table
+
+**[fix] A source whose `where:` it inherits from a stored source in another file is no longer denied through an entry file that imports both files.** Take `deals is deals_including_deleted extend { where: not is_deleted }` in `deals.malloy`, with `deals_including_deleted` stored; `funnel_deals is deals extend { … }` in `funnel.malloy`; and an `index.malloy` that imports both. Once the stored table was bound, every query on `funnel_deals` through `index.malloy` answered `Access denied for source "funnel_deals"`. Live, and through `funnel.malloy`, the same query answered. The check that an inherited `where:` still reads the fields it was written against took `funnel_deals`'s own declaration from another compile as the source the `where:` was declared on. That declaration reads the original fields while the served one reads the stored table, so the two never matched. It now checks the `where:` against the source that declares it. **Who is affected:** packages whose entry file imports both a stored base's file and a file that extends it; this has happened since at least 0.18.3. **What to do:** nothing. The workaround of extending the stored source directly is no longer needed.
+
+**[fix] The same check no longer lets a redefinition through on that path.** For the same reason, a source that redefines a field an inherited `where:` reads, queried the same way, was answered from the stored table, where live denies it. It is now denied there too, as it is live. **Who is affected:** packages that redefine (`except:` and declare again) a field a base's `where:` reads. **What to do:** nothing, unless such a source was being queried this way; it now answers `Access denied`, as it always did live.
 
 ## [Unreleased] — a stored extension of a base in another file serves the base's joins
 

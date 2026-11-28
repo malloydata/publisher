@@ -126,6 +126,9 @@ harness can branch on `RESULT_TRUNCATED` or `CONNECTION_FAILED` from `execute_qu
 does from the 502.
 
 A gate's refusal is a **403 with `reason: ACCESS_DENIED`**: supply the givens the gate reads.
+A **403 with `reason: INHERITED_FILTER_UNVERIFIED`** is not a gate's: a `where:` the source
+inherits could not be verified on it, so the model needs fixing and givens do not help. The message
+names the reason class.
 
 Starting a materialization (`POST …/packages/{pkg}/materializations`) answers, beside the version
 reasons:
