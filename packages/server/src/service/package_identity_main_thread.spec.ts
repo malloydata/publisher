@@ -140,5 +140,6 @@ describe("loading and reloading a cap-size package", () => {
          expect(bytes).toBeGreaterThan(0.99 * SKILL_SET_MARKDOWN_MAX_BYTES);
       }
       expect(maxBlockMs).toBeLessThan(MAX_BLOCK_MS);
-   }, 60_000);
+      // Three cap-size loads take ~33 s on a macOS runner and over 80 s on a slow one.
+   }, 180_000);
 });
