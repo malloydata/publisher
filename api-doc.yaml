@@ -6051,9 +6051,9 @@ components:
             (unreadable or linked-out `SKILL.md`, a frontmatter `name` that is
             not its directory name, a directory name that breaks the name rule
             or differs from another's only by case, an `assets/` that breaks a
-            rule, a skill with more entries under `assets/` than the
-            `publisher.json` search will read, a
-            `SKILL.md` past the set's inline budget), a skill served with a
+            rule, a skill whose `assets/` the `publisher.json` search
+            cannot finish within the set's budget, or that comes after one that
+            spent it, a `SKILL.md` past the set's inline budget), a skill served with a
             gap (no `description`, frontmatter that is not valid YAML), a set
             that holds no skills, a set past its skill cap, a skill named like a
             bundled skill that the set's `overrides` does not list (in a set
