@@ -219,7 +219,6 @@ export function registerGetSkillSetTool(
          }
 
          const whole = pkg.getSkillSet(name, params.skills ?? "full")!;
-         const summary = pkg.getSkillSet(name, "summary")!;
          const read = `REST has no such limit: GET ${rest}${restQuery(whole.source, "skills=summary")}, and one file is read by skill_path`;
          return sendLadder(uri, id, SKILL_SETS, available, [
             ...(params.skills === "summary"
@@ -234,7 +233,10 @@ export function registerGetSkillSetTool(
             {
                view: "summary",
                build: (prior) => ({
-                  skillSet: summary,
+                  skillSet:
+                     params.skills === "summary"
+                        ? whole
+                        : pkg.getSkillSet(name, "summary")!,
                   ...(prior && {
                      message: `${tooLarge(prior)}, so this is the summary view. It leaves out the file text and the listed files (scripts, templates and other assets). Read a file by skill_path; ${read}.`,
                   }),

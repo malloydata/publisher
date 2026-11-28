@@ -246,6 +246,34 @@ describe("get_skill_set: the reply stays within the tool-result limit", () => {
       expect(summary.message).toBeUndefined();
    });
 
+   /** The views the package is asked to build while the tool answers `params`. */
+   const viewsBuilt = async (
+      read: (skills: string) => unknown,
+      params: Record<string, unknown> = {},
+   ) => {
+      const views: string[] = [];
+      await getSkillSet(undefined, {
+         getSkillSet: (_name: string, skills: string) => {
+            views.push(skills);
+            return read(skills);
+         },
+      })({ ...call, ...params });
+      return views;
+   };
+
+   it("builds the summary view only when the reply falls back to it", async () => {
+      const fits = (skills: string) => ({
+         name: "main",
+         view: skills,
+         skills: [],
+      });
+      expect(await viewsBuilt(fits)).toEqual(["full"]);
+      expect(await viewsBuilt(setOf)).toEqual(["full", "summary"]);
+      expect(await viewsBuilt(fits, { skills: "summary" })).toEqual([
+         "summary",
+      ]);
+   });
+
    it("keeps the set's name, digest and source when its summary does not fit", async () => {
       const result = await getSkillSet(undefined, {
          getSkillSet: () => ({
