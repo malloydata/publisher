@@ -438,14 +438,15 @@ function keptRunImports(
    if (!theirs || !ours) return undefined;
    const runTokens = lexAll(runText);
    if (!runTokens) return undefined;
-   // Every name-like word, inside string literals and SQL blocks too: a
-   // `%{ … }` embed in a `"""` block reads Malloy names the lexer folds into
-   // one token. A word that is no name only refuses more, or imports a
-   // source nothing reads.
-   const runWords = new Set([
-      ...runTokens.flatMap((t) => (isName(t) ? [unquote(t.text)] : [])),
-      ...(runText.match(/[\p{L}_][\p{L}\p{N}_]*/gu) ?? []),
-   ]);
+   // A `%{ … }` embed in a SQL string reads Malloy names the lexer folds into
+   // the string's one token, so no check here can see them: a block that
+   // embeds is not carried across files (it answers live, as before).
+   if (runTokens.some((t) => !isName(t) && t.text.includes("%{"))) {
+      return undefined;
+   }
+   const runWords = new Set(
+      runTokens.flatMap((t) => (isName(t) ? [unquote(t.text)] : [])),
+   );
    const needed = new Map<string, string[]>();
    for (const word of [...runWords].sort()) {
       const want = theirs.get(word);
