@@ -1417,7 +1417,7 @@ query: q is y -> { aggregate: n is count() }
 
 // ------------------------------- X: the declaring file sits outside the package
 
-// Even an untouched derivation is refused here: no compile of the outside file exists to prove the filter bound.
+// No compile of the outside file exists, but the package file that imports it holds its declaration: an untouched derivation is proven there and served, a rebinding denied with the comparator reason.
 describe("X: a source derived from a file outside the package", () => {
    const SHARED = `
 source: deals_incl is ${DEAL} extend { dimension: is_open is not is_deleted  measure: n is count() }
@@ -1444,7 +1444,7 @@ source: pipeline_now is deals_x -> { group_by: deal_id } extend { primary_key: d
       ],
    ];
    for (const [id, pipeline] of cases) {
-      it(`${id}: refused on both routes`, async () => {
+      it(`${id}: decided alike on both routes`, async () => {
          await serve(
             id,
             {
@@ -2689,9 +2689,9 @@ const EXPECTED: Record<string, Kind> = {
    "B2b-op-m1-full": "DENIED",
    "B2b-op-m1-inner": "DENIED",
    "B2b-op-m1-right": "DENIED",
-   "X1-misbound": "REFUSED",
-   "X3-query-source-honest": "REFUSED",
-   "X3-query-source-misbound": "REFUSED",
+   "X1-misbound": "DENIED",
+   "X3-query-source-honest": "SERVED",
+   "X3-query-source-misbound": "DENIED",
    "G1-misbound": "DENIED",
    "G1-honest": "SERVED",
    "CAL-C": "SERVED",

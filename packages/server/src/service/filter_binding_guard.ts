@@ -58,8 +58,10 @@ import {
 } from "@malloydata/malloy";
 import { ANCESTOR_WALK_MAX_DEPTH } from "./governance/gate_plan";
 import {
+   inferredExtendedSource,
    resolveCompositeResolvedBase,
    resolveDeclaredSource,
+   resolveExtendedSource,
    resolveQuerySourceBase,
 } from "./governance/ir/source_graph";
 import { fileURLToPath, pathToFileURL } from "url";
@@ -1168,22 +1170,105 @@ export function isSameDeclaration(a: SourceDef, b: SourceDef): boolean {
 }
 
 /**
- * The farthest ancestor of `struct` whose own `filterList` still contains
- * `condition` BY REFERENCE. Malloy never mutates a `FilterCondition` (an
- * `extend` spreads the array, not the elements), so identity survives each
- * copy. Links tried per step: {@link nextDerivationLink}, then
- * {@link findConditionOriginByLocation} for a modified, unannotated
- * derivation (Malloy clears `referenceID` on any modification).
+ * The genuine bases of `current` in this compile, nearest first: the registry
+ * link ({@link resolveDeclaredSource}: a rename's referent, or a copy's own
+ * declaration), a query or SQL extension's `extends`, a query source's
+ * `query.structRef`, a table extension's inferred base
+ * ({@link inferredExtendedSource}), and, for an inline `X extend {...}`
+ * (which has no sourceID and keeps X's location), the named source declared
+ * at that location. Never a source that merely shares an annotation object:
+ * a sibling built from the same base shares those too, and comparing against
+ * a sibling that redefines a field the way `current` does proves nothing.
+ */
+function genuineBases(
+   current: SourceDef,
+   modelDef: ModelDef,
+   seen: ReadonlySet<SourceDef>,
+): SourceDef[] {
+   const out: SourceDef[] = [];
+   const add = (s: unknown) => {
+      const def = s as SourceDef | undefined;
+      if (def && isSourceDef(def) && !seen.has(def) && !out.includes(def)) {
+         out.push(def);
+      }
+   };
+   const declared = resolveDeclaredSource(current, modelDef);
+   if (declared.kind === "resolved") add(declared.source);
+   if (declared.kind === "unresolvable") return out;
+   add(resolveExtendedSource(current, modelDef));
+   add(resolveQuerySourceBase(current, modelDef));
+   add(inferredExtendedSource(current, modelDef));
+   if (!(current as { sourceID?: unknown }).sourceID && current.location) {
+      for (const value of Object.values(modelDef.contents)) {
+         if (
+            isSourceDef(value) &&
+            value !== current &&
+            sameLocation(value.location, current.location)
+         ) {
+            add(value);
+         }
+      }
+   }
+   return out;
+}
+
+/**
+ * Whether `candidate`, from the SAME compile as `condition`, holds it: the
+ * same object (Malloy never mutates a `FilterCondition`, so identity survives
+ * each copy), or one with the same code written at the same position (a file
+ * imported along two paths is compiled twice, and a query-shaped source
+ * copies its conditions). Positions are only ever compared within one
+ * compile, where every copy of a file has the same text.
+ */
+function holdsCondition(
+   candidate: SourceDef | undefined,
+   condition: FilterCondition,
+): boolean {
+   if (!candidate) return false;
+   return (
+      !!candidate.filterList?.includes(condition) ||
+      siblingCandidateOwnsCondition(candidate, condition)
+   );
+}
+
+/** What {@link findFilterOrigin} found. */
+interface FilterOrigin {
+   origin: SourceDef;
+   /** `origin` is the base an inline `where:` was written on. */
+   inlineBase: boolean;
+   /**
+    * A declaration in this compile that holds the condition but did not
+    * write it: `struct` is compared against `origin` here, and `prove`'s own
+    * copy of the condition is then proven in the compile of the file that
+    * declares `prove` ({@link assertProvenInOwnCompile}).
+    */
+   prove?: SourceDef;
+}
+
+/**
+ * The farthest ancestor of `struct` in this compile that holds `condition`
+ * ({@link holdsCondition}), along {@link genuineBases}, then
+ * {@link findConditionOriginByLocation} for the declaration that wrote it.
  *
  * `struct`'s own twin ({@link isSameDeclaration}) and a non-composite
  * `unresolved` (`struct` before its joined composites were resolved) are walked
  * through but never returned: they carry the same joins as `struct`, so
  * comparing against them proves nothing.
  *
- * Returns `struct` itself when nothing resolves, including the sibling
- * compile; the caller treats that as "cannot prove", not "nothing to check".
- * `inlineBase` marks an origin found as the base an inline `where:` was
- * written on, which may come from a sibling compile of its file.
+ * An ancestor whose declaration does not contain the condition only
+ * inherited it, from a file this compile does not import (Malloy imports are
+ * not transitive), so it comes back as `prove` too: compared against it alone,
+ * a redefinition it shares with `struct` would prove nothing. For a resolved
+ * composite member with no such ancestor, the composite's own derivation is
+ * walked.
+ *
+ * `trusted` says this compile's file positions match its sibling compiles'
+ * (it is one of them), so a position found here may be looked up in a
+ * sibling compile. The executed compile may be a served copy, which shifts
+ * positions, so the first call is never trusted.
+ *
+ * Returns `struct` itself when nothing resolves; the caller treats that as
+ * "cannot prove", not "nothing to check".
  */
 function findFilterOrigin(
    struct: SourceDef,
@@ -1192,27 +1277,27 @@ function findFilterOrigin(
    resolveSibling?: SiblingModelDefResolver,
    unresolved?: SourceDef,
    virtualUrl?: string,
-): { origin: SourceDef; inlineBase: boolean } {
+   trusted = false,
+): FilterOrigin {
    let origin = struct;
    let current = struct;
    let twin: SourceDef | undefined;
    let ancestorUnresolved = false;
    const seen = new Set<SourceDef>([struct]);
+   const at = firstFieldUsageLocation(condition);
    for (let depth = 0; depth < ANCESTOR_WALK_MAX_DEPTH; depth++) {
-      let next: SourceDef | undefined = modelDef
-         ? nextDerivationLink(current, modelDef, seen)
-         : undefined;
-      // A derivation link can name the wrong ancestor (a query source's base),
-      // so the span of the condition's own text is tried whenever it fails.
-      if (modelDef && !next?.filterList?.includes(condition)) {
-         const at = firstFieldUsageLocation(condition);
+      const bases = modelDef ? genuineBases(current, modelDef, seen) : [];
+      let next: SourceDef | undefined =
+         bases.find((b) => holdsCondition(b, condition)) ?? bases[0];
+      // The declaration that wrote the condition, by the span of its text.
+      if (modelDef && !holdsCondition(next, condition)) {
          const candidate = at && findConditionOriginByLocation(modelDef, at);
          if (candidate && !seen.has(candidate)) {
             next ??= candidate;
-            if (candidate.filterList?.includes(condition)) next = candidate;
+            if (holdsCondition(candidate, condition)) next = candidate;
          }
       }
-      if (!next || !next.filterList?.includes(condition)) {
+      if (!next || !holdsCondition(next, condition)) {
          ancestorUnresolved = !next;
          break;
       }
@@ -1229,71 +1314,128 @@ function findFilterOrigin(
       seen.add(next);
       current = next;
    }
-   if (origin === struct) {
-      // An inline `X extend { where: }` keeps X's location; `source: a is X` gets its own. Same-location aliases are one declaration, so the first stands in.
-      const sameLocationBase = (
-         contents: ModelDef["contents"],
-         lacksCondition: (v: SourceDef) => boolean,
-      ) =>
-         Object.values(contents).find(
-            (v): v is SourceDef =>
-               isSourceDef(v) &&
-               sameLocation(v.location, struct.location) &&
-               lacksCondition(v),
-         );
-      const inlineBase =
-         sameLocationBase(
-            modelDef?.contents ?? {},
-            // This is what makes it "X without the new where:".
-            (v) => v !== struct && !v.filterList?.includes(condition),
-         ) ??
-         // A selective import leaves X out of this compile; its own file's compile has it, and identity does not cross compiles. A resolved composite member's filter was grafted from the composite, not written on the member.
-         // Never `struct`'s own declaration from that compile: an inline `X extend` has no sourceID, and a declared source sharing `struct`'s is its twin, not its base. A served copy shifts its files' positions, so the twin would pass as lacking the condition and be compared against the re-rooted `struct` as its base.
-         sameLocationBase(
-            (!isComposite(unresolved) &&
-               struct.location &&
-               resolveSibling?.(canonicalUrl(struct.location.url))?.contents) ||
-               {},
-            (v) =>
-               !sharesSourceID(v, struct) &&
-               !siblingCandidateOwnsCondition(v, condition),
-         );
-      // Ahead of the sibling-owner leg, which would settle for the struct's own twin in the sibling compile.
-      if (inlineBase) return { origin: inlineBase, inlineBase: true };
-      // The executed compile's own declaration of the condition, when it
-      // compiled the condition's file, ahead of another compile's: a served
-      // copy compiles an importing file over its re-rooted base, whose stored
-      // column may be a redefinition (a native big-integer read), so the
-      // author's compile of the same file binds the name to a different field
-      // (P2-22). When that declaration is `struct` itself, the condition is
-      // its own `where:`, compiled against its own fields, and is checked as
-      // fresh. Another struct there (the declaration a caller's inline
-      // `extend` derives from) is the origin, so a rebinding is still denied.
-      const at = firstFieldUsageLocation(condition);
-      const local =
-         modelDef && at
-            ? findConditionOriginByLocation(modelDef, at)
-            : undefined;
-      if (local && siblingCandidateOwnsCondition(local, condition)) {
-         return { origin: local, inlineBase: false };
-      }
-      const sibling = findSiblingDeclaringSource(
-         firstFieldUsageLocation(condition),
-         resolveSibling,
+   if (origin !== struct) {
+      return declares(origin, at)
+         ? { origin, inlineBase: false }
+         : { origin, inlineBase: false, prove: origin };
+   }
+   const fallback = findOriginWithoutAncestor(struct, condition, modelDef, {
+      resolveSibling,
+      unresolved,
+      virtualUrl,
+      trusted,
+      twin,
+      ancestorUnresolved,
+   });
+   if (fallback.origin !== struct || !isComposite(unresolved)) return fallback;
+   // A resolved composite member's filter comes from the composite Malloy
+   // resolved it from, so the composite's own derivation is walked too.
+   const composite = unresolved!;
+   const viaComposite = findFilterOrigin(
+      composite,
+      condition,
+      modelDef,
+      resolveSibling,
+      undefined,
+      virtualUrl,
+      trusted,
+   );
+   if (viaComposite.origin !== composite) return viaComposite;
+   if (!holdsCondition(composite, condition)) return fallback;
+   if (declares(composite, at)) return { origin: composite, inlineBase: false };
+   return declarationOf(composite, modelDef)
+      ? { origin: composite, inlineBase: false, prove: composite }
+      : fallback;
+}
+
+/** Whether `struct`'s own declaration contains the text at `at`. */
+function declares(
+   struct: SourceDef,
+   at: DocumentLocationLike | undefined,
+): boolean {
+   return (
+      !!at &&
+      !!struct.location &&
+      locationContains(struct.location as DocumentLocationLike, at)
+   );
+}
+
+/** {@link findFilterOrigin} once no ancestor in this compile holds the condition. */
+function findOriginWithoutAncestor(
+   struct: SourceDef,
+   condition: FilterCondition,
+   modelDef: ModelDef | undefined,
+   walk: {
+      resolveSibling?: SiblingModelDefResolver;
+      unresolved?: SourceDef;
+      virtualUrl?: string;
+      trusted: boolean;
+      twin?: SourceDef;
+      ancestorUnresolved: boolean;
+   },
+): FilterOrigin {
+   const { resolveSibling, unresolved, virtualUrl, trusted, twin } = walk;
+   const at = firstFieldUsageLocation(condition);
+   // An inline `X extend { where: }` keeps X's location; `source: a is X` gets its own. Same-location aliases are one declaration, so the first stands in.
+   const sameLocationBase = (
+      contents: ModelDef["contents"],
+      lacksCondition: (v: SourceDef) => boolean,
+   ) =>
+      Object.values(contents).find(
+         (v): v is SourceDef =>
+            isSourceDef(v) &&
+            sameLocation(v.location, struct.location) &&
+            lacksCondition(v),
       );
+   const inlineBase =
+      sameLocationBase(
+         modelDef?.contents ?? {},
+         // This is what makes it "X without the new where:".
+         (v) => v !== struct && !holdsCondition(v, condition),
+      ) ??
+      // A selective import leaves X out of this compile; its own file's compile has it, found by position, so only from a compile whose positions match it. A resolved composite member's filter was grafted from the composite, not written on the member.
+      // Never `struct`'s own declaration from that compile: an inline `X extend` has no sourceID, and a declared source sharing `struct`'s is its twin, not its base.
+      (trusted
+         ? sameLocationBase(
+              (!isComposite(unresolved) &&
+                 struct.location &&
+                 resolveSibling?.(canonicalUrl(struct.location.url))
+                    ?.contents) ||
+                 {},
+              (v) =>
+                 !sharesSourceID(v, struct) &&
+                 !siblingCandidateOwnsCondition(v, condition),
+           )
+         : undefined);
+   // Ahead of the sibling-owner leg, which would settle for the struct's own twin in the sibling compile.
+   if (inlineBase) return { origin: inlineBase, inlineBase: true };
+   // The executed compile's own declaration of the condition, when it
+   // compiled the condition's file, ahead of another compile's: a served
+   // copy compiles an importing file over its re-rooted base, whose stored
+   // column may be a redefinition (a native big-integer read), so the
+   // author's compile of the same file binds the name to a different field
+   // (P2-22). When that declaration is `struct` itself, the condition is
+   // its own `where:`, compiled against its own fields, and is checked as
+   // fresh. Another struct there (the declaration a caller's inline
+   // `extend` derives from) is the origin, so a rebinding is still denied.
+   const local =
+      modelDef && at ? findConditionOriginByLocation(modelDef, at) : undefined;
+   if (local && siblingCandidateOwnsCondition(local, condition)) {
+      return { origin: local, inlineBase: false };
+   }
+   if (trusted) {
+      const sibling = findSiblingDeclaringSource(at, resolveSibling);
       if (sibling && siblingCandidateOwnsCondition(sibling, condition)) {
          return { origin: sibling, inlineBase: false };
       }
-      // A twin is only a same-named struct, not the declaration, so it stands in only where no sibling compile can exist: a model with no resolver, or the /compile text compiled for this request alone.
-      const inVirtualFile =
-         !!at &&
-         !!virtualUrl &&
-         canonicalUrl(at.url) === canonicalUrl(virtualUrl);
-      if (twin && ancestorUnresolved && (!resolveSibling || inVirtualFile)) {
-         return { origin: twin, inlineBase: false };
-      }
    }
-   return { origin, inlineBase: false };
+   // A twin is only a same-named struct, not the declaration, so it stands in only where no sibling compile can exist: a model with no resolver, or the /compile text compiled for this request alone.
+   const inVirtualFile =
+      !!at && !!virtualUrl && canonicalUrl(at.url) === canonicalUrl(virtualUrl);
+   if (twin && walk.ancestorUnresolved && (!resolveSibling || inVirtualFile)) {
+      return { origin: twin, inlineBase: false };
+   }
+   return { origin: struct, inlineBase: false };
 }
 
 /** Whether two structs carry one declared sourceID (an inline `extend` has none). */
@@ -1354,18 +1496,24 @@ export interface FreshnessContext {
  * named source, so only the query's span proves its inline `where:` fresh; a
  * named base keeps its declaration's location, outside the span, and stays
  * refused. Being unrecognized is not proof: an inherited condition from a
- * narrower compile is unrecognized too.
+ * narrower compile is unrecognized too. `struct`'s own span proves nothing
+ * unless `spanProves`: an inline `X extend` keeps X's location, so X's own
+ * `where:` lies in its span, and only a compile that can find X (or a declared
+ * `struct`) may read it as fresh.
  */
 function isOwnFreshFilter(
    struct: SourceDef,
    condition: FilterCondition,
    freshness: FreshnessContext,
+   spanProves = true,
 ): boolean {
    const at = firstFieldUsageLocation(condition);
    if (!at) return false;
    const structLocation = (struct as { location?: DocumentLocationLike })
       .location;
-   if (structLocation && locationContains(structLocation, at)) return true;
+   if (spanProves && structLocation && locationContains(structLocation, at)) {
+      return true;
+   }
    const { enclosing } = freshness;
    if (
       enclosing &&
@@ -1394,6 +1542,62 @@ function isCallerWritten(
    );
 }
 
+/** One step from a declaration to a struct it holds: its query base, or a join by name. */
+type AnchorHop = { kind: "base" } | { kind: "join"; name: string };
+
+/**
+ * Where a struct sits in a declaration this compile holds: the declaration,
+ * and the hops from it to the struct. Lets a condition on the struct be
+ * proven in the declaration's own compile, by its sourceID and the same
+ * hops, never by a position or an object shared across compiles.
+ */
+interface Anchor {
+   declaration: SourceDef;
+   hops: readonly AnchorHop[];
+}
+
+/**
+ * The declaration `struct` (for a resolved composite member, the composite it
+ * was resolved from) is an unmodified copy of, among this compile's own
+ * declarations (`contents` or the source registry): itself, or its twin
+ * ({@link isSameDeclaration}). Undefined for anything a request or a
+ * derivation modified.
+ */
+function declarationOf(
+   struct: SourceDef,
+   modelDef: ModelDef | undefined,
+): SourceDef | undefined {
+   if (!modelDef || typeof struct.sourceID !== "string") return undefined;
+   const declared = [
+      ...Object.values(modelDef.contents),
+      ...Object.values(modelDef.sourceRegistry ?? {}).map((v) => v.entry),
+   ];
+   for (const value of declared) {
+      if (
+         value &&
+         isSourceDef(value as SourceDef) &&
+         (value === struct || isSameDeclaration(value as SourceDef, struct))
+      ) {
+         return value as SourceDef;
+      }
+   }
+   return undefined;
+}
+
+/** `struct`'s anchor: its own declaration, else the one `parent` reached it by. */
+function anchorOf(
+   struct: SourceDef,
+   unresolved: SourceDef | undefined,
+   modelDef: ModelDef | undefined,
+   parent: Anchor | undefined,
+): Anchor | undefined {
+   const declaration = declarationOf(
+      isComposite(unresolved) ? unresolved! : struct,
+      modelDef,
+   );
+   return declaration ? { declaration, hops: [] } : parent;
+}
+
 /**
  * Assert every INHERITED entry in `struct.filterList` (an inherited `where:`
  * or a grafted condition) still binds as where it was declared, then recurse
@@ -1419,6 +1623,8 @@ export function assertInheritedSourceFiltersBind(
    unresolved: SourceDef | undefined = undefined,
    // The run query's own stages, whose `extend:` joins hang off no struct.
    pipeline: readonly StageLike[] | undefined = undefined,
+   // Where the struct that holds `struct` sits in a declaration.
+   parent: Anchor | undefined = undefined,
 ): void {
    if (visited.has(struct)) return;
    if (depth > MAX_JOIN_RECURSION_DEPTH) {
@@ -1427,7 +1633,7 @@ export function assertInheritedSourceFiltersBind(
       );
    }
    visited.add(struct);
-   const composite = isComposite(unresolved) ? unresolved : undefined;
+   const anchor = anchorOf(struct, unresolved, modelDef, parent);
    for (const condition of struct.filterList ?? []) {
       // A grafted condition's location is where the graft compiled it, so
       // this walk cannot classify it; the caller already proved it
@@ -1435,56 +1641,19 @@ export function assertInheritedSourceFiltersBind(
       if (alreadyProven.has(condition)) continue;
       if (conditionReadsNoField(condition)) continue;
       if (isCallerWritten(condition, freshness.callerText)) continue;
-      let declaring: SourceDef | undefined;
-      try {
-         // Before the fresh-filter check: an inline `extend {}` may carry its
-         // base's `.location`, which would wrongly "prove" an inherited
-         // condition fresh. A non-`struct` origin is always a genuine ancestor
-         // holding this exact condition object.
-         const { origin, inlineBase } = findFilterOrigin(
-            struct,
-            condition,
-            modelDef,
-            resolveSibling,
-            unresolved,
-            freshness.virtualUrl,
-         );
-         declaring = origin;
-         if (origin !== struct) {
-            assertFilterConditionBindsToDeclaringSource(
-               origin,
-               struct,
-               condition,
-               unresolved,
-               inlineBase,
-            );
-            continue;
-         }
-         if (isOwnFreshFilter(struct, condition, freshness)) continue;
-         const members = composite
-            ? membersDeclaringCondition(composite, condition)
-            : [];
-         if (members.length > 0) {
-            for (const member of members) {
-               declaring = member;
-               assertFilterConditionBindsToDeclaringSource(
-                  member,
-                  struct,
-                  condition,
-               );
-            }
-            continue;
-         }
-         declaring = undefined;
-         throw new Error(
-            "a row-security filter's declaring source could not be resolved",
-         );
-      } catch (err) {
-         throw InheritedFilterUnverifiedError.of(err, condition, declaring);
-      }
+      assertInheritedConditionBinds(struct, condition, {
+         modelDef,
+         freshness,
+         resolveSibling,
+         unresolved,
+         trusted: false,
+         proving: new Set(),
+         anchor,
+      });
    }
    const descend = (
       next: SourceDef,
+      hop: AnchorHop | undefined,
       nextUnresolved?: SourceDef,
       enclosing?: DocumentLocationLike,
    ) =>
@@ -1497,6 +1666,10 @@ export function assertInheritedSourceFiltersBind(
          visited,
          alreadyProven,
          nextUnresolved,
+         undefined,
+         anchor && hop
+            ? { declaration: anchor.declaration, hops: [...anchor.hops, hop] }
+            : undefined,
       );
    // No `fields` means not a real compiled struct (e.g. a test double):
    // nothing to walk, and the filter check above already denies as needed.
@@ -1507,6 +1680,7 @@ export function assertInheritedSourceFiltersBind(
          );
          descend(
             field as unknown as SourceDef,
+            { kind: "join", name: activeName(field) },
             unresolvedJoin as unknown as SourceDef | undefined,
          );
       }
@@ -1518,23 +1692,247 @@ export function assertInheritedSourceFiltersBind(
          throw new Error("a query source's base could not be resolved");
       }
       const resolvedBase = resolveCompositeResolvedBase(struct);
-      const own = (
-         struct as {
-            query?: {
-               location?: DocumentLocationLike;
-               pipeline?: readonly StageLike[];
-            };
-         }
-      ).query;
+      const own = queryOf(struct);
       // `query.location` survives the alias/extend/join re-stamping of `struct.location`.
       descend(
          resolvedBase ?? base,
+         { kind: "base" },
          resolvedBase ? base : undefined,
          own?.location,
       );
-      stageJoins(own?.pipeline).forEach((join) => descend(join));
+      stageJoins(own?.pipeline).forEach((join) => descend(join, undefined));
    }
-   stageJoins(pipeline).forEach((join) => descend(join));
+   stageJoins(pipeline).forEach((join) => descend(join, undefined));
+}
+
+/** A query source's own query: where it was written, and its stages. */
+function queryOf(struct: SourceDef):
+   | {
+        location?: DocumentLocationLike;
+        pipeline?: readonly StageLike[];
+     }
+   | undefined {
+   return (
+      struct as {
+         query?: {
+            location?: DocumentLocationLike;
+            pipeline?: readonly StageLike[];
+         };
+      }
+   ).query;
+}
+
+/** How one inherited condition is proven ({@link assertInheritedConditionBinds}). */
+interface ConditionProof {
+   modelDef: ModelDef | undefined;
+   freshness: FreshnessContext;
+   resolveSibling: SiblingModelDefResolver | undefined;
+   // `struct` before composite resolution, from the same compile.
+   unresolved: SourceDef | undefined;
+   // See `findFilterOrigin`.
+   trusted: boolean;
+   // The declarations being proven in their own compiles, by sourceID.
+   proving: ReadonlySet<string>;
+   // Where `struct` sits in a declaration this compile holds.
+   anchor: Anchor | undefined;
+}
+
+/**
+ * Assert that one inherited `condition` on `struct` reads, on `struct`, the
+ * fields it read where it was written. THROWS an
+ * {@link InheritedFilterUnverifiedError} when it does not, or cannot be shown.
+ *
+ * Where this compile holds no declaration that wrote it, the proof continues
+ * in a declaration's own compile ({@link assertProvenInOwnCompile}): the
+ * ancestor `struct` was compared against, or else `struct`'s own anchor.
+ */
+function assertInheritedConditionBinds(
+   struct: SourceDef,
+   condition: FilterCondition,
+   proof: ConditionProof,
+): void {
+   const { unresolved, anchor } = proof;
+   let declaring: SourceDef | undefined;
+   try {
+      // Before the fresh-filter check: an inline `extend {}` may carry its
+      // base's `.location`, which would wrongly "prove" an inherited
+      // condition fresh.
+      const { origin, inlineBase, prove } = findFilterOrigin(
+         struct,
+         condition,
+         proof.modelDef,
+         proof.resolveSibling,
+         unresolved,
+         proof.freshness.virtualUrl,
+         proof.trusted,
+      );
+      declaring = origin;
+      if (origin !== struct) {
+         assertFilterConditionBindsToDeclaringSource(
+            origin,
+            struct,
+            condition,
+            unresolved,
+            inlineBase,
+         );
+         if (!prove) return;
+         // An ancestor that only inherited the condition: proven in its own
+         // compile when it is a declaration, else through `struct`'s anchor.
+         const declaration = declarationOf(prove, proof.modelDef);
+         assertProvenInOwnCompile(
+            declaration ? { declaration, hops: [] } : anchor,
+            condition,
+            proof,
+         );
+         return;
+      }
+      // An inline `X extend` keeps X's location, so its span proves nothing
+      // fresh when X is not in this compile. A trusted compile finds X in
+      // X's own file's compile (`findFilterOrigin`); this one may not look
+      // there, so the anchor is proven first.
+      const declared = typeof struct.sourceID === "string";
+      if (
+         !declared &&
+         !proof.trusted &&
+         anchor &&
+         ownCompileOf(anchor, proof)
+      ) {
+         assertProvenInOwnCompile(anchor, condition, proof);
+         return;
+      }
+      if (
+         isOwnFreshFilter(
+            struct,
+            condition,
+            proof.freshness,
+            declared || proof.trusted,
+         )
+      ) {
+         return;
+      }
+      const composite = isComposite(unresolved) ? unresolved : undefined;
+      const members = composite
+         ? membersDeclaringCondition(composite, condition)
+         : [];
+      if (members.length > 0) {
+         for (const member of members) {
+            declaring = member;
+            assertFilterConditionBindsToDeclaringSource(
+               member,
+               struct,
+               condition,
+            );
+         }
+         return;
+      }
+      if (anchor && proof.resolveSibling) {
+         assertProvenInOwnCompile(anchor, condition, proof);
+         return;
+      }
+      declaring = undefined;
+      throw new Error(
+         "a row-security filter's declaring source could not be resolved",
+      );
+   } catch (err) {
+      if (err instanceof InheritedFilterUnverifiedError) throw err;
+      throw InheritedFilterUnverifiedError.of(err, condition, declaring);
+   }
+}
+
+/**
+ * Prove the copies of `condition` held at `anchor` in the compile of the file
+ * that declares `anchor.declaration`, which imports that file's bases: the
+ * walk there reaches further back than this compile's did. Whatever `struct`
+ * was compared against was compared here, so the two proofs chain without
+ * comparing a field, a position or an object across compiles: the
+ * declaration is found there by its sourceID (`name@url`), the struct by the
+ * same hops, and its copies of the condition by code. That compile is one of
+ * the package's own, so its positions match its siblings' and the proof there
+ * is `trusted`. THROWS when the compile, the declaration, the struct or a
+ * copy of the condition cannot be found, on a cycle, or past the walk bound.
+ */
+function assertProvenInOwnCompile(
+   anchor: Anchor | undefined,
+   condition: FilterCondition,
+   proof: ConditionProof,
+): void {
+   const found = anchor && ownCompileOf(anchor, proof);
+   const { compile, own, sourceID } = found ?? {};
+   const held =
+      own && anchor ? followHops(own, anchor.hops, compile) : undefined;
+   const copies = (held?.struct.filterList ?? []).filter(
+      (c) => c.code === condition.code,
+   );
+   if (!own || !held || copies.length === 0 || typeof sourceID !== "string") {
+      throw new Error(
+         "a row-security filter's declaring source could not be resolved",
+      );
+   }
+   for (const copy of copies) {
+      if (conditionReadsNoField(copy)) continue;
+      assertInheritedConditionBinds(held.struct, copy, {
+         modelDef: compile,
+         freshness: { enclosing: held.enclosing },
+         resolveSibling: proof.resolveSibling,
+         unresolved: held.unresolved,
+         trusted: true,
+         proving: new Set([...proof.proving, sourceID]),
+         anchor: { declaration: own, hops: anchor!.hops },
+      });
+   }
+}
+
+/** `anchor`'s declaration in its own file's compile, by sourceID; undefined on a cycle or past the walk bound. */
+function ownCompileOf(
+   anchor: Anchor,
+   proof: ConditionProof,
+): { compile: ModelDef; own: SourceDef; sourceID: string } | undefined {
+   const sourceID = anchor.declaration.sourceID;
+   const url = anchor.declaration.location?.url;
+   if (typeof sourceID !== "string" || !url) return undefined;
+   if (proof.proving.has(sourceID)) return undefined;
+   if (proof.proving.size >= ANCESTOR_WALK_MAX_DEPTH) return undefined;
+   const compile = proof.resolveSibling?.(canonicalUrl(url));
+   const own = Object.values(compile?.contents ?? {}).find(
+      (v): v is SourceDef => isSourceDef(v) && v.sourceID === sourceID,
+   );
+   return compile && own ? { compile, own, sourceID } : undefined;
+}
+
+/** The struct `hops` reach from `declaration`, as the walk descends to it. */
+function followHops(
+   declaration: SourceDef,
+   hops: readonly AnchorHop[],
+   modelDef: ModelDef | undefined,
+):
+   | {
+        struct: SourceDef;
+        unresolved?: SourceDef;
+        enclosing?: DocumentLocationLike;
+     }
+   | undefined {
+   let current: SourceDef = declaration;
+   let unresolved: SourceDef | undefined;
+   let enclosing: DocumentLocationLike | undefined;
+   for (const hop of hops) {
+      if (hop.kind === "base") {
+         const base = resolveQuerySourceBase(current, modelDef);
+         if (!base) return undefined;
+         const resolvedBase = resolveCompositeResolvedBase(current);
+         enclosing = queryOf(current)?.location;
+         unresolved = resolvedBase ? base : undefined;
+         current = resolvedBase ?? base;
+      } else {
+         const join = current.fields?.find(
+            (f) => isJoined(f) && activeName(f) === hop.name,
+         );
+         if (!join || !isSourceDef(join)) return undefined;
+         unresolved = undefined;
+         enclosing = undefined;
+         current = join as unknown as SourceDef;
+      }
+   }
+   return { struct: current, unresolved, enclosing };
 }
 
 /** Duck-typed query stage: only the parts that can carry a join. */
