@@ -192,6 +192,12 @@ class TheAnswerersMcpSurface(unittest.TestCase):
         # overlap silently removes something the answerer is meant to have.
         self.assertEqual(set(rb.ANSWER_TOOLS) & set(rb.ANSWER_DENIED), set())
 
+    def test_the_tools_that_read_a_named_brief_or_skill_set_are_denied(self):
+        # A named workflow or skill set hands the answerer guidance the run did
+        # not pin, so it measures the guidance and not the model.
+        denied = {t.split("__")[-1] for t in rb.ANSWER_DENIED}
+        self.assertLessEqual({"get_workflow", "get_skill_set"}, denied)
+
     def test_denied_can_only_add_to_the_fence(self):
         cmd = claude_cmd(mcp=None, skills=True, denied=("mcp__x__y",))
         denied = cmd[cmd.index("--disallowedTools") + 1:]

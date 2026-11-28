@@ -346,9 +346,9 @@ def resolve_closure(names: Iterable[str],
 def package_skill_dirs(sets: Iterable[pathlib.Path]) -> dict[str, pathlib.Path]:
     """The package skills a run installs, by name: each skill set's skill folders.
 
-    `sets` are the skill-set folders of the package's `default` workflow, in
-    manifest order; a name two sets hold is taken from the first, as the server
-    serves it. Only a skill folder (a real directory holding a real SKILL.md) is
+    `sets` are the skill-set folders to install, in order (the eval loop passes
+    the package's `default` skill set); a name two sets hold is taken from the
+    first, as the server serves it. Only a skill folder (a real directory holding a real SKILL.md) is
     taken, never the package: an eval set lives at `<package>/evals/`, so a copy
     that reached one directory too wide would hand the answerer the goldens.
     This does not apply the server's rules for which skills it serves (a nested

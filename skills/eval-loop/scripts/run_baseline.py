@@ -134,6 +134,8 @@ TOOL_ARM_TOOLS = ("mcp__publisher__get_skill",)
 #   compile_model           authoring surface.
 #   get_workflow            adopting a package workflow changes what the answerer
 #                           is told to do; the run measures the model, not a brief.
+#   get_skill_set           reading a named skill set does the same: it hands the
+#                           answerer guidance the run did not pin.
 #
 # `get_status` and `list_packages` reveal the other packages on the server and
 # are no use to an answerer given its scope in the prompt.
@@ -149,6 +151,7 @@ TOOL_ARM_TOOLS = ("mcp__publisher__get_skill",)
 # verified 2026-09-08.
 ANSWER_DENIED = ("mcp__publisher__compile_model",
                  "mcp__publisher__get_workflow",
+                 "mcp__publisher__get_skill_set",
                  "mcp__publisher__search_database_schema",
                  "mcp__publisher__reload_package",
                  "mcp__publisher__get_status",
@@ -166,8 +169,9 @@ ANSWER_DENIED = ("mcp__publisher__compile_model",
 # when this needs re-checking; the authority is the server's registration, and
 # a mismatch here is a decision, not a lint.
 PUBLISHER_MCP_TOOLS = ("compile_model", "execute_query", "get_context",
-                       "get_skill", "get_status", "get_workflow",
-                       "list_packages", "list_reports", "reload_package",
+                       "get_skill", "get_skill_set", "get_status",
+                       "get_workflow", "list_packages", "list_reports",
+                       "reload_package",
                        "report_api", "search_database_schema",
                        "search_malloy_docs", "show_report")
 # The platform target: a hosted MCP server exposing the same two operations
