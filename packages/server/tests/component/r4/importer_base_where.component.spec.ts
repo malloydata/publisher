@@ -136,3 +136,110 @@ for (const shape of SHAPES) {
       });
    });
 }
+
+/**
+ * gtme's own shape: the base's `where:` reads a dimension computed THROUGH a
+ * join (`is_deleted is deal_activity.delete_event_count > 0`), the filtered
+ * source is stored in a `storage=` destination, and a second file stores an
+ * extension of it. `#@ persist` refuses a filtered pass-through at load, so
+ * both are `#(materialize)`. On DuckDB and DuckLake (Parquet) lakes alike,
+ * every query answers with the filtered rows and none is refused as "Access
+ * denied". (On a DuckDB lake today the chain answers live,
+ * `fields_not_carried`, and the extension's build is refused
+ * `upstream_table_unusable` ("'is_deleted' is not defined"); this guards
+ * the access denial, not where the answer comes from.)
+ */
+const EVENTS = "deal_id,delete_event_count\n1,0\n2,1\n3,0\n4,0\n";
+const RAW_DEALS = "id,owner,amount\n1,a,10\n2,a,20\n3,b,5\n4,b,7\n";
+const JOINED_DEALS = `source: deal_activity is duckdb.table('data/events.csv') extend {
+  primary_key: deal_id
+}
+
+source: deals_including_deleted is duckdb.table('data/deals.csv') extend {
+  join_one: deal_activity on id = deal_activity.deal_id
+  dimension: is_deleted is deal_activity.delete_event_count > 0
+}
+
+#(materialize) name="gtm_deals" storage=lake
+source: deals is deals_including_deleted extend { where: not is_deleted }
+`;
+const FUNNEL = `import "deals.malloy"
+
+#(materialize) name="gtm_funnel_deals" storage=lake
+source: funnel_deals is deals extend { dimension: big is amount > 6 }
+`;
+const JOINED_QUERIES: [string, string][] = [
+   ["deals.malloy", "deals"],
+   ["funnel.malloy", "deals"],
+   ["funnel.malloy", "funnel_deals"],
+];
+const JOINED_ROWS = '[{"owner":"a","n":1},{"owner":"b","n":2}]';
+
+for (const lake of ["duckdb", "parquet"] as const) {
+   describe(`S4: a storage= chain over a cross-file where: on a join-computed dimension (${lake} lake)`, () => {
+      let restore: () => void;
+      let loader: Awaited<ReturnType<typeof loadFixture>> | undefined;
+      let fixture: LoadedFixture | undefined;
+      const answers: Record<string, ReturnType<typeof answer>> = {};
+
+      beforeAll(async () => {
+         restore = installSettings({
+            env: {
+               PERSIST_STORAGE_MODE: "on",
+               PUBLISHER_MATERIALIZE: "true",
+               // The Parquet lake's warehouse attaches with setupSQL.
+               PUBLISHER_ALLOW_DUCKDB_SETUP_SQL: "true",
+            },
+         }).restore;
+         await freshLoadPool();
+         loader = await loadFixture(
+            {
+               "deals.malloy": JOINED_DEALS,
+               "funnel.malloy": FUNNEL,
+               "data/deals.csv": RAW_DEALS,
+               "data/events.csv": EVENTS,
+            },
+            { lake },
+         );
+         for (const [model, source] of JOINED_QUERIES) {
+            const q = `run: ${source} -> { group_by: owner; aggregate: n is count(); order_by: owner }`;
+            answers[`live ${model} ${source}`] = answer(
+               await loader.run(model, q),
+            );
+         }
+         fixture = await loader.bind();
+         for (const [model, source] of JOINED_QUERIES) {
+            const q = `run: ${source} -> { group_by: owner; aggregate: n is count(); order_by: owner }`;
+            answers[`served ${model} ${source}`] = answer(
+               await fixture.run(model, q),
+            );
+         }
+      }, 600_000);
+
+      afterAll(async () => {
+         await fixture?.dispose();
+         await loader?.dispose().catch(() => {});
+         restore?.();
+         await freshLoadPool();
+      });
+
+      it("built the filtered source's table", () => {
+         expect(fixture?.buildErrors).toEqual({});
+         expect(fixture?.built.map((b) => b.name)).toContain("deals");
+      });
+
+      for (const [model, source] of JOINED_QUERIES) {
+         it(`answers ${source} through ${model} with the filtered rows, never an access denial`, () => {
+            for (const side of ["live", "served"]) {
+               const a = answers[`${side} ${model} ${source}`];
+               expect(a.rows).not.toContain("Access denied");
+               expect([side, a.servedBy === "error", a.rows]).toEqual([
+                  side,
+                  false,
+                  JOINED_ROWS,
+               ]);
+            }
+         });
+      }
+   });
+}
